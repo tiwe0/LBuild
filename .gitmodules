@@ -135,3 +135,6 @@
 [submodule "home/cl-ppcre"]
 	path = home/cl-ppcre
 	url = https://github.com/edicl/cl-ppcre.git
+[submodule "home/ansi-test"]
+	path = home/ansi-test
+	url = https://gitlab.common-lisp.net/ansi-test/ansi-test.git
