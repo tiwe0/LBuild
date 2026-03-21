@@ -62,13 +62,13 @@ asdf:
 	make -C home/asdf
 
 qemu:
-	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio
+	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio -s
 kvm:
-	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio -enable-kvm
+	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio -enable-kvm -s
 qemu-arm64:
-	qemu-system-aarch64 -machine virt -cpu cortex-a53 -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=Mezzano/build-arm64/mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic
+	qemu-system-aarch64 -machine virt -cpu max -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic -s
 hvf-arm64:
-	qemu-system-aarch64 -machine virt,highmem=off -cpu host -accel hvf -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=Mezzano/build-arm64/mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic
+	qemu-system-aarch64 -machine virt,highmem=off -cpu host -accel hvf -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic -s
 
 clean:
 	rm -rf home/.cache/common-lisp/ home/.slime/ home/asdf/build/
