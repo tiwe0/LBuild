@@ -15,7 +15,7 @@
 	url = https://github.com/froggey/chipz
 [submodule "home/alexandria"]
 	path = home/alexandria
-	url = https://gitlab.common-lisp.net/alexandria/alexandria.git
+	url = https://github.com/froggey/alexandria.git
 [submodule "home/babel"]
 	path = home/babel
 	url = https://github.com/cl-babel/babel
