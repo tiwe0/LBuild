@@ -94,10 +94,11 @@
           (format t "HTTP: ~S ~S ~S~%" request path get-parameters)
           (cond ((string-equal "GET" request)
                  (cond ((eql path '())
-                        ;; Fully buffered output.
-                        (with-output-to-string (s)
-                          (demo-file s)
-                          (write-sequence (get-output-stream-string s) stream)))
+                        ;; Stream the response directly.  This is the same
+                        ;; path used by /char-by-char and avoids depending on
+                        ;; a second output stream during early boot.
+                        (demo-file stream)
+                        (finish-output stream))
                        ((equal path '("char-by-char"))
                         ;; Character-by-character output.
                         (demo-file stream))
@@ -131,7 +132,11 @@
                       ;; that all connections can finished up when the server
                       ;; is stopped.
                       (mezzano.sync.dispatch:dispatch-async
-                       (lambda () (ignore-errors (serve-request connection)))
+                       (lambda ()
+                         (handler-case (serve-request connection)
+                           (error (condition)
+                             (format t "HTTP request failed: ~A~%" condition)
+                             (finish-output))))
                        (mezzano.sync.dispatch:global-queue)
                        :group (http-server-shutdown-state server))))
                   :cancellation-handler (lambda ()
