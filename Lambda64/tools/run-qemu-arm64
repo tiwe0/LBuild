@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+qemu_bin="${QEMU_SYSTEM_AARCH64:-qemu-system-aarch64}"
+image="${LAMBDA64_IMAGE:-}"
+kernel="${LAMBDA64_ARM64_KERNEL:-${repo_root}/tools/kboot/kboot-generic-arm64.bin}"
+memory="${QEMU_MEMORY:-2G}"
+cpus="${QEMU_CPUS:-4}"
+resolution="${QEMU_RESOLUTION:-1280x800}"
+accelerator="${QEMU_ACCELERATOR:-auto}"
+cpu_model="${QEMU_CPU:-}"
+display_backend="${QEMU_DISPLAY:-}"
+headless=false
+dry_run=false
+extra_args=()
+extra_arg_count=0
+
+usage() {
+    cat <<'EOF'
+Usage: tools/run-qemu-arm64 [options] [-- QEMU_ARGS...]
+
+Boot Lambda64 on QEMU's ARM virt machine. The default mode opens a
+graphical window backed by virtio-gpu and attaches virtio keyboard and mouse
+devices. Serial output remains available in the launching terminal.
+
+Options:
+  --image PATH           Lambda64 disk image (auto-detected when omitted)
+  --kernel PATH          ARM64 kboot image
+  --memory SIZE          Guest memory (default: 2G)
+  --cpus COUNT           Virtual CPUs (default: 4)
+  --resolution WxH       virtio-gpu resolution (default: 1280x800)
+  --accel NAME           QEMU accelerator: auto, hvf, kvm, or tcg
+  --cpu MODEL            QEMU CPU model (default: host with HVF/KVM, max with TCG)
+  --display BACKEND      QEMU graphical display backend
+  --headless             Disable the host display window
+  --dry-run              Print the resolved command without starting QEMU
+  -h, --help             Show this help
+
+Environment variables mirror the options: LAMBDA64_IMAGE,
+LAMBDA64_ARM64_KERNEL, QEMU_SYSTEM_AARCH64, QEMU_MEMORY, QEMU_CPUS,
+QEMU_RESOLUTION, QEMU_ACCELERATOR, QEMU_CPU, and QEMU_DISPLAY.
+EOF
+}
+
+need_value() {
+    if [[ $# -lt 2 ]]; then
+        echo "Missing value for $1" >&2
+        usage >&2
+        exit 2
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --image)
+            need_value "$@"
+            image="$2"
+            shift 2
+            ;;
+        --kernel)
+            need_value "$@"
+            kernel="$2"
+            shift 2
+            ;;
+        --memory)
+            need_value "$@"
+            memory="$2"
+            shift 2
+            ;;
+        --cpus)
+            need_value "$@"
+            cpus="$2"
+            shift 2
+            ;;
+        --resolution)
+            need_value "$@"
+            resolution="$2"
+            shift 2
+            ;;
+        --accel)
+            need_value "$@"
+            accelerator="$2"
+            shift 2
+            ;;
+        --cpu)
+            need_value "$@"
+            cpu_model="$2"
+            shift 2
+            ;;
+        --display)
+            need_value "$@"
+            display_backend="$2"
+            shift 2
+            ;;
+        --headless)
+            headless=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            extra_args=("$@")
+            extra_arg_count=$#
+            break
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if ! command -v "$qemu_bin" >/dev/null 2>&1; then
+    echo "Unable to find $qemu_bin. Install qemu-system-aarch64 or set QEMU_SYSTEM_AARCH64." >&2
+    exit 1
+fi
+
+if [[ -z "$image" ]]; then
+    for candidate in \
+        "${repo_root}/lambda64.image" \
+        "${repo_root}/build-arm64/lambda64.image" \
+        "${repo_root}/mezzano.image" \
+        "${repo_root}/build-arm64/mezzano.image"
+    do
+        if [[ -f "$candidate" ]]; then
+            image="$candidate"
+            break
+        fi
+    done
+    image="${image:-${repo_root}/lambda64.image}"
+fi
+
+if [[ ! -f "$kernel" ]]; then
+    echo "ARM64 bootloader not found: $kernel" >&2
+    exit 1
+fi
+
+if [[ ! -f "$image" ]]; then
+    echo "Lambda64 disk image not found: $image" >&2
+    echo "Build an ARM64 cold image with LBuild, or pass --image PATH." >&2
+    exit 1
+fi
+
+if [[ ! "$cpus" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid CPU count: $cpus" >&2
+    exit 2
+fi
+
+if [[ ! "$resolution" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+    echo "Invalid resolution: $resolution (expected WIDTHxHEIGHT)" >&2
+    exit 2
+fi
+xres="${resolution%x*}"
+yres="${resolution#*x}"
+
+accelerator_help="$("$qemu_bin" -accel help 2>&1 || true)"
+supports_accelerator() {
+    grep -Fxq "$1" <<<"$accelerator_help"
+}
+
+if [[ "$accelerator" == "auto" ]]; then
+    if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] && supports_accelerator hvf; then
+        accelerator=hvf
+    elif [[ -r /dev/kvm && -w /dev/kvm ]] && supports_accelerator kvm; then
+        accelerator=kvm
+    else
+        accelerator=tcg
+    fi
+fi
+
+if ! supports_accelerator "$accelerator"; then
+    echo "QEMU accelerator '$accelerator' is not supported by $qemu_bin." >&2
+    echo "$accelerator_help" >&2
+    exit 1
+fi
+
+if [[ -z "$cpu_model" ]]; then
+    case "$accelerator" in
+        hvf|kvm) cpu_model=host ;;
+        *) cpu_model=max ;;
+    esac
+fi
+
+display_args=()
+if $headless; then
+    display_args=(-display none)
+else
+    display_help="$("$qemu_bin" -display help 2>&1 || true)"
+    supports_display() {
+        grep -Fxq "$1" <<<"$display_help"
+    }
+
+    if [[ -z "$display_backend" ]]; then
+        if [[ "$(uname -s)" == "Darwin" ]] && supports_display cocoa; then
+            display_backend=cocoa
+        elif supports_display gtk; then
+            display_backend=gtk
+        elif supports_display sdl; then
+            display_backend=sdl
+        elif supports_display cocoa; then
+            display_backend=cocoa
+        else
+            echo "No graphical QEMU display backend is available. Use --headless or set QEMU_DISPLAY." >&2
+            echo "$display_help" >&2
+            exit 1
+        fi
+    elif ! supports_display "$display_backend"; then
+        echo "QEMU display backend '$display_backend' is not supported by $qemu_bin." >&2
+        echo "$display_help" >&2
+        exit 1
+    fi
+    display_args=(-display "$display_backend")
+fi
+
+qemu_command=(
+    "$qemu_bin"
+    -name Lambda64-arm64
+    -machine virt
+    -accel "$accelerator"
+    -cpu "$cpu_model"
+    -m "$memory"
+    -smp "$cpus"
+    -kernel "$kernel"
+    -drive "if=none,file=${image},id=blk,format=raw"
+    -device "virtio-blk-device,drive=blk"
+    -device "virtio-gpu-device,xres=${xres},yres=${yres}"
+    -device virtio-keyboard-device
+    -device virtio-mouse-device
+    -netdev "user,id=vmnic,hostname=lambda64"
+    -device "virtio-net-device,netdev=vmnic"
+    -serial stdio
+    -monitor none
+    -no-reboot
+    -semihosting-config "enable=on,target=native"
+    "${display_args[@]}"
+)
+
+if (( extra_arg_count > 0 )); then
+    qemu_command+=("${extra_args[@]}")
+fi
+
+printf 'QEMU command:'
+printf ' %q' "${qemu_command[@]}"
+printf '\n'
+
+if $dry_run; then
+    exit 0
+fi
+
+exec "${qemu_command[@]}"

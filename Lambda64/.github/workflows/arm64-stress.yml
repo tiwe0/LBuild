@@ -1,0 +1,37 @@
+name: ARM64 stress
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+# Independent exact-source builds exercise host-dependent compiler output as
+# well as repeated immutable guest boots. Stress stays outside required PR CI.
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline-smp
+            smoke_mode: positive
+            cpus: 4
+            memory: 2G
+          - name: single-cpu
+            smoke_mode: positive
+            cpus: 1
+            memory: 2G
+          - name: low-memory
+            smoke_mode: positive
+            cpus: 4
+            memory: 1536M
+          - name: injected-failure
+            smoke_mode: injected-failure
+            cpus: 4
+            memory: 2G
+    uses: ./.github/workflows/ci.yml
+    with:
+      run_id: stress-${{ matrix.name }}
+      smoke_mode: ${{ matrix.smoke_mode }}
+      smoke_cpus: ${{ matrix.cpus }}
+      smoke_memory: ${{ matrix.memory }}

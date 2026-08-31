@@ -1,0 +1,10 @@
+*~
+*.fasl
+*.llf
+/*.image
+/*.map
+/*.iso
+/*.vmdk
+/*.vdi
+/build-*
+.DS_Store
