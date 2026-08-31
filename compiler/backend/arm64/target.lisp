@@ -26,7 +26,13 @@
   :x5)
 
 (defmethod ra:valid-physical-registers-for-kind ((kind (eql :value)) (architecture c:arm64-target))
-  '(:x0 :x1 :x2 :x3 :x4 :x6 :x7 :x13 :x14))
+  ;; X13 and X14 were experimentally made available here as callee-saved
+  ;; value registers.  The register allocator can incorrectly merge a value
+  ;; held in either register with a spilled value at control-flow joins.  This
+  ;; corrupted SCAVENGE-OBJECT's CYCLE-KIND during the first major GC and sent
+  ;; it through ECASE's allocating error path.  Keep them reserved until the
+  ;; allocator's callee-saved merge/spill handling is fixed generally.
+  '(:x0 :x1 :x2 :x3 :x4 :x6 :x7))
 
 (defmethod ra:valid-physical-registers-for-kind ((kind (eql :integer)) (architecture c:arm64-target))
   ;; x12 not used here. Reserved for memory indexes.
