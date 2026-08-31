@@ -44,7 +44,35 @@ The example sets `LAMBDA64_DIR := ../Lambda64`. All LBuild commands then use
 the sibling Lambda64 working tree while dependencies remain under
 `LBuild/home/`.
 
-## Quick start
+## Local testing (primary workflow)
+
+The complete test system is local-first. GitHub Actions reuses the same image
+manifest, guest protocol, smoke runner, and serial oracle.
+
+```sh
+make test-unit          # build-script and host contract tests
+make test-codegen       # real ARM64 SCAVENGE-OBJECT compiler regression
+make test-fast          # both fast layers
+make test-integration   # build test image, then positive + injected boots
+make test-stress        # repeated SMP, 1 CPU, low memory, injected failure
+make test-all           # complete local suite
+```
+
+The integration and stress targets start and stop their own Lambda64 file
+server, always boot QEMU TCG with `-snapshot`, and save reports under
+`test-results/`. They refuse to take over an existing listener on TCP 2599.
+Override long-running parameters explicitly when needed:
+
+```sh
+make test-stress STRESS_REPETITIONS=5 LOCAL_TEST_TIMEOUT_SECONDS=6000
+make test-all TEST_RESULTS_ROOT=/path/to/test-results
+```
+
+During development, manifests truthfully record dirty Lambda64/LBuild trees.
+The local matrix explicitly opts into testing those images and records that
+decision in its evidence. Clean automation does not use that opt-in.
+
+## Build and run quick start
 
 Initialize LBuild's library submodules and build ASDF:
 
@@ -57,6 +85,24 @@ Build the Lambda64 ARM64 cold image:
 
 ```sh
 make cold-image
+```
+
+Build the CI test profile and its provenance manifest:
+
+```sh
+make test-image
+```
+
+`test-image` forces `CI=true`, requires the image, map, and symbol table to be
+present and non-empty, and writes `lambda64.test-manifest`. The manifest records
+the image SHA-256, exact Lambda64 and LBuild revisions, dirty-worktree flags,
+the build command, and the SBCL/QEMU versions. Consumers must reject malformed
+manifests and production CI must reject either dirty flag.
+
+Run only the build-script regression tests without building an image:
+
+```sh
+make test-scripts
 ```
 
 The default QEMU user network reaches the host file server at `10.0.2.2`.

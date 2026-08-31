@@ -6,5 +6,7 @@
 /lambda64.image
 /lambda64.map
 /lambda64.symbol-table
+/lambda64.test-manifest
+/test-results/
 /local.mk
 .DS_Store

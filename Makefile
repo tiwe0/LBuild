@@ -8,6 +8,10 @@ QEMU_SYSTEM_AARCH64 ?= qemu-system-aarch64
 MEMORY ?= 2G
 CPUS ?= 4
 RESOLUTION ?= 1280x800
+QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
+LOCAL_TEST_TIMEOUT_SECONDS ?= 4800
+STRESS_REPETITIONS ?= 3
+TEST_RESULTS_ROOT ?= $(CURDIR)/test-results
 
 -include local.mk
 
@@ -16,6 +20,7 @@ IMAGE_PATH := $(abspath $(IMAGE))
 IMAGE_STEM := $(basename $(IMAGE_PATH))
 IMAGE_MAP := $(IMAGE_STEM).map
 IMAGE_SYMBOL_TABLE := $(IMAGE_STEM).symbol-table
+TEST_MANIFEST := $(IMAGE_STEM).test-manifest
 KERNEL ?= $(LAMBDA64_ROOT)/tools/kboot/kboot-generic-arm64.bin
 HOME_SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '$$2 ~ /^home\// { print $$2 }')
 LAMBDA64_SUBMODULE := $(if $(filter $(abspath Lambda64),$(LAMBDA64_ROOT)),Lambda64)
@@ -42,6 +47,9 @@ all:
 	@echo "  1. cp local.mk.example local.mk   # recommended for sibling checkouts"
 	@echo "  2. make deps"
 	@echo "  3. make cold-image"
+	@echo "     make test-fast               # host + build + ARM64 codegen tests"
+	@echo "     make test-integration        # build once, positive + injected QEMU boots"
+	@echo "     make test-all                # complete local suite including stress"
 	@echo "  4. make run-file-server       # in a second terminal"
 	@echo "  5. make qemu-arm64            # portable TCG"
 	@echo "     make kvm-arm64             # Linux KVM"
@@ -55,18 +63,76 @@ cold-image: build-cold-image.lisp asdf
 	@echo "File server address: $(FILE_SERVER_IP)"
 	@echo "Lambda64 source path: $(LAMBDA64_ROOT)/"
 	@echo "Home directory path: $(CURDIR)/home/"
-	@backup="$$(mktemp)"; \
-	cp "$(LAMBDA64_ROOT)/config.lisp" "$$backup"; \
-	trap 'cp "$$backup" "$(LAMBDA64_ROOT)/config.lisp"; rm -f "$$backup"' EXIT; \
-	{ \
-		echo '(in-package :mezzano.internals)'; \
-		echo '(defparameter *file-server-host-ip* "$(FILE_SERVER_IP)")'; \
-		echo '(defparameter *home-directory-path* "REMOTE:$(CURDIR)/home/")'; \
-		echo '(defparameter *mezzano-source-path* "REMOTE:$(LAMBDA64_ROOT)/")'; \
-		echo '(setf *compile-parallel* t)'; \
-	} > "$(LAMBDA64_ROOT)/config.lisp"; \
-	cd "$(LAMBDA64_ROOT)" && \
-	LBUILD_OUTPUT="$(IMAGE_STEM)" "$(SBCL)" --dynamic-space-size 2048 --load "$(CURDIR)/build-cold-image.lisp"
+	@./scripts/with-temporary-config.sh \
+		"$(LAMBDA64_ROOT)/config.lisp" \
+		"$(FILE_SERVER_IP)" \
+		"$(CURDIR)/home/" \
+		"$(LAMBDA64_ROOT)/" \
+		-- bash -c 'cd "$$1" && CI="$$2" LBUILD_OUTPUT="$$3" "$$4" --dynamic-space-size 2048 --load "$$5"' \
+		bash "$(LAMBDA64_ROOT)" "$(CI)" "$(IMAGE_STEM)" "$(SBCL)" "$(CURDIR)/build-cold-image.lisp"
+
+test-image:
+	@$(MAKE) --no-print-directory \
+		CI=true \
+		SBCL="$(SBCL)" \
+		FILE_SERVER_IP="$(FILE_SERVER_IP)" \
+		LAMBDA64_DIR="$(LAMBDA64_DIR)" \
+		IMAGE="$(IMAGE)" \
+		QEMU_SYSTEM_AARCH64="$(QEMU_SYSTEM_AARCH64)" \
+		cold-image
+	@./scripts/assert-test-image-artifacts.sh \
+		"$(IMAGE_PATH)" \
+		"$(IMAGE_MAP)" \
+		"$(IMAGE_SYMBOL_TABLE)"
+	@./scripts/write-test-manifest.sh \
+		"$(IMAGE_PATH)" \
+		"$(TEST_MANIFEST)" \
+		"$(LAMBDA64_ROOT)" \
+		"$(CURDIR)" \
+		"$(SBCL)" \
+		"$(QEMU_SYSTEM_AARCH64)" \
+		'make test-image IMAGE=$(IMAGE) LAMBDA64_DIR=$(LAMBDA64_DIR)'
+
+test-scripts:
+	@./scripts/tests/test-lbuild-scripts.sh
+
+test-unit: test-scripts
+	@$(LAMBDA64_ROOT)/tests/host/run.sh
+
+test-codegen:
+	@LAMBDA64_QUICKLISP_SETUP="$(QUICKLISP_SETUP)" \
+		$(LAMBDA64_ROOT)/tools/ci/test-arm64-scavenge-codegen.sh "$(LAMBDA64_ROOT)"
+
+test-fast: test-unit test-codegen
+	@echo "Local fast test layers passed"
+
+test-integration: test-fast test-image
+	@./scripts/run-local-test-matrix.sh \
+		--suite integration \
+		--lambda64-root "$(LAMBDA64_ROOT)" \
+		--image "$(IMAGE_PATH)" \
+		--manifest "$(TEST_MANIFEST)" \
+		--fixture-root "$(CURDIR)/home" \
+		--results-root "$(TEST_RESULTS_ROOT)" \
+		--timeout "$(LOCAL_TEST_TIMEOUT_SECONDS)" \
+		--sbcl "$(SBCL)"
+
+test-stress: test-fast test-image
+	@./scripts/run-local-test-matrix.sh \
+		--suite stress \
+		--lambda64-root "$(LAMBDA64_ROOT)" \
+		--image "$(IMAGE_PATH)" \
+		--manifest "$(TEST_MANIFEST)" \
+		--fixture-root "$(CURDIR)/home" \
+		--results-root "$(TEST_RESULTS_ROOT)" \
+		--timeout "$(LOCAL_TEST_TIMEOUT_SECONDS)" \
+		--stress-repetitions "$(STRESS_REPETITIONS)" \
+		--sbcl "$(SBCL)"
+
+test-local: test-integration
+
+test-all: test-integration test-stress
+	@echo "Complete local Lambda64 test system passed"
 
 run-file-server: run-file-server.lisp
 	cd "$(LAMBDA64_ROOT)/file-server" && "$(SBCL)" --load "$(CURDIR)/run-file-server.lisp"
@@ -94,6 +160,6 @@ clean:
 	@if [ -d "$(LAMBDA64_ROOT)" ]; then \
 		find "$(LAMBDA64_ROOT)" -name '*.llf' -type f -delete; \
 	fi
-	rm -f "$(IMAGE_PATH)" "$(IMAGE_MAP)" "$(IMAGE_SYMBOL_TABLE)"
+	rm -f "$(IMAGE_PATH)" "$(IMAGE_MAP)" "$(IMAGE_SYMBOL_TABLE)" "$(TEST_MANIFEST)"
 
-.PHONY: all cold-image run-file-server deps asdf qemu qemu-arm64 kvm kvm-arm64 hvf hvf-arm64 clean
+.PHONY: all cold-image test-image test-scripts test-unit test-codegen test-fast test-integration test-stress test-local test-all run-file-server deps asdf qemu qemu-arm64 kvm kvm-arm64 hvf hvf-arm64 clean
