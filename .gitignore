@@ -3,4 +3,8 @@
 /mezzano.map
 /mezzano.symbol-table
 /mezzano.vmdk
+/lambda64.image
+/lambda64.map
+/lambda64.symbol-table
+/local.mk
 .DS_Store

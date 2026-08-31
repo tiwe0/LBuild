@@ -1,78 +1,99 @@
-# This must be the SBCL executable to use
-SBCL := sbcl
-# This must be the IP address of the file-server.
-# Typically this is the local IP address of the machine running the
-# file-server, not the public IP.
-# Note! Addresses on 10.0.2/24 networks are not supported, as this conflicts
-# with the network provided by qemu and VirtualBox.
-FILE_SERVER_IP := 192.168.0.555
+SHELL := /bin/bash
 
-# Report an error if this hasn't been configured.
-# Hey, guy who removed this test instead of configuring this setting, then filed an issue
-# complaining that it didn't work: Don't do that. It's literally the previous line and
-# there's a comment telling you what to do!
-ifeq ($(FILE_SERVER_IP),192.168.0.555)
-# Unless no target was specified.
-ifneq ($(MAKECMDGOALS),)
-$(error FILE_SERVER_IP has not been configured in the Makefile)
-endif
-endif
+SBCL ?= sbcl
+FILE_SERVER_IP ?= 10.0.2.2
+LAMBDA64_DIR ?= Lambda64
+IMAGE ?= lambda64.image
+QEMU_SYSTEM_AARCH64 ?= qemu-system-aarch64
+MEMORY ?= 2G
+CPUS ?= 4
+RESOLUTION ?= 1280x800
+
+-include local.mk
+
+LAMBDA64_ROOT := $(abspath $(LAMBDA64_DIR))
+IMAGE_PATH := $(abspath $(IMAGE))
+IMAGE_STEM := $(basename $(IMAGE_PATH))
+IMAGE_MAP := $(IMAGE_STEM).map
+IMAGE_SYMBOL_TABLE := $(IMAGE_STEM).symbol-table
+KERNEL ?= $(LAMBDA64_ROOT)/tools/kboot/kboot-generic-arm64.bin
+HOME_SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '$$2 ~ /^home\// { print $$2 }')
+LAMBDA64_SUBMODULE := $(if $(filter $(abspath Lambda64),$(LAMBDA64_ROOT)),Lambda64)
+
+QEMU_COMMON_ARGS = \
+	-name Lambda64-arm64 \
+	-m $(MEMORY) \
+	-smp $(CPUS) \
+	-kernel $(KERNEL) \
+	-serial stdio \
+	-monitor none \
+	-no-reboot \
+	-device virtio-gpu-device,xres=$(word 1,$(subst x, ,$(RESOLUTION))),yres=$(word 2,$(subst x, ,$(RESOLUTION))) \
+	-device virtio-keyboard-device \
+	-device virtio-mouse-device \
+	-drive if=none,file=$(IMAGE_PATH),id=blk,format=raw \
+	-device virtio-blk-device,drive=blk \
+	-netdev user,id=vmnic,hostname=lambda64,hostfwd=tcp:127.0.0.1:4005-:4005 \
+	-device virtio-net-device,netdev=vmnic \
+	-semihosting-config enable=on,target=native
 
 all:
-	@echo "Quick start:"
-	@echo " 0. Set SBCL path and FILE_SERVER_IP in Makefile."
-	@echo "    Run git submodule update --init"
-	@echo " 1. Run make cold-image-vmdk"
-	@echo " 2. In a seperate terminal, run make run-file-server"
-	@echo "    The file server needs to run while the VM is running."
-	@echo " 3. Point VirtualBox at mezzano.vmdk and start the VM."
+	@echo "LBuild quick start:"
+	@echo "  1. cp local.mk.example local.mk   # recommended for sibling checkouts"
+	@echo "  2. make deps"
+	@echo "  3. make cold-image"
+	@echo "  4. make run-file-server       # in a second terminal"
+	@echo "  5. make qemu-arm64            # portable TCG"
+	@echo "     make kvm-arm64             # Linux KVM"
+	@echo "     make hvf-arm64             # Apple Silicon HVF"
 
 cold-image: build-cold-image.lisp asdf
-	@echo File server address: $(FILE_SERVER_IP)
-	@echo Source path: $(CURDIR)/Mezzano/
-	@echo Home directory path: $(CURDIR)/home/
-	echo "(in-package :mezzano.internals)" > Mezzano/config.lisp
-	echo "(defparameter *file-server-host-ip* \"$(FILE_SERVER_IP)\")" >> Mezzano/config.lisp
-	echo "(defparameter *home-directory-path* \"REMOTE:$(CURDIR)/home/\")" >> Mezzano/config.lisp
-	echo "(defparameter *mezzano-source-path* \"REMOTE:$(CURDIR)/Mezzano/\")" >> Mezzano/config.lisp
-	cd Mezzano/ && $(SBCL) --dynamic-space-size 2048 --load ../build-cold-image.lisp
-
-cold-image-vmdk: cold-image
-	$(eval VM_NAME = $(shell VBoxManage showmediuminfo mezzano.vmdk |awk '/^In use by VMs:/{print $$5}'))
-	$(eval VM_UUID = $(shell VBoxManage showmediuminfo mezzano.vmdk |awk -F ': |[()]' '/^In use by VMs: .* \(UUID:(.*)\)/{print $$4}'))
-	$(eval DISK_UUID = $(shell VBoxManage showmediuminfo mezzano.vmdk |awk '/^UUID:/{print $$2}'))
-	@echo "VM_NAME: $(VM_NAME)"
-	@echo "VM_UUID: $(VM_UUID)"
-	@echo "DISK_UUID: $(DISK_UUID)"
-	-VBoxManage storagectl "$(VM_NAME)" --name IDE --remove
-	-VBoxManage closemedium disk mezzano.vmdk
-	rm -f mezzano.vmdk
-	VBoxManage convertfromraw --format vmdk mezzano.image mezzano.vmdk
-ifneq ($(VM_NAME),)
-# This fails when the image isn't attached to any VM and there's nothing to update.
-	@echo "*** Failures from VBoxManage are harmless and can be ignored. ***"
-	VBoxManage storagectl "$(VM_NAME)" --name IDE --add ide --controller PIIX4
-	VBoxManage storageattach "$(VM_NAME)" --storagectl IDE --port 0 --device 0 --type hdd --medium mezzano.vmdk
-endif
+	@test -f "$(LAMBDA64_ROOT)/lispos.asd" || { \
+		echo "Lambda64 checkout is missing at $(LAMBDA64_ROOT)" >&2; \
+		exit 1; \
+	}
+	@echo "File server address: $(FILE_SERVER_IP)"
+	@echo "Lambda64 source path: $(LAMBDA64_ROOT)/"
+	@echo "Home directory path: $(CURDIR)/home/"
+	@backup="$$(mktemp)"; \
+	cp "$(LAMBDA64_ROOT)/config.lisp" "$$backup"; \
+	trap 'cp "$$backup" "$(LAMBDA64_ROOT)/config.lisp"; rm -f "$$backup"' EXIT; \
+	{ \
+		echo '(in-package :mezzano.internals)'; \
+		echo '(defparameter *file-server-host-ip* "$(FILE_SERVER_IP)")'; \
+		echo '(defparameter *home-directory-path* "REMOTE:$(CURDIR)/home/")'; \
+		echo '(defparameter *mezzano-source-path* "REMOTE:$(LAMBDA64_ROOT)/")'; \
+		echo '(setf *compile-parallel* t)'; \
+	} > "$(LAMBDA64_ROOT)/config.lisp"; \
+	cd "$(LAMBDA64_ROOT)" && \
+	LBUILD_OUTPUT="$(IMAGE_STEM)" "$(SBCL)" --dynamic-space-size 2048 --load "$(CURDIR)/build-cold-image.lisp"
 
 run-file-server: run-file-server.lisp
-	cd Mezzano/file-server/ && $(SBCL) --load ../../run-file-server.lisp
+	cd "$(LAMBDA64_ROOT)/file-server" && "$(SBCL)" --load "$(CURDIR)/run-file-server.lisp"
 
-asdf:
-	make -C home/asdf
+deps:
+	git submodule update --init --recursive --jobs 4 $(HOME_SUBMODULES) $(LAMBDA64_SUBMODULE)
 
-qemu:
-	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio -s
-kvm:
-	qemu-system-x86_64 -m 2G -hda mezzano.image -serial stdio -vga std -net user,hostfwd=tcp:127.0.0.1:4005-:4005 -net nic,model=virtio -enable-kvm -s
+asdf: deps
+	$(MAKE) -C home/asdf build/asdf.lisp
+
+qemu: qemu-arm64
 qemu-arm64:
-	qemu-system-aarch64 -machine virt -cpu max -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic -s
+	$(QEMU_SYSTEM_AARCH64) -machine virt -cpu max $(QEMU_COMMON_ARGS)
+
+kvm: kvm-arm64
+kvm-arm64:
+	$(QEMU_SYSTEM_AARCH64) -machine virt -accel kvm -cpu host $(QEMU_COMMON_ARGS)
+
+hvf: hvf-arm64
 hvf-arm64:
-	qemu-system-aarch64 -machine virt,highmem=off -cpu host -accel hvf -m 2G -kernel Mezzano/tools/kboot/kboot-generic-arm64.bin -serial stdio -device virtio-gpu-device -device virtio-keyboard-device -device virtio-mouse-device -drive if=none,file=mezzano.image,id=blk,format=raw -device virtio-blk-device,drive=blk -netdev user,id=vmnic,hostname=qemu,hostfwd=tcp:127.0.0.1:4005-:4005 -device virtio-net-device,netdev=vmnic -s
+	$(QEMU_SYSTEM_AARCH64) -machine virt,highmem=off -accel hvf -cpu host $(QEMU_COMMON_ARGS)
 
 clean:
 	rm -rf home/.cache/common-lisp/ home/.slime/ home/asdf/build/
-	find Mezzano/ -name '*.llf' -type f -exec rm {} +
-	rm -rf mezzano.image mezzano.map mezzano.vmdk
+	@if [ -d "$(LAMBDA64_ROOT)" ]; then \
+		find "$(LAMBDA64_ROOT)" -name '*.llf' -type f -delete; \
+	fi
+	rm -f "$(IMAGE_PATH)" "$(IMAGE_MAP)" "$(IMAGE_SYMBOL_TABLE)"
 
-.PHONY: run-file-server cold-image cold-image-vmdk qemu kvm clean all asdf
+.PHONY: all cold-image run-file-server deps asdf qemu qemu-arm64 kvm kvm-arm64 hvf hvf-arm64 clean

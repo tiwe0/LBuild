@@ -25,7 +25,7 @@
   (require :closer-mop)
   (require :trivial-gray-streams))
 
-(format t "Loading Mezzano compiler and cold-generator....~%")
+(format t "Loading Lambda64 compiler and cold-generator....~%")
 (push *default-pathname-defaults* asdf:*central-registry*)
 (asdf:load-system :lispos)
 ;; Initialize the compiler.
@@ -33,14 +33,16 @@
 ;;
 ;; Choose your architecture here.
 ;;
-;; :x86-64 is well supported and the standard target.
-;; :arm64 is a secondary target, may not be functional and has many missing features.
+;; LBuild targets Lambda64 on ARM64 by default.
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(cold-generator:set-up-cross-compiler :architecture :x86-64)
+(cold-generator:set-up-cross-compiler :architecture :arm64)
 
 (format t "Building cold image...~%")
-(cold-generator::make-image "../../mezzano" :image-size (* 5 1024 1024 1024) :header-path "tools/disk-header.bin")
+(cold-generator::make-image (or (sb-ext:posix-getenv "LBUILD_OUTPUT")
+                                "../../lambda64")
+                            :image-size (* 5 1024 1024 1024)
+                            :header-path "tools/disk-header.bin")
 
 (format t "Build successful!~%")
 (quit)

@@ -31,9 +31,9 @@
 [submodule "home/slime"]
 	path = home/slime
 	url = https://github.com/froggey/slime
-[submodule "Mezzano"]
-	path = Mezzano
-	url = https://github.com/froggey/Mezzano
+[submodule "Lambda64"]
+	path = Lambda64
+	url = https://github.com/tiwe0/Lambda64
 [submodule "home/cl-wav"]
 	path = home/cl-wav
 	url = https://github.com/RobBlackwell/cl-wav.git
