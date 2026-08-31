@@ -1,88 +1,102 @@
 name: CI
 
 on:
-  # Build the main and ARM64 development branches.
   push:
     branches: ["github-ci-build-test", master, arm64]
   pull_request:
     branches: [master, arm64]
   workflow_dispatch:
+    inputs:
+      smoke_mode:
+        description: Guest oracle mode for a manual diagnostic run.
+        required: false
+        type: choice
+        options: [positive, injected-failure]
+        default: positive
+      upload_failure_image:
+        description: Upload the large raw image when a manual run fails.
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      run_id:
+        description: Distinguishes reusable stress invocations and artifacts.
+        required: false
+        type: string
+        default: ci
+      smoke_mode:
+        description: Guest oracle mode.
+        required: false
+        type: string
+        default: positive
+      upload_failure_image:
+        description: Upload the large raw image on failure.
+        required: false
+        type: boolean
+        default: false
+      smoke_cpus:
+        description: Virtual CPU count.
+        required: false
+        type: number
+        default: 4
+      smoke_memory:
+        description: Guest RAM size accepted by QEMU, for example 2G.
+        required: false
+        type: string
+        default: 2G
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.run_id || 'ci' }}
   cancel-in-progress: true
 
+env:
+  # Test-image provenance and cache keys must never depend on a moving branch.
+  LBUILD_SHA: 5e6d18258c5d910d81eb0c80d3a9d9eb51c6f0a4
+
 jobs:
-  build:
-    name: Build (${{ matrix.arch }})
+  static-host:
+    name: Static host tests
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeout }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Lambda64
+        uses: actions/checkout@v6
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ARM64 currently runs under TCG on GitHub-hosted x86-64 runners and
-          # can take more than an hour during first-boot compilation.
-          - arch: arm64
-            timeout: 90
-            qemu_bin: qemu-system-aarch64
-            qemu_machine: >-
-              -machine virt
-              -cpu max
-              -kernel Lambda64/tools/kboot/kboot-generic-arm64.bin
-              -device virtio-gpu-device
-              -device virtio-keyboard-device
-              -device virtio-mouse-device
-              -drive if=none,file=lambda64.image,id=blk,format=raw
-              -device virtio-blk-device,drive=blk
-              -netdev user,id=vmnic,hostname=lambda64
-              -device virtio-net-device,netdev=vmnic
-              -semihosting-config enable=on,target=native
-            qemu_exit_pass: 0
-            qemu_exit_fail: 1
+      - name: Run host test suite
+        run: tests/host/run.sh
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+  arm64-integration:
+    name: ARM64 build and QEMU integration (${{ inputs.smoke_mode || 'positive' }})
+    needs: static-host
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
     steps:
       - name: Checkout Lambda64
         uses: actions/checkout@v6
         with:
           submodules: recursive
-          path: Lambda64          # -> $GITHUB_WORKSPACE/Lambda64
+          path: Lambda64
 
-      # Resolve LBuild's current HEAD SHA (used as the cache key).
-      - name: Get LBuild HEAD SHA
-        id: lbuild-sha
-        run: |
-          echo "sha=$(git ls-remote https://github.com/tiwe0/LBuild refs/heads/arm64 | cut -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore LBuild cache
-        id: lbuild-cache
-        uses: actions/cache@v5
-        with:
-          path: LBuild
-          key: lbuild-${{ steps.lbuild-sha.outputs.sha }}
-          # No restore-keys — a partial LBuild (wrong submodule state) is worse than none.
-
-      - name: Checkout LBuild
-        if: steps.lbuild-cache.outputs.cache-hit != 'true'
+      - name: Checkout exact LBuild revision
         uses: actions/checkout@v6
         with:
           repository: tiwe0/LBuild
-          path: LBuild            # -> $GITHUB_WORKSPACE/LBuild
-          ref: arm64
+          ref: ${{ env.LBUILD_SHA }}
+          submodules: recursive
+          path: LBuild
 
-      # Cached LBuild might have some llf files cached.
-      # TODO: Figure out how to do out-of-tree builds.
-      - name: Clean LBuild
-        working-directory: LBuild
+      - name: Verify pinned clean inputs
+        shell: bash
         run: |
-          rm -rf home/.cache/common-lisp/ home/.slime/ home/asdf/build/
+          set -euo pipefail
+          test "$(git -C LBuild rev-parse HEAD)" = "$LBUILD_SHA"
+          test -z "$(git -C Lambda64 status --porcelain --untracked-files=no)"
+          test -z "$(git -C LBuild status --porcelain --untracked-files=no)"
 
       - name: Install apt packages
         run: |
-          # forgejo does not have sudo installed by default, so
-          # install it to unify builds
           if ! command -v sudo >/dev/null 2>&1; then
             apt-get update -qq
             apt-get install -y --no-install-recommends sudo
@@ -106,7 +120,6 @@ jobs:
             shift
             local delay=5
             local attempt
-
             for ((attempt = 1; attempt <= max_attempts; attempt++)); do
               if "$@"; then
                 return 0
@@ -122,8 +135,6 @@ jobs:
           }
 
           install_quicklisp() {
-            # A failed initial install can leave setup.lisp present with an
-            # incomplete dist index. Start each retry from a clean directory.
             rm -rf "$HOME/quicklisp"
             curl --fail --show-error --location \
               --retry 5 --retry-all-errors --retry-delay 2 \
@@ -147,50 +158,60 @@ jobs:
 
           retry 3 quickload_dependencies
 
-      - name: Build cold image
-        run: |
-          set -o pipefail
-          make -C LBuild \
-            LAMBDA64_DIR=../Lambda64 \
-            IMAGE=../lambda64.image \
-            cold-image \
-            2>&1 | tee "${{ github.workspace }}/build-cold-image.log"
+      - name: Verify ARM64 GC code generation
+        shell: bash
+        run: Lambda64/tools/ci/test-arm64-scavenge-codegen.sh
 
-      - name: Start file server
-        run: |
-          make -C LBuild LAMBDA64_DIR=../Lambda64 run-file-server \
-            &> "${{ github.workspace }}/file-server.log" &
-          echo $! > "${{ github.workspace }}/file-server.pid"
-          # Wait for the server to become ready.
-          timeout 30 bash -c 'until lsof -i :2599 -sTCP:LISTEN >/dev/null 2>&1; do sleep 1; done'
-          echo "File server ready (PID $(cat ${{ github.workspace }}/file-server.pid))"
-
-      - name: Run tests in QEMU
+      - name: Build test image (50 minute budget)
         shell: bash
         run: |
-          set +e
-          ${{ matrix.qemu_bin }} \
-            -m 2G \
-            -nographic \
-            -monitor none \
-            -serial stdio \
-            -smp 4 \
-            -no-reboot \
-            ${{ matrix.qemu_machine }} \
-          2>&1 | tee "${{ github.workspace }}/serial.log"
-          QEMU_EXIT=${PIPESTATUS[0]}
-          set -e
-          case "${QEMU_EXIT}" in
-            ${{ matrix.qemu_exit_pass }})
-              ;;
-            ${{ matrix.qemu_exit_fail }})
-              exit 1
-              ;;
-            *)
-              echo "Unexpected QEMU exit code ${QEMU_EXIT}"
-              exit 1
-              ;;
-          esac
+          set -euo pipefail
+          timeout --foreground 3000 \
+            make -C LBuild \
+              LAMBDA64_DIR=../Lambda64 \
+              IMAGE=../lambda64.image \
+              test-image \
+            2>&1 | tee "${{ github.workspace }}/build-test-image.log"
+
+      - name: Record artifact provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            lambda64.image \
+            lambda64.map \
+            lambda64.symbol-table \
+            lambda64.test-manifest \
+            > artifact-sha256s.txt
+          cat lambda64.test-manifest
+          cat artifact-sha256s.txt
+
+      - name: Start file server
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C LBuild LAMBDA64_DIR=../Lambda64 run-file-server \
+            > "${{ github.workspace }}/file-server.log" 2>&1 &
+          echo $! > "${{ github.workspace }}/file-server.pid"
+          timeout 30 bash -c 'until lsof -i :2599 -sTCP:LISTEN >/dev/null 2>&1; do sleep 1; done'
+          echo "File server ready (PID $(cat "${{ github.workspace }}/file-server.pid"))"
+
+      - name: Run immutable ARM64 guest tests (80 minute budget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          Lambda64/tools/ci/run-arm64-smoke.sh \
+            --mode "${{ inputs.smoke_mode || 'positive' }}" \
+            --image "${{ github.workspace }}/lambda64.image" \
+            --manifest "${{ github.workspace }}/lambda64.test-manifest" \
+            --fixture-root "${{ github.workspace }}/LBuild/home" \
+            --serial-log "${{ github.workspace }}/serial.log" \
+            --evidence "${{ github.workspace }}/smoke-evidence.txt" \
+            --timeout 4800 \
+            --cpus "${{ inputs.smoke_cpus || 4 }}" \
+            --memory "${{ inputs.smoke_memory || '2G' }}" \
+            --expected-lambda64-sha "${{ github.sha }}" \
+            --expected-lbuild-sha "$LBUILD_SHA"
 
       - name: Stop file server
         if: always()
@@ -199,25 +220,29 @@ jobs:
             kill "$(cat "${{ github.workspace }}/file-server.pid")" 2>/dev/null || true
           fi
 
-      - name: Upload logs
+      - name: Upload integration evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logs-${{ github.run_id }}-${{ matrix.arch }}
+          name: arm64-evidence-${{ github.run_id }}-${{ inputs.run_id || 'ci' }}
           path: |
+            ${{ github.workspace }}/artifact-sha256s.txt
+            ${{ github.workspace }}/lambda64.test-manifest
+            ${{ github.workspace }}/lambda64.map
+            ${{ github.workspace }}/lambda64.symbol-table
+            ${{ github.workspace }}/build-test-image.log
             ${{ github.workspace }}/file-server.log
             ${{ github.workspace }}/serial.log
-            ${{ github.workspace }}/build-cold-image.log
+            ${{ github.workspace }}/smoke-evidence.txt
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Upload image on failure
-        if: failure()
+      - name: Upload raw image for manual failure debugging
+        if: failure() && inputs.upload_failure_image
         uses: actions/upload-artifact@v4
         with:
-          name: lambda64-image-${{ github.run_id }}-${{ matrix.arch }}
+          name: arm64-image-${{ github.run_id }}-${{ inputs.run_id || 'ci' }}
           path: |
             ${{ github.workspace }}/lambda64.image
-            ${{ github.workspace }}/lambda64.map
-            ${{ github.workspace }}/lambda64.symbol-table
           retention-days: 3
+          if-no-files-found: warn

@@ -287,12 +287,30 @@ Make sure there is a virtio-net NIC attached.~%")
 (mezzano.supervisor:add-boot-hook 'sys.int::load-init-file :late)
 (sys.int::load-init-file)
 
+;; Run the guest regression suite while the IPL debugger is still installed,
+;; so a failure to load the CI runner remains a deterministic boot failure.
+(when (mezzano.supervisor:running-in-ci-p)
+  (let ((runner
+          (handler-case
+              (progn
+                (sys.int::cal "SYS:SOURCE;TESTS;GUEST;PACKAGE.LISP")
+                (sys.int::cal "SYS:SOURCE;TESTS;GUEST;RUNNER.LISP")
+                ;; Avoid a reader-time dependency on the CI-only package.
+                (or (find-symbol "RUN-CI-TESTS" "LAMBDA64.TESTS")
+                    (error "CI runner entry point is missing")))
+            (error (condition)
+              (format t "LAMBDA64_TEST_DIAGNOSTIC harness.load ~A~%" condition)
+              (format t "LAMBDA64_TEST_FAIL harness.load harness-load~%")
+              (format t "LAMBDA64_TEST_SUMMARY pass=0 fail=1~%")
+              (finish-output)
+              (mezzano.supervisor:ci-exit t)
+              nil))))
+    ;; RUN-CI-TESTS owns the protocol after loading succeeds.  Keep this call
+    ;; outside the loader handler so it can never produce a second summary.
+    (when runner
+      (funcall runner))))
+
 ;; Ditch the debugger hook that was established earlier.
 (setf mezzano.debug:*global-debugger* nil)
-
-(when (mezzano.supervisor:running-in-ci-p)
-  (mezzano.supervisor:debug-print-line "****")
-  (mezzano.supervisor:debug-print-line "CI build completed successfully!")
-  (mezzano.supervisor:ci-exit))
 
 ;; Done.
