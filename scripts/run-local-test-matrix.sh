@@ -137,8 +137,7 @@ for _ in {1..30}; do
 done
 $ready || { echo "Timed out waiting for Lambda64 file server on TCP 2599" >&2; exit 2; }
 
-lambda64_sha=$(git -C "$lambda64_root" rev-parse HEAD)
-lbuild_sha=$(git -C "$lbuild_root" rev-parse HEAD)
+repository_sha=$(git -C "$lbuild_root" rev-parse HEAD)
 failed=0
 
 for scenario in "${scenarios[@]}"; do
@@ -158,8 +157,7 @@ for scenario in "${scenarios[@]}"; do
         --timeout "$timeout_seconds" \
         --cpus "$cpus" \
         --memory "$memory" \
-        --expected-lambda64-sha "$lambda64_sha" \
-        --expected-lbuild-sha "$lbuild_sha" \
+        --expected-repository-sha "$repository_sha" \
         --allow-dirty \
         2>&1 | tee "$console_log"
     scenario_exit=${PIPESTATUS[0]}
@@ -178,8 +176,7 @@ done
 {
     printf '# Lambda64 local %s report\n\n' "$suite"
     printf -- '- Run ID: `%s`\n' "$run_id"
-    printf -- '- Lambda64: `%s`\n' "$lambda64_sha"
-    printf -- '- LBuild: `%s`\n' "$lbuild_sha"
+    printf -- '- Repository: `%s`\n' "$repository_sha"
     printf -- '- Image: `%s`\n' "$image"
     printf -- '- Manifest: `%s`\n' "$manifest"
     printf -- '- Scenarios: %s\n' "${#scenarios[@]}"

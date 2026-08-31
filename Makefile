@@ -8,7 +8,7 @@ QEMU_SYSTEM_AARCH64 ?= qemu-system-aarch64
 MEMORY ?= 2G
 CPUS ?= 4
 RESOLUTION ?= 1280x800
-QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
+QUICKLISP_SETUP ?= $(or $(firstword $(wildcard $(HOME)/quicklisp/setup.lisp $(HOME)/.quicklisp/setup.lisp)),$(HOME)/quicklisp/setup.lisp)
 LOCAL_TEST_TIMEOUT_SECONDS ?= 4800
 STRESS_REPETITIONS ?= 3
 TEST_RESULTS_ROOT ?= $(CURDIR)/test-results
@@ -23,7 +23,6 @@ IMAGE_SYMBOL_TABLE := $(IMAGE_STEM).symbol-table
 TEST_MANIFEST := $(IMAGE_STEM).test-manifest
 KERNEL ?= $(LAMBDA64_ROOT)/tools/kboot/kboot-generic-arm64.bin
 HOME_SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '$$2 ~ /^home\// { print $$2 }')
-LAMBDA64_SUBMODULE := $(if $(filter $(abspath Lambda64),$(LAMBDA64_ROOT)),Lambda64)
 
 QEMU_COMMON_ARGS = \
 	-name Lambda64-arm64 \
@@ -44,14 +43,13 @@ QEMU_COMMON_ARGS = \
 
 all:
 	@echo "LBuild quick start:"
-	@echo "  1. cp local.mk.example local.mk   # recommended for sibling checkouts"
-	@echo "  2. make deps"
-	@echo "  3. make cold-image"
+	@echo "  1. make deps"
+	@echo "  2. make cold-image"
 	@echo "     make test-fast               # host + build + ARM64 codegen tests"
 	@echo "     make test-integration        # build once, positive + injected QEMU boots"
 	@echo "     make test-all                # complete local suite including stress"
-	@echo "  4. make run-file-server       # in a second terminal"
-	@echo "  5. make qemu-arm64            # portable TCG"
+	@echo "  3. make run-file-server       # in a second terminal"
+	@echo "  4. make qemu-arm64            # portable TCG"
 	@echo "     make kvm-arm64             # Linux KVM"
 	@echo "     make hvf-arm64             # Apple Silicon HVF"
 
@@ -87,7 +85,6 @@ test-image:
 	@./scripts/write-test-manifest.sh \
 		"$(IMAGE_PATH)" \
 		"$(TEST_MANIFEST)" \
-		"$(LAMBDA64_ROOT)" \
 		"$(CURDIR)" \
 		"$(SBCL)" \
 		"$(QEMU_SYSTEM_AARCH64)" \
@@ -138,7 +135,7 @@ run-file-server: run-file-server.lisp
 	cd "$(LAMBDA64_ROOT)/file-server" && "$(SBCL)" --load "$(CURDIR)/run-file-server.lisp"
 
 deps:
-	git submodule update --init --recursive --jobs 4 $(HOME_SUBMODULES) $(LAMBDA64_SUBMODULE)
+	git submodule update --init --recursive --jobs 4 $(HOME_SUBMODULES)
 
 asdf: deps
 	$(MAKE) -C home/asdf build/asdf.lisp

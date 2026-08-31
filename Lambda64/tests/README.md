@@ -8,18 +8,18 @@ implementation.
 
 | Layer | What it proves | Local entry |
 |---|---|---|
-| Build-script unit | Temporary config restoration, artifact validation, strict provenance manifest, and matrix construction | `make -C ../LBuild test-scripts` |
+| Build-script unit | Temporary config restoration, artifact validation, strict provenance manifest, and matrix construction | `make -C ../.. test-scripts` |
 | Host contracts | Shell protocol behavior, failure races, dirty-image policy, ARM64 register policy, and exact guest catalog | `tests/host/run.sh` |
 | ARM64 code generation | The real cross-compiler preserves `SCAVENGE-OBJECT`'s cycle kind and does not recreate the X13/X14 CFG spill corruption | `tools/ci/test-arm64-scavenge-codegen.sh` |
 | Guest runtime | Integer/bignum arithmetic, arrays, strings, sequences, hash tables, closures, multiple values, conditions, packages, structures, CLOS, and weak pointers | Run inside the test image |
 | Guest GC and allocation | Repeated major GC, deterministic minor-to-major transition, old-to-young write barrier, post-major TLAB allocation, pinned objects, verifier restoration, and SMP allocation | Run inside the test image |
-| Boot integration | Cold load, warm load, file-server access, complete 26-test guest catalog, semihosting exit, and immutable base image | `make -C ../LBuild test-integration` |
+| Boot integration | Cold load, warm load, file-server access, complete 26-test guest catalog, semihosting exit, and immutable base image | `make -C ../.. test-integration` |
 | Fault injection | The sentinel produces exactly one intentional failure, no false success milestone, and the expected nonzero guest exit | Included in `test-integration` |
-| Stress | Repeated SMP boots, single CPU, constrained memory, and injected failure against one immutable image | `make -C ../LBuild test-stress` |
+| Stress | Repeated SMP boots, single CPU, constrained memory, and injected failure against one immutable image | `make -C ../.. test-stress` |
 
 ## Canonical local commands
 
-From the sibling `LBuild` checkout:
+From the repository root:
 
 ```sh
 make test-unit          # shell/build contracts; seconds
@@ -31,11 +31,11 @@ make test-all           # complete local system: integration + stress
 ```
 
 `test-integration` and `test-stress` write an isolated directory under
-`LBuild/test-results/`. Each scenario retains:
+`test-results/`. Each scenario retains:
 
 - the complete serial log;
 - smoke-runner console output;
-- manifest SHAs, dirty flags, CPU/memory configuration, timeout state, QEMU
+- repository SHA, Lambda64 tree hash, dirty flag, CPU/memory configuration, timeout state, QEMU
   exit, oracle exit, and before/after image hashes;
 - a matrix-wide `summary.tsv` and `report.md`;
 - the file-server log.

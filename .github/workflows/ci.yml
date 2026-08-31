@@ -50,21 +50,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.run_id || 'ci' }}
   cancel-in-progress: true
 
-env:
-  # Test-image provenance and cache keys must never depend on a moving branch.
-  LBUILD_SHA: 5e6d18258c5d910d81eb0c80d3a9d9eb51c6f0a4
-
 jobs:
   static-host:
     name: Static host tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout Lambda64
+      - name: Checkout repository
         uses: actions/checkout@v6
 
       - name: Run host test suite
-        run: tests/host/run.sh
+        run: Lambda64/tests/host/run.sh
 
   arm64-integration:
     name: ARM64 build and QEMU integration (${{ inputs.smoke_mode || 'positive' }})
@@ -73,27 +69,17 @@ jobs:
     timeout-minutes: 150
 
     steps:
-      - name: Checkout Lambda64
+      - name: Checkout repository
         uses: actions/checkout@v6
         with:
           submodules: recursive
-          path: Lambda64
 
-      - name: Checkout exact LBuild revision
-        uses: actions/checkout@v6
-        with:
-          repository: tiwe0/LBuild
-          ref: ${{ env.LBUILD_SHA }}
-          submodules: recursive
-          path: LBuild
-
-      - name: Verify pinned clean inputs
+      - name: Verify clean input
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C LBuild rev-parse HEAD)" = "$LBUILD_SHA"
-          test -z "$(git -C Lambda64 status --porcelain --untracked-files=no)"
-          test -z "$(git -C LBuild status --porcelain --untracked-files=no)"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test -z "$(git status --porcelain --untracked-files=no)"
 
       - name: Install apt packages
         run: |
@@ -167,9 +153,8 @@ jobs:
         run: |
           set -euo pipefail
           timeout --foreground 3000 \
-            make -C LBuild \
-              LAMBDA64_DIR=../Lambda64 \
-              IMAGE=../lambda64.image \
+            make \
+              IMAGE=lambda64.image \
               test-image \
             2>&1 | tee "${{ github.workspace }}/build-test-image.log"
 
@@ -190,7 +175,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make -C LBuild LAMBDA64_DIR=../Lambda64 run-file-server \
+          make run-file-server \
             > "${{ github.workspace }}/file-server.log" 2>&1 &
           echo $! > "${{ github.workspace }}/file-server.pid"
           timeout 30 bash -c 'until lsof -i :2599 -sTCP:LISTEN >/dev/null 2>&1; do sleep 1; done'
@@ -204,14 +189,13 @@ jobs:
             --mode "${{ inputs.smoke_mode || 'positive' }}" \
             --image "${{ github.workspace }}/lambda64.image" \
             --manifest "${{ github.workspace }}/lambda64.test-manifest" \
-            --fixture-root "${{ github.workspace }}/LBuild/home" \
+            --fixture-root "${{ github.workspace }}/home" \
             --serial-log "${{ github.workspace }}/serial.log" \
             --evidence "${{ github.workspace }}/smoke-evidence.txt" \
             --timeout 4800 \
             --cpus "${{ inputs.smoke_cpus || 4 }}" \
             --memory "${{ inputs.smoke_memory || '2G' }}" \
-            --expected-lambda64-sha "${{ github.sha }}" \
-            --expected-lbuild-sha "$LBUILD_SHA"
+            --expected-repository-sha "${{ github.sha }}"
 
       - name: Stop file server
         if: always()

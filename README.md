@@ -1,13 +1,14 @@
 # LBuild
 
-LBuild is the ARM64 build environment for
-[Lambda64](https://github.com/tiwe0/Lambda64). It is forked from
+This repository contains the Lambda64 operating-system source under
+`Lambda64/` together with its ARM64 build and local-test environment. LBuild
+is forked from
 [froggey/MBuild](https://github.com/froggey/MBuild), which remains the upstream
 build-system project.
 
-Lambda64 is pinned as the `Lambda64/` submodule for reproducible CI and release
-builds. LBuild defaults to the ARM64 target, emits `lambda64.image`, and
-provides graphical QEMU launch targets.
+Lambda64 is a normal first-party directory, not a submodule. Its original Git
+history was merged without squashing. LBuild defaults to the ARM64 target,
+emits `lambda64.image`, and provides graphical QEMU launch targets.
 
 ## Prerequisites
 
@@ -22,27 +23,18 @@ Install the required Common Lisp systems with Quicklisp:
 (ql:quickload '(alexandria iterate nibbles cl-fad cl-ppcre closer-mop trivial-gray-streams))
 ```
 
-## Recommended local layout
-
-Keep the two repositories as sibling working trees. This lets each repository
-stay on its own `arm64` branch without editing a detached submodule checkout:
+## Repository layout
 
 ```text
-Project/
+LBuild/
 ├── Lambda64/
-└── LBuild/
+├── home/
+├── scripts/
+└── Makefile
 ```
 
-Configure the local path once. `local.mk` is ignored by Git:
-
-```sh
-cd LBuild
-cp local.mk.example local.mk
-```
-
-The example sets `LAMBDA64_DIR := ../Lambda64`. All LBuild commands then use
-the sibling Lambda64 working tree while dependencies remain under
-`LBuild/home/`.
+`local.mk` remains available for machine-specific QEMU, network, or toolchain
+overrides, but normal development does not require a second checkout.
 
 ## Local testing (primary workflow)
 
@@ -68,9 +60,9 @@ make test-stress STRESS_REPETITIONS=5 LOCAL_TEST_TIMEOUT_SECONDS=6000
 make test-all TEST_RESULTS_ROOT=/path/to/test-results
 ```
 
-During development, manifests truthfully record dirty Lambda64/LBuild trees.
-The local matrix explicitly opts into testing those images and records that
-decision in its evidence. Clean automation does not use that opt-in.
+During development, manifests truthfully record a dirty monorepo. The local
+matrix explicitly opts into testing those images and records that decision in
+its evidence. Clean automation does not use that opt-in.
 
 ## Build and run quick start
 
@@ -95,9 +87,9 @@ make test-image
 
 `test-image` forces `CI=true`, requires the image, map, and symbol table to be
 present and non-empty, and writes `lambda64.test-manifest`. The manifest records
-the image SHA-256, exact Lambda64 and LBuild revisions, dirty-worktree flags,
-the build command, and the SBCL/QEMU versions. Consumers must reject malformed
-manifests and production CI must reject either dirty flag.
+the image SHA-256, exact repository revision, Lambda64 subtree hash, dirty
+worktree flag, build command, and SBCL/QEMU versions. Consumers must reject
+malformed manifests and production CI must reject a dirty tree.
 
 Run only the build-script regression tests without building an image:
 
@@ -132,8 +124,8 @@ and library systems. The display may remain black during this stage. Generated
 
 ## Reproducible builds and releases
 
-Without `local.mk`, LBuild uses its pinned `Lambda64/` submodule. This is the
-recommended mode for CI and release builds:
+The repository contains all first-party source needed for a build. Clone its
+remaining third-party library submodules and build from the repository root:
 
 ```sh
 git clone --recurse-submodules https://github.com/tiwe0/LBuild.git
@@ -141,9 +133,8 @@ cd LBuild
 make asdf cold-image
 ```
 
-When publishing a new pair of revisions, first commit and push Lambda64. Then
-update the LBuild gitlink to that exact Lambda64 commit and commit LBuild. This
-keeps release builds reproducible while local development remains convenient.
+Lambda64 and build-system changes now share one commit graph, so cross-layer
+changes and their tests can be reviewed and released atomically.
 
 ## Relationship to upstream
 

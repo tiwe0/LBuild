@@ -13,8 +13,7 @@ fixture_root=
 serial_log=
 evidence=
 timeout_seconds=${LAMBDA64_SMOKE_TIMEOUT_SECONDS:-}
-expected_lbuild_sha=
-expected_lambda64_sha=
+expected_repository_sha=
 expected_pass_exit=0
 expected_fail_exit=1
 expected_test_count=26
@@ -30,8 +29,7 @@ Usage: run-arm64-smoke.sh --mode MODE --image PATH --manifest PATH \
 Modes: diagnostic, positive, injected-failure
 Options:
   --timeout SECONDS
-  --expected-lbuild-sha SHA
-  --expected-lambda64-sha SHA
+  --expected-repository-sha SHA
   --expected-pass-exit CODE
   --expected-fail-exit CODE
   --expected-test-count COUNT
@@ -50,8 +48,7 @@ while [[ $# -gt 0 ]]; do
         --serial-log) serial_log=${2-}; shift 2 ;;
         --evidence) evidence=${2-}; shift 2 ;;
         --timeout) timeout_seconds=${2-}; shift 2 ;;
-        --expected-lbuild-sha) expected_lbuild_sha=${2-}; shift 2 ;;
-        --expected-lambda64-sha) expected_lambda64_sha=${2-}; shift 2 ;;
+        --expected-repository-sha) expected_repository_sha=${2-}; shift 2 ;;
         --expected-pass-exit) expected_pass_exit=${2-}; shift 2 ;;
         --expected-fail-exit) expected_fail_exit=${2-}; shift 2 ;;
         --expected-test-count) expected_test_count=${2-}; shift 2 ;;
@@ -93,16 +90,15 @@ sha256_file() {
 manifest_format=
 manifest_profile=
 manifest_image_sha256=
-manifest_lambda64_sha=
-manifest_lbuild_sha=
-manifest_lambda64_dirty=
-manifest_lbuild_dirty=
+manifest_repository_sha=
+manifest_repository_dirty=
+manifest_lambda64_tree=
 manifest_build_command=
 manifest_sbcl_version=
 manifest_qemu_version=
 manifest_created_utc=
 expected_manifest_keys=(
-    format profile image_sha256 lambda64_sha lambda64_dirty lbuild_sha lbuild_dirty
+    format profile image_sha256 repository_sha repository_dirty lambda64_tree
     build_command sbcl_version qemu_version created_utc
 )
 manifest_index=0
@@ -121,10 +117,9 @@ while IFS=$'\t' read -r key value extra || [[ -n "${key:-}" ]]; do
         format) slot=manifest_format ;;
         profile) slot=manifest_profile ;;
         image_sha256) slot=manifest_image_sha256 ;;
-        lambda64_sha) slot=manifest_lambda64_sha ;;
-        lbuild_sha) slot=manifest_lbuild_sha ;;
-        lambda64_dirty) slot=manifest_lambda64_dirty ;;
-        lbuild_dirty) slot=manifest_lbuild_dirty ;;
+        repository_sha) slot=manifest_repository_sha ;;
+        repository_dirty) slot=manifest_repository_dirty ;;
+        lambda64_tree) slot=manifest_lambda64_tree ;;
         build_command) slot=manifest_build_command ;;
         sbcl_version) slot=manifest_sbcl_version ;;
         qemu_version) slot=manifest_qemu_version ;;
@@ -139,37 +134,32 @@ done < "$manifest"
 
 [[ "$manifest_index" -eq "${#expected_manifest_keys[@]}" ]] || { echo "Manifest is incomplete" >&2; exit 2; }
 
-for required in manifest_format manifest_profile manifest_image_sha256 manifest_lambda64_sha \
-                manifest_lbuild_sha manifest_lambda64_dirty manifest_lbuild_dirty \
+for required in manifest_format manifest_profile manifest_image_sha256 manifest_repository_sha \
+                manifest_repository_dirty manifest_lambda64_tree \
                 manifest_build_command manifest_sbcl_version \
                 manifest_qemu_version manifest_created_utc; do
     eval "value=\${$required}"
     [[ -n "$value" ]] || { echo "Missing manifest field: ${required#manifest_}" >&2; exit 2; }
 done
-[[ "$manifest_format" == lambda64-test-manifest-v1 ]] || { echo "Invalid manifest format" >&2; exit 2; }
+[[ "$manifest_format" == lambda64-test-manifest-v2 ]] || { echo "Invalid manifest format" >&2; exit 2; }
 [[ "$manifest_profile" == test ]] || { echo "Image is not a test profile" >&2; exit 2; }
 [[ "$manifest_image_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid image SHA256" >&2; exit 2; }
-[[ "$manifest_lambda64_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid Lambda64 SHA" >&2; exit 2; }
-[[ "$manifest_lbuild_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid LBuild SHA" >&2; exit 2; }
-case "$manifest_lambda64_dirty" in true|false) ;; *) echo "Invalid Lambda64 dirty flag" >&2; exit 2 ;; esac
-case "$manifest_lbuild_dirty" in true|false) ;; *) echo "Invalid LBuild dirty flag" >&2; exit 2 ;; esac
+[[ "$manifest_repository_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid repository SHA" >&2; exit 2; }
+[[ "$manifest_lambda64_tree" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid Lambda64 tree hash" >&2; exit 2; }
+case "$manifest_repository_dirty" in true|false) ;; *) echo "Invalid repository dirty flag" >&2; exit 2 ;; esac
 [[ "$manifest_created_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
     echo "Invalid manifest timestamp" >&2
     exit 2
 }
 if [[ "$mode" != diagnostic && "$allow_dirty" != true && \
-      ( "$manifest_lambda64_dirty" != false || "$manifest_lbuild_dirty" != false ) ]]; then
-    echo "Integration smoke requires clean Lambda64 and LBuild checkouts" >&2
+      "$manifest_repository_dirty" != false ]]; then
+    echo "Integration smoke requires a clean repository checkout" >&2
     exit 2
 fi
 actual_image_sha256=$(sha256_file "$image")
 [[ "$actual_image_sha256" == "$manifest_image_sha256" ]] || { echo "Image SHA256 does not match manifest" >&2; exit 2; }
-if [[ -n "$expected_lbuild_sha" && "$manifest_lbuild_sha" != "$expected_lbuild_sha" ]]; then
-    echo "LBuild SHA does not match the pinned workflow SHA" >&2
-    exit 2
-fi
-if [[ -n "$expected_lambda64_sha" && "$manifest_lambda64_sha" != "$expected_lambda64_sha" ]]; then
-    echo "Lambda64 SHA does not match the checked-out workflow revision" >&2
+if [[ -n "$expected_repository_sha" && "$manifest_repository_sha" != "$expected_repository_sha" ]]; then
+    echo "Repository SHA does not match the checked-out workflow revision" >&2
     exit 2
 fi
 
@@ -200,10 +190,9 @@ start_epoch=$(date +%s)
     printf 'expected_test_count=%s\n' "$expected_test_count"
     printf 'image=%s\n' "$image"
     printf 'image_sha256=%s\n' "$actual_image_sha256"
-    printf 'lambda64_sha=%s\n' "$manifest_lambda64_sha"
-    printf 'lbuild_sha=%s\n' "$manifest_lbuild_sha"
-    printf 'lambda64_dirty=%s\n' "$manifest_lambda64_dirty"
-    printf 'lbuild_dirty=%s\n' "$manifest_lbuild_dirty"
+    printf 'repository_sha=%s\n' "$manifest_repository_sha"
+    printf 'repository_dirty=%s\n' "$manifest_repository_dirty"
+    printf 'lambda64_tree=%s\n' "$manifest_lambda64_tree"
     printf 'sentinel=%s\n' "$sentinel"
     printf 'sentinel_present_at_boot=%s\n' "$([[ -f "$sentinel" ]] && echo true || echo false)"
     printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

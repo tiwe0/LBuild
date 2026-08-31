@@ -1,5 +1,2 @@
-# Copy this file to local.mk for sibling-checkout development.
-LAMBDA64_DIR := ../Lambda64
-
 # QEMU user networking exposes the host as 10.0.2.2.
 FILE_SERVER_IP := 10.0.2.2

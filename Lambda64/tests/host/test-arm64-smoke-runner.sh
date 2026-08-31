@@ -19,16 +19,14 @@ sha256_file() {
 }
 
 write_manifest() {
-    local lambda64_dirty=$1
-    local lbuild_dirty=$2
+    local repository_dirty=$1
     cat > "$tmp/lambda64.test-manifest" <<EOF
-format	lambda64-test-manifest-v1
+format	lambda64-test-manifest-v2
 profile	test
 image_sha256	$(sha256_file "$tmp/lambda64.image")
-lambda64_sha	1111111111111111111111111111111111111111
-lambda64_dirty	$lambda64_dirty
-lbuild_sha	2222222222222222222222222222222222222222
-lbuild_dirty	$lbuild_dirty
+repository_sha	1111111111111111111111111111111111111111
+repository_dirty	$repository_dirty
+lambda64_tree	2222222222222222222222222222222222222222
 build_command	make test-image
 sbcl_version	SBCL test
 qemu_version	QEMU test
@@ -65,8 +63,7 @@ run_expect() {
         --serial-log "$tmp/${mode}.serial.log" \
         --evidence "$tmp/${mode}.evidence" \
         --timeout "$timeout" \
-        --expected-lambda64-sha 1111111111111111111111111111111111111111 \
-        --expected-lbuild-sha 2222222222222222222222222222222222222222 \
+        --expected-repository-sha 1111111111111111111111111111111111111111 \
         --expected-test-count 2 \
         $dirty_arg \
         >/dev/null 2>&1
@@ -82,7 +79,7 @@ run_expect() {
 
 # Regression for the completed-log race: the fake guest emits a panic and
 # exits before the polling loop can necessarily observe it.
-write_manifest false false
+write_manifest false
 write_launcher "printf '%s\\n' 'Cold image coming up...' 'Initializing package system.' 'First GC.' '----- PANIC -----'; exit 1"
 run_expect 3 diagnostic
 grep -Fxq 'forbidden_seen=true' "$tmp/diagnostic.evidence"
@@ -119,17 +116,17 @@ grep -Fxq 'base_image_unchanged=true' "$tmp/diagnostic.evidence"
 
 # Release integration is fail-closed for dirty provenance.  Diagnostic mode
 # remains available for exact historical or locally patched artifact replay.
-write_manifest true false
+write_manifest true
 run_expect 2 positive
 write_launcher "printf '%s\\n' 'Cold image coming up...' 'Initializing package system.' 'First GC.' 'Cold load complete.' 'Loading warm modules.' 'Post load GC.' 'Hello, world.' 'LAMBDA64_TEST_PASS local.dirty-one' 'LAMBDA64_TEST_PASS local.dirty-two' 'LAMBDA64_TEST_SUMMARY pass=2 fail=0' 'CI build completed successfully!'; exit 0"
 run_expect 0 positive 10 true
 grep -Fxq 'allow_dirty=true' "$tmp/positive.evidence"
 write_launcher "printf '%s\\n' 'Cold image coming up...' 'Initializing package system.' 'First GC.' '----- PANIC -----'; exit 1"
 run_expect 3 diagnostic
-grep -Fxq 'lambda64_dirty=true' "$tmp/diagnostic.evidence"
+grep -Fxq 'repository_dirty=true' "$tmp/diagnostic.evidence"
 
-write_manifest false false
-grep -v '^lambda64_dirty' "$tmp/lambda64.test-manifest" > "$tmp/incomplete.manifest"
+write_manifest false
+grep -v '^repository_dirty' "$tmp/lambda64.test-manifest" > "$tmp/incomplete.manifest"
 mv "$tmp/incomplete.manifest" "$tmp/lambda64.test-manifest"
 run_expect 2 diagnostic
 

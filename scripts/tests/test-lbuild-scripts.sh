@@ -17,17 +17,12 @@ expect_failure() {
     fi
 }
 
-make_repo() {
-    local path=$1
-    mkdir -p "$path"
-    git -C "$path" init -q
-    printf 'tracked\n' > "$path/tracked"
-    git -C "$path" add tracked
-    git -C "$path" -c user.name=Tests -c user.email=tests@example.invalid commit -qm initial
-}
-
-make_repo "$tmp/lambda64"
-make_repo "$tmp/lbuild"
+mkdir -p "$tmp/repository/Lambda64"
+git -C "$tmp/repository" init -q
+printf 'tracked\n' > "$tmp/repository/tracked"
+printf '(:test)\n' > "$tmp/repository/Lambda64/lispos.asd"
+git -C "$tmp/repository" add tracked Lambda64/lispos.asd
+git -C "$tmp/repository" -c user.name=Tests -c user.email=tests@example.invalid commit -qm initial
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/sbcl" <<'EOF'
 #!/usr/bin/env bash
@@ -50,23 +45,22 @@ expect_failure "$script_dir/assert-test-image-artifacts.sh" \
     "$tmp/lambda64.image" "$tmp/lambda64.map" "$tmp/lambda64.symbol-table"
 printf 'map\n' > "$tmp/lambda64.map"
 
-manifest="$tmp/lbuild/lambda64.test-manifest"
+manifest="$tmp/repository/lambda64.test-manifest"
 "$script_dir/write-test-manifest.sh" \
-    "$tmp/lambda64.image" "$manifest" "$tmp/lambda64" "$tmp/lbuild" \
+    "$tmp/lambda64.image" "$manifest" "$tmp/repository" \
     "$tmp/bin/sbcl" "$tmp/bin/qemu" 'make test-image' >/dev/null
 "$script_dir/validate-test-manifest.sh" "$manifest"
-grep -q $'^lambda64_dirty\tfalse$' "$manifest" || fail "clean Lambda64 checkout marked dirty"
-grep -q $'^lbuild_dirty\tfalse$' "$manifest" || fail "clean LBuild checkout marked dirty"
+grep -q $'^repository_dirty\tfalse$' "$manifest" || fail "clean repository marked dirty"
 "$script_dir/write-test-manifest.sh" \
-    "$tmp/lambda64.image" "$manifest" "$tmp/lambda64" "$tmp/lbuild" \
+    "$tmp/lambda64.image" "$manifest" "$tmp/repository" \
     "$tmp/bin/sbcl" "$tmp/bin/qemu" 'make test-image' >/dev/null
-grep -q $'^lbuild_dirty\tfalse$' "$manifest" || fail "generated manifest made a clean LBuild checkout dirty"
+grep -q $'^repository_dirty\tfalse$' "$manifest" || fail "generated manifest made a clean repository dirty"
 
-printf 'untracked\n' > "$tmp/lambda64/untracked"
+printf 'untracked\n' > "$tmp/repository/Lambda64/untracked"
 "$script_dir/write-test-manifest.sh" \
-    "$tmp/lambda64.image" "$manifest" "$tmp/lambda64" "$tmp/lbuild" \
+    "$tmp/lambda64.image" "$manifest" "$tmp/repository" \
     "$tmp/bin/sbcl" "$tmp/bin/qemu" 'make test-image' >/dev/null
-grep -q $'^lambda64_dirty\ttrue$' "$manifest" || fail "dirty Lambda64 checkout not recorded"
+grep -q $'^repository_dirty\ttrue$' "$manifest" || fail "dirty repository not recorded"
 
 cp "$manifest" "$tmp/malformed.test-manifest"
 sed -i.bak '/^image_sha256/d' "$tmp/malformed.test-manifest"
@@ -76,7 +70,7 @@ printf 'unexpected\tfield\n' >> "$manifest"
 expect_failure "$script_dir/validate-test-manifest.sh" "$manifest"
 : > "$tmp/lambda64.image"
 expect_failure "$script_dir/write-test-manifest.sh" \
-    "$tmp/lambda64.image" "$manifest" "$tmp/lambda64" "$tmp/lbuild" \
+    "$tmp/lambda64.image" "$manifest" "$tmp/repository" \
     "$tmp/bin/sbcl" "$tmp/bin/qemu" 'make test-image'
 
 config="$tmp/config.lisp"

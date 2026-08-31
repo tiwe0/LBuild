@@ -2,22 +2,27 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 ]]; then
-    echo "Usage: $0 IMAGE MANIFEST LAMBDA64_ROOT LBUILD_ROOT SBCL QEMU BUILD_COMMAND" >&2
+if [[ $# -ne 6 ]]; then
+    echo "Usage: $0 IMAGE MANIFEST REPOSITORY_ROOT SBCL QEMU BUILD_COMMAND" >&2
     exit 2
 fi
 
 image=$1
 manifest=$2
-lambda64_root=$3
-lbuild_root=$4
-sbcl_bin=$5
-qemu_bin=$6
-build_command=$7
+repository_root=$3
+sbcl_bin=$4
+qemu_bin=$5
+build_command=$6
 
 [[ -s "$image" ]] || { echo "Test image not found or empty: $image" >&2; exit 2; }
-[[ -d "$lambda64_root/.git" || -f "$lambda64_root/.git" ]] || { echo "Lambda64 Git checkout not found: $lambda64_root" >&2; exit 2; }
-[[ -d "$lbuild_root/.git" || -f "$lbuild_root/.git" ]] || { echo "LBuild Git checkout not found: $lbuild_root" >&2; exit 2; }
+repository_root=$(git -C "$repository_root" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "Repository checkout not found: $repository_root" >&2
+    exit 2
+}
+[[ -f "$repository_root/Lambda64/lispos.asd" ]] || {
+    echo "Lambda64 source tree not found in repository: $repository_root/Lambda64" >&2
+    exit 2
+}
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -36,31 +41,27 @@ one_line() {
     printf '%s' "$value"
 }
 
-lambda64_sha=$(git -C "$lambda64_root" rev-parse HEAD)
-lbuild_sha=$(git -C "$lbuild_root" rev-parse HEAD)
-lambda64_dirty=false
-lbuild_dirty=false
+repository_sha=$(git -C "$repository_root" rev-parse HEAD)
+lambda64_tree=$(git -C "$repository_root" rev-parse HEAD:Lambda64)
+repository_dirty=false
 
 worktree_dirty() {
-    local root=$1 generated=${2:-} root_abs generated_abs generated_rel
+    local root=$1 generated=$2 root_abs generated_abs generated_rel
     local status_args=(status --porcelain --untracked-files=normal -- .)
 
-    if [[ -n $generated ]]; then
-        root_abs=$(cd "$root" && pwd -P)
-        generated_abs=$(cd "$(dirname "$generated")" && pwd -P)/$(basename "$generated")
-        if [[ $generated_abs == "$root_abs/"* ]]; then
-            generated_rel=${generated_abs#"$root_abs/"}
-            if ! git -C "$root" ls-files --error-unmatch -- "$generated_rel" >/dev/null 2>&1; then
-                status_args+=(":(exclude)$generated_rel")
-            fi
+    root_abs=$(cd "$root" && pwd -P)
+    generated_abs=$(cd "$(dirname "$generated")" && pwd -P)/$(basename "$generated")
+    if [[ $generated_abs == "$root_abs/"* ]]; then
+        generated_rel=${generated_abs#"$root_abs/"}
+        if ! git -C "$root" ls-files --error-unmatch -- "$generated_rel" >/dev/null 2>&1; then
+            status_args+=(":(exclude)$generated_rel")
         fi
     fi
 
     [[ -n $(git -C "$root" "${status_args[@]}") ]]
 }
 
-worktree_dirty "$lambda64_root" && lambda64_dirty=true
-worktree_dirty "$lbuild_root" "$manifest" && lbuild_dirty=true
+worktree_dirty "$repository_root" "$manifest" && repository_dirty=true
 image_sha256=$(sha256_file "$image")
 sbcl_version=$("$sbcl_bin" --version | head -n 1)
 qemu_version=$("$qemu_bin" --version | head -n 1)
@@ -75,13 +76,12 @@ emit() {
 }
 
 : > "$tmp"
-emit format lambda64-test-manifest-v1
+emit format lambda64-test-manifest-v2
 emit profile test
 emit image_sha256 "$image_sha256"
-emit lambda64_sha "$lambda64_sha"
-emit lambda64_dirty "$lambda64_dirty"
-emit lbuild_sha "$lbuild_sha"
-emit lbuild_dirty "$lbuild_dirty"
+emit repository_sha "$repository_sha"
+emit repository_dirty "$repository_dirty"
+emit lambda64_tree "$lambda64_tree"
 emit build_command "$build_command"
 emit sbcl_version "$sbcl_version"
 emit qemu_version "$qemu_version"

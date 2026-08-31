@@ -11,7 +11,7 @@ manifest=$1
 [[ -s $manifest ]] || { echo "Test manifest is missing or empty: $manifest" >&2; exit 2; }
 
 expected_keys=(
-    format profile image_sha256 lambda64_sha lambda64_dirty lbuild_sha lbuild_dirty
+    format profile image_sha256 repository_sha repository_dirty lambda64_tree
     build_command sbcl_version qemu_version created_utc
 )
 values=()
@@ -35,14 +35,13 @@ while IFS=$'\t' read -r key value extra || [[ -n ${key:-}${value:-}${extra:-} ]]
 done < "$manifest"
 
 [[ $index -eq ${#expected_keys[@]} ]] || { echo "Test manifest is incomplete" >&2; exit 2; }
-[[ ${values[0]} == lambda64-test-manifest-v1 ]] || { echo "Unsupported manifest format" >&2; exit 2; }
+[[ ${values[0]} == lambda64-test-manifest-v2 ]] || { echo "Unsupported manifest format" >&2; exit 2; }
 [[ ${values[1]} == test ]] || { echo "Manifest profile must be test" >&2; exit 2; }
 [[ ${values[2]} =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid image SHA-256" >&2; exit 2; }
-[[ ${values[3]} =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid Lambda64 Git SHA" >&2; exit 2; }
-[[ ${values[4]} == true || ${values[4]} == false ]] || { echo "Invalid Lambda64 dirty flag" >&2; exit 2; }
-[[ ${values[5]} =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid LBuild Git SHA" >&2; exit 2; }
-[[ ${values[6]} == true || ${values[6]} == false ]] || { echo "Invalid LBuild dirty flag" >&2; exit 2; }
-[[ ${values[10]} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+[[ ${values[3]} =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid repository Git SHA" >&2; exit 2; }
+[[ ${values[4]} == true || ${values[4]} == false ]] || { echo "Invalid repository dirty flag" >&2; exit 2; }
+[[ ${values[5]} =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid Lambda64 tree hash" >&2; exit 2; }
+[[ ${values[9]} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
     echo "Invalid manifest timestamp" >&2
     exit 2
 }

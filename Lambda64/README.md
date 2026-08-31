@@ -19,18 +19,17 @@ not the Lambda64 project name.
 
 ## Building from source
 
-Lambda64 uses [LBuild](https://github.com/tiwe0/LBuild) to generate its ARM64
-cold image. LBuild is the Lambda64 build tool and includes this repository as
-its `Lambda64/` submodule.
+Lambda64 uses the LBuild files in the repository root to generate its ARM64
+cold image. The operating-system source and build system share one repository
+and commit graph.
 
 LBuild emits `lambda64.image`. The QEMU launcher also recognizes the legacy
 `mezzano.image` filename for images produced by the historical upstream build
 chain.
 
-For day-to-day development, keep `Lambda64/` and `LBuild/` as sibling working
-trees and copy `LBuild/local.mk.example` to `LBuild/local.mk`. LBuild will then
-build the active sibling Lambda64 checkout. The pinned submodule remains the
-source of truth for reproducible CI and release builds.
+Run `make cold-image` or the local test targets from the repository root. The
+canonical source path is the normal `Lambda64/` directory; no first-party
+submodule initialization or sibling checkout is required.
 
 ## ARM64 development with QEMU
 
@@ -64,7 +63,7 @@ extra QEMU options.
 ## Upstream
 
 - Operating-system upstream: [froggey/Mezzano](https://github.com/froggey/Mezzano)
-- Lambda64 build system: [tiwe0/LBuild](https://github.com/tiwe0/LBuild)
+- Lambda64 repository and build system: [tiwe0/LBuild](https://github.com/tiwe0/LBuild)
 - Historical build-system upstream: [froggey/MBuild](https://github.com/froggey/MBuild)
 - Upstream releases: [Mezzano releases](https://github.com/froggey/Mezzano/releases)
 - Upstream community: `#mezzano` on Libera Chat (`irc.libera.chat`)
