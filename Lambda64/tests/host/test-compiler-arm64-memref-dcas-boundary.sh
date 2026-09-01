@@ -13,7 +13,8 @@ for token in ('128-bit memref CAS lowering', 'raw effective addresses',
               'memory-order contract'):
     assert token in source, token
 for token in ('casp[a][l]', '128-bit\ncompare-exchange IR instruction',
-              'arbitrary address', '16-byte alignment', 'misaligned'):
+              'arbitrary address', '16-byte alignment', 'misaligned', 'arm64-cas-mem-instruction',
+              'no clobbers', 'fixed adjacent registers', 'incorrect GC maps'):
     assert token in spec, token
 PY
 printf 'ARM64 memref DCAS boundary checks passed\n'
