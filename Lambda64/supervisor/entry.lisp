@@ -233,6 +233,17 @@
     ;; latch before any disk worker can enter POP-DISK-REQUEST.
     (initialize-disk first-run-p)
     (initialize-pager first-run-p first-run-p first-run-p first-run-p)
+    ;; IRQs are enabled before paging discovery so the pager can make
+    ;; progress.  Pseudo-atomic entry may then queue a world-stopper, so the
+    ;; cold bootstrap must publish these wired wait queues before that first
+    ;; interrupt; leaving them NIL makes the IRQ path dereference a bogus
+    ;; queue and fault during the first general-area allocation.
+    (when (or (null *pending-world-stoppers*)
+              (null *pending-pseudo-atomics*))
+      (setf *pending-world-stoppers* (or *pending-world-stoppers*
+                                         (make-wait-queue :name '*pending-world-stoppers*))
+            *pending-pseudo-atomics* (or *pending-pseudo-atomics*
+                                        (make-wait-queue :name '*pending-pseudo-atomics*))))
     ;;(debug-set-output-pseudostream #'debug-video-stream)
     ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
     (initialize-efi)
@@ -270,12 +281,6 @@
     (when (or (not (boundp '*vm-lock*))
               (null *vm-lock*))
       (setf *vm-lock* (make-rw-lock '*vm-lock*)))
-    (when (or (null *pending-world-stoppers*)
-              (null *pending-pseudo-atomics*))
-      (setf *pending-world-stoppers* (or *pending-world-stoppers*
-                                         (make-wait-queue :name '*pending-world-stoppers*))
-            *pending-pseudo-atomics* (or *pending-pseudo-atomics*
-                                         (make-wait-queue :name '*pending-pseudo-atomics*))))
     ;; The pager thread must be schedulable before hosted paging discovery;
     ;; that phase can block the bootstrap thread in PAGER-RPC.  The ARM timer
     ;; handler tolerates the still-unbound time queues during this window.
