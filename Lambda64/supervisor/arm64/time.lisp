@@ -22,18 +22,17 @@
   (mezzano.lap.arm64:msr :cntv-ctl-el0 :x9)
   (mezzano.lap.arm64:ret))
 
-(defun enable-platform-time ()
-  "Enable the generic timer after supervisor time state has been initialized."
-  (%write-cntv-tval-el0 *generic-timer-reset-value*)
-  (%isb)
-  (%write-cntv-ctl-el0 1)
-  (%isb))
-
 (defun generic-timer-irq-handler (interrupt-frame irq)
   (declare (ignore irq))
   (%write-cntv-tval-el0 *generic-timer-reset-value*)
   (%isb)
-  (beat-heartbeat *run-time-advance*)
+  ;; The timer is enabled before INITIALIZE-TIME so PAGER-RPC can schedule
+  ;; the pager during cold bootstrap.  Ignore early ticks until the heartbeat
+  ;; queue and timer queue have been published.
+  (when (and (boundp '*run-time*)
+             (boundp '*heartbeat-wait-queue*)
+             (boundp '*active-timers*))
+    (beat-heartbeat *run-time-advance*))
   (profile-sample interrupt-frame)
   :completed)
 
@@ -58,11 +57,12 @@
                 #'generic-timer-irq-handler
                 fdt-node
                 t)
-    ;; Keep the timer disabled until INITIALIZE-TIME has published
-    ;; *RUN-TIME*, *HEARTBEAT-WAIT-QUEUE*, and *ACTIVE-TIMERS*.  Enabling it
-    ;; here lets the first interrupt enter BEAT-HEARTBEAT while those globals
-    ;; are still unbound during cold bootstrap.
-    (%write-cntv-ctl-el0 0)
+    ;; Enable the timer now so scheduler rescheduling can service PAGER-RPC
+    ;; while the paging system is being initialized.  The IRQ handler guards
+    ;; heartbeat access until INITIALIZE-TIME binds its queues.
+    (%write-cntv-tval-el0 *generic-timer-reset-value*)
+    (%isb)
+    (%write-cntv-ctl-el0 1)
     (%isb)))
 
 (sys.int::defglobal *pl031-rtc-base*)

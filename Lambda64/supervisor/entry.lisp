@@ -271,9 +271,6 @@
     ;; may require general-area allocation, so initialize them only after the
     ;; paging backend and bootstrap synchronization objects are available.
     (initialize-time)
-    ;; The ARM generic timer was attached while scanning the FDT, but remains
-    ;; disabled until INITIALIZE-TIME has bound the heartbeat/timer globals.
-    (enable-platform-time)
     ;; Debug output allocates a general-area buffer.  Keep this historical
     ;; marker after the paging backend and its bootstrap objects are ready.
     (debug-print-line "Hello, Debug World!")
