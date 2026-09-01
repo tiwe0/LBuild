@@ -440,7 +440,9 @@ Must not call SERIALIZE-OBJECT."))
         (t (error "Unsupported array element-type ~S" element-type))))
 
 (defmethod allocate-object ((object array) image environment)
-  (assert (eql (array-rank object) 1)) ; TODO
+  (unless (eql (array-rank object) 1)
+    (error "Cold serializer only supports rank-1 arrays, got rank ~D."
+           (array-rank object)))
   (let* ((element-type (env:cross-array-element-type environment object))
          (area (or (env:object-area environment object)
                    :general))
