@@ -160,12 +160,41 @@
 (defun load-register-literal (context word)
   (declare (ignore context))
   (let* ((immediate (int::sign-extend (ldb (byte 19 5) word) 19))
-         (address (list :pc (ash immediate 2))))
-    ;; FIXME: 32-bit and SIMD&FP versions
-    (make-instance 'arm64-instruction
-                   :opcode 'a64:ldr
-                   :operands (list (decode-gp64 (ldb +rt+ word))
-                                   address))))
+         (address (list :pc (ash immediate 2)))
+         ;; In the literal encoding, V selects SIMD&FP and opc (bits 31:30)
+         ;; selects the transfer width/type.  Integer opc=2 is LDRSW (an X
+         ;; destination); opc=3 is PRFM and is not a register load.
+         (simd&fp (logbitp +v-bit+ word))
+         (size (ldb (byte 2 30) word)))
+    (cond
+      (simd&fp
+       (let ((type (case size
+                     (0 :s)
+                     (1 :d)
+                     (2 :q)
+                     (3 (return-from load-register-literal
+                          (values nil :load-register-literal-simd&fp-size))))))
+         (make-instance 'arm64-instruction
+                        :opcode 'a64:ldr
+                        :operands (list (decode-fp (ldb +rt+ word) type)
+                                        address))))
+      ((= size 0)
+       (make-instance 'arm64-instruction
+                      :opcode 'a64:ldr
+                      :operands (list (decode-gp32 (ldb +rt+ word))
+                                      address)))
+      ((= size 1)
+       (make-instance 'arm64-instruction
+                      :opcode 'a64:ldr
+                      :operands (list (decode-gp64 (ldb +rt+ word))
+                                      address)))
+      ((= size 2)
+       (make-instance 'arm64-instruction
+                      :opcode 'a64:ldrsw
+                      :operands (list (decode-gp64 (ldb +rt+ word))
+                                      address)))
+      (t
+       (values nil :load-register-literal)))))
 
 (defparameter *load/store-opcodes*
   #(a64:strb a64:ldrb a64:ldrsb a64:ldrsb
