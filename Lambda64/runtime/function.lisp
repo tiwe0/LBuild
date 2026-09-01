@@ -296,9 +296,14 @@ Arguments to FUNCTION:
 (defun (setf funcallable-instance-function) (value funcallable-instance)
   (check-type value function)
   (%type-check funcallable-instance +object-tag-funcallable-instance+ 'funcallable-instance)
-  ;; TODO: If the function is an +OBJECT-TAG-FUNCTION+, then the entry point could point directly at it.
-  ;; Same as in ALLOCATE-FUNCALLABLE-INSTANCE.
-  (setf (%object-ref-t funcallable-instance +funcallable-instance-function+) value))
+  ;; Keep the raw entry point in sync with the boxed target. Compiled
+  ;; functions can be entered directly; closures and nested funcallable
+  ;; instances require the trampoline to load their environment/target.
+  (setf (%object-ref-unsigned-byte-64
+         funcallable-instance +function-entry-point+)
+        (funcallable-instance-entry-point value)
+        (%object-ref-t funcallable-instance +funcallable-instance-function+)
+        value))
 
 (defun compiled-function-p (object)
   (when (functionp object)

@@ -199,10 +199,12 @@ indirect call to the entry point of the function.
 
 ### Funcallable-instances.
 
-The entry point of a funcallable instance always points to the funcallable-
-instance trampoline. This trampoline loads the appropriate function from
-the funcallable instance and tails calls to it with the original arguments.
-They are treated like closures by function references.
+When its target is a compiled function, a funcallable instance's entry point
+points directly to that function's entry point. When its target is a closure or
+another funcallable instance, the entry point points to the funcallable-instance
+trampoline. The trampoline loads the appropriate function from the funcallable
+instance and tail-calls it with the original arguments. The latter cases are
+treated like closures by function references.
 
 ## Return convention.
 
