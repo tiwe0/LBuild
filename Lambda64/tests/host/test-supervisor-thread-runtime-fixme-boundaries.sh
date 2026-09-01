@@ -16,8 +16,15 @@ runtime_path = root / "system/runtime-support.lisp"
 thread = thread_path.read_text(encoding="utf-8")
 runtime = runtime_path.read_text(encoding="utf-8")
 if mutate:
-    # Mutation-aware guard: an accidental marker removal must fail this test.
-    thread = thread.replace("FIXME, HACK! Virtio", "resolved: Virtio", 1)
+    # Mutation-aware guard: accidental removal of any tracked marker fails.
+    if sys.argv[2] == "virtio":
+        thread = thread.replace("FIXME, HACK! Virtio", "resolved: Virtio", 1)
+    elif sys.argv[2] == "fpu":
+        thread = thread.replace("FIXME: FPU state", "resolved: FPU state", 1)
+    elif sys.argv[2] == "lock-order":
+        thread = thread.replace("FIXME: This should be done", "resolved: This should be done", 1)
+    elif sys.argv[2] == "fref":
+        runtime = runtime.replace("FIXME: FREF should be locked for the duration", "resolved fref publication", 1)
 
 required_thread = (
     "FIXME, HACK! Virtio drivers seem to be broken",
@@ -61,9 +68,11 @@ print("supervisor/thread and runtime-support FIXME boundaries passed (mutation-a
 PY
 
 if [[ -z "$mutation" ]]; then
-  if FIXME_BOUNDARY_MUTATION_RUN=1 FIXME_BOUNDARY_MUTATION=1 bash "$0" >/dev/null 2>&1; then
-    echo 'FIXME boundary mutation unexpectedly survived' >&2
-    exit 1
-  fi
-  echo 'FIXME boundary mutation rejected'
+  for marker in virtio fpu lock-order fref; do
+    if FIXME_BOUNDARY_MUTATION_RUN=1 FIXME_BOUNDARY_MUTATION="$marker" bash "$0" >/dev/null 2>&1; then
+      echo "FIXME boundary mutation unexpectedly survived: $marker" >&2
+      exit 1
+    fi
+  done
+  echo 'FIXME boundary mutations rejected'
 fi
