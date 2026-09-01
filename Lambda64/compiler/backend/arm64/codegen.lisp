@@ -61,15 +61,27 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
         (push (list index width (eql kind :value)) groups)
         (incf index width)))
     (setf groups (nreverse groups))
-    (let* ((ordered (stable-sort (copy-list groups) #'> :key (lambda (g) (if (third g) 1 0))))
+    (let* ((ordered (stable-sort (copy-list groups) #'>
+                                 :key (lambda (g) (if (third g) 1 0))))
            (mapping (make-hash-table :test #'eql))
-           (result (make-array (+ start (reduce #'+ ordered :key #'second))
+           (pointer-count (reduce #'+ ordered :key (lambda (g) (if (third g) (second g) 0))))
+           (raw-groups (remove-if #'third ordered))
+           (alignment-pad (if (and raw-groups (oddp (+ start pointer-count))
+                                  (some (lambda (g) (= (second g) 2)) raw-groups))
+                             1 0))
+           (result (make-array (+ start pointer-count alignment-pad
+                                  (reduce #'+ raw-groups :key #'second))
                                :adjustable t
-                               :fill-pointer (+ start (reduce #'+ ordered :key #'second)))))
+                               :fill-pointer (+ start pointer-count alignment-pad
+                                                (reduce #'+ raw-groups :key #'second)))))
       (dotimes (i start)
         (setf (aref result i) (aref stack-layout i)))
       (let ((destination start))
         (dolist (group ordered)
+          (when (and (= destination (+ start pointer-count))
+                     (plusp alignment-pad))
+            (setf (aref result destination) :raw)
+            (incf destination))
           (destructuring-bind (source width pointerp) group
             (declare (ignore pointerp))
             (dotimes (offset width)
