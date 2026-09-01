@@ -210,11 +210,15 @@
     ;; the paging path.
     ;; The allocator can now grow during bootstrap, so publish the queue
     ;; latch before any disk worker can enter POP-DISK-REQUEST.
-    (initialize-disk)
+    (initialize-disk first-run-p)
     (initialize-pager first-run-p first-run-p)
     (when (null *disk-request-queue-latch*)
       (setf *disk-request-queue-latch*
             (make-event :name "Disk request queue notifier")))
+    ;; The disk worker was intentionally held asleep until the pager and its
+    ;; queue latch became available on a cold boot.
+    (when first-run-p
+      (wake-thread sys.int::*disk-io-thread*))
     (when (and (boundp '*pager-disk-request*)
                (null (disk-request-latch *pager-disk-request*)))
       (setf (disk-request-latch *pager-disk-request*)
