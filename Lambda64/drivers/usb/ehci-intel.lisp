@@ -162,8 +162,17 @@
     qh))
 
 (defun free-qh (ehci qh)
-  ;; TODO free any assocaited qtds
-  (declare (ignore ehci))
+  ;; The controller has stopped using this queue by the time callers release
+  ;; it (they wait for the async doorbell first).  Reclaim every qTD still
+  ;; linked from the queue head before releasing the QH itself.
+  (loop
+     for qtd-address = (qh-next-qtd qh) then (aref qtd 0)
+     while (not (logbitp 0 qtd-address))
+     for qtd = (ehci-addr->array ehci qtd-address)
+     do (sup:with-mutex ((usbd-lock ehci))
+          (setf (pending-qtds ehci)
+                (delete qtd (pending-qtds ehci))))
+        (free-qtd ehci qtd))
   (free-buffer qh))
 
 (defun qh-next-qh (qh)
