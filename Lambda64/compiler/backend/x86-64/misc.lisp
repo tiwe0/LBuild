@@ -386,7 +386,9 @@
 ;; Provide a builtin specifically for this so the compiler doesn't put
 ;; any instruction between the two.
 (define-builtin sys.int::%stihlt (() ())
-  ;; TODO: Make sure the above guarantee still holds.
+  ;; Contract: this builtin emits STI and HLT contiguously. The backend
+  ;; scheduler must treat the pair as an indivisible sequence so no instruction
+  ;; is inserted between them; see TF-WI-0037 for the validation boundary.
   (emit (make-instance 'x86-instruction
                        :opcode 'lap:sti
                        :operands (list)
