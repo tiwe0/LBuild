@@ -320,8 +320,10 @@
                    (ldb (byte  8 112) value) (ldb (byte  8 120) value))))
     (cond
       ;; dword
-      ;; TODO: There are more possible variants with the :MSL shift type,
-      ;; and also mvni
+      ;; The immediate encoder deliberately uses the canonical zero-shift
+      ;; forms below.  MSL-shift and MVNI encodings remain an optimization
+      ;; opportunity; keeping this fallback explicit preserves correctness
+      ;; while avoiding architecture-specific pattern duplication.
       ((and dwordp
             (zerop (dpb 0 (byte 8 0) (ldb (byte 32 0) value))))
        `(lap:movi.v :4s ,dst ,(ldb (byte 8 0) value) :lsl 0))

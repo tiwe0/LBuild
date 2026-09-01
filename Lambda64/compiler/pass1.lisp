@@ -339,7 +339,10 @@
                           :arguments (list* fn args)))
           (t ;; Top-level function.
            (cond ((eql fn 'error)
-                  ;; FIXME: Bit of a hack.
+                  ;; ERROR is non-returning, but the AST still needs a
+                  ;; terminator so later control-flow passes see a closed
+                  ;; path.  Keep the explicit %%UNREACHABLE tail here rather
+                  ;; than teaching every consumer about ERROR specially.
                   (make-instance 'ast-progn
                                  :environment env
                                  :forms (list (make-instance 'ast-call
