@@ -12,6 +12,7 @@
 (defvar *labels*)
 (defvar *literals*)
 (defvar *literals/128*)
+(defvar *jump-tables*)
 
 (defun resolve-label (label &key (snap t))
   (cond (snap
@@ -167,6 +168,7 @@
                 (t
                  (lap-prepass backend-function inst-or-label uses defs))))
         (let ((*emitted-lap* '())
+              (*jump-tables* '())
               (*current-frame-layout* (coerce (loop
                                                  for elt across *stack-layout*
                                                  collect (if (not (eql elt :value))
@@ -205,6 +207,10 @@
                          (emit-gc-info :multiple-values 0)
                          (emit-gc-info)))
                    (emit-lap backend-function inst-or-label uses defs))))
+          (dolist (table (reverse *jump-tables*))
+            (emit (car table))
+            (dolist (target (cdr table))
+              (emit `(:d64/le (- ,(resolve-label target) ,(car table))))))
           (emit '(:align 16)
                 'literal-pool/128)
           (loop for value across *literals/128* do
@@ -906,11 +912,10 @@
           `(lap:mov64 (:stack ,(+ control-info 1)) :rsp)
           `(lap:mov64 (:stack ,(+ control-info 0)) :rbp)
           `(lap:lea64 ,(ir:nlx-context instruction) (:stack ,(+ control-info 3))))
-        ;; FIXME: Emit jump table as trailer.
-    (emit `(lap:jmp ,over)
-          jump-table)
-    (dolist (target (ir:begin-nlx-targets instruction))
-      (emit `(:d64/le (- ,(resolve-label target) ,jump-table))))
+    ;; Keep NLX dispatch data out of the hot instruction stream.  The table is
+    ;; emitted once as a trailer after all function instructions, while its
+    ;; RIP-relative label remains valid for the LEA above.
+    (push (cons jump-table (ir:begin-nlx-targets instruction)) *jump-tables*)
     (emit over)))
 
 (defmethod emit-lap (backend-function (instruction ir:finish-nlx-instruction) uses defs)
