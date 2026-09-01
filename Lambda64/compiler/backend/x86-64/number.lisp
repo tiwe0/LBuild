@@ -1295,8 +1295,6 @@
                                 :inputs (list lhs-unboxed rhs-unboxed)
                                 :outputs '()))))))
 
-;; TODO: This needs to check two conditions (P & NE), which the
-;; compiler can't currently do efficiently.
 (define-builtin sys.int::%%single-float-= ((lhs rhs) result)
   (cond ((constant-value-p rhs 'single-float)
          (let ((lhs-unboxed (make-instance 'ir:virtual-register :kind :single-float))
@@ -1528,8 +1526,6 @@
                                 :inputs (list lhs-unboxed rhs-unboxed)
                                 :outputs '()))))))
 
-;; TODO: This needs to check two conditions (P & NE), which the
-;; compiler can't currently do efficiently.
 (define-builtin sys.int::%%double-float-= ((lhs rhs) result)
   (cond ((constant-value-p rhs 'double-float)
          (let ((lhs-unboxed (make-instance 'ir:virtual-register :kind :double-float))
