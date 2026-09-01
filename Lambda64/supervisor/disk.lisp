@@ -18,7 +18,13 @@
 (sys.int::defglobal *log-disk-requests* nil)
 
 (defstruct (disk
-             (:area :wired))
+             (:area :wired)
+             ;; REGISTER-DISK runs while the first boot is still bringing up
+             ;; the paging backend.  Avoid the general-area temporary vector
+             ;; created by the keyword constructor on that path.
+             (:constructor %make-disk
+                 (device writable-p n-sectors sector-size max-transfer
+                         read-fn write-fn flush-fn name)))
   device
   writable-p
   n-sectors
@@ -78,15 +84,8 @@
   (when (> sector-size +4k-page-size+)
     (debug-print-line "Ignoring device " device " with overly-large sector size " sector-size " (should be <= than 4k).")
     (return-from register-disk))
-  (let ((disk (make-disk :device device
-                         :writable-p writable-p
-                         :sector-size sector-size
-                         :n-sectors n-sectors
-                         :max-transfer max-transfer
-                         :read-fn read-fn
-                         :write-fn write-fn
-                         :flush-fn flush-fn
-                         :name name)))
+  (let ((disk (%make-disk device writable-p n-sectors sector-size max-transfer
+                          read-fn write-fn flush-fn name)))
     (debug-print-line "Registered new " (if writable-p "R/W" "R/O") " disk " disk " sectors:" n-sectors)
     (setf *disks* (sys.int::cons-in-area disk *disks* :wired))))
 
