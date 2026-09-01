@@ -1278,11 +1278,16 @@ Remaining values describe the effective address: base index scale disp rip-relat
   (emit #x66)
   (modrm :xmm rhs lhs '(#x0F #x2E)))
 
-(defmacro define-sse-float-op (name opcode &key (scalar t) (packed t) (single t) (double t) imm)
+(defmacro define-sse-float-op (name opcode &key (scalar t) (packed t) (single t) (double t) imm reverse)
   (let ((result '()))
     (when scalar
       (when single
         (push `(define-instruction ,(intern (format nil "~ASS" name)) (lhs rhs)
+                 (when (and ,reverse (memory-operand-p lhs)
+                            (eql (reg-class rhs) :xmm))
+                   (emit #xF3)
+                   (return-from instruction
+                     (modrm :xmm lhs rhs '(#x0F ,(1+ opcode)))))
                  (emit #xF3)
                  ,(if imm
                       `(modrm-imm8 :xmm rhs lhs ,imm '(#x0F ,opcode))
@@ -1290,6 +1295,11 @@ Remaining values describe the effective address: base index scale disp rip-relat
               result))
       (when double
         (push `(define-instruction ,(intern (format nil "~ASD" name)) (lhs rhs)
+                 (when (and ,reverse (memory-operand-p lhs)
+                            (eql (reg-class rhs) :xmm))
+                   (emit #xF2)
+                   (return-from instruction
+                     (modrm :xmm lhs rhs '(#x0F ,(1+ opcode)))))
                  (emit #xF2)
                  ,(if imm
                       `(modrm-imm8 :xmm rhs lhs ,imm '(#x0F ,opcode))
@@ -1319,7 +1329,7 @@ Remaining values describe the effective address: base index scale disp rip-relat
 (define-sse-float-op min #x5D)
 (define-sse-float-op movhl #x12 :scalar nil :double nil)
 (define-sse-float-op movlh #x16 :scalar nil :double nil)
-(define-sse-float-op mov #x10 :packed nil) ; TODO: It goes the other way too.
+(define-sse-float-op mov #x10 :packed nil :reverse t)
 (define-sse-float-op mul #x59)
 (define-sse-float-op or #x56 :scalar nil)
 (define-sse-float-op rcp #x53 :double nil)
