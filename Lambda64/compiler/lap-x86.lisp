@@ -1080,7 +1080,12 @@ Remaining values describe the effective address: base index scale disp rip-relat
       (emit (+ #x50 nr))
       (return-from instruction t)))
   (when (immediatep value)
-    ;; TODO: short form.
+    ;; Use the sign-extended imm8 encoding whenever the value fits.
+    (let ((resolved (resolve-immediate value)))
+      (when (and resolved (typep resolved '(signed-byte 8)))
+        (emit #x6A)
+        (emit-imm-with-relocation 1 resolved)
+        (return-from instruction t)))
     (emit #x68)
     (emit-imm-with-relocation (if (eql *cpu-mode* 16) 2 4) value)
     (return-from instruction t))
