@@ -162,7 +162,8 @@
   size
   position)
 
-;; TODO: Should this do something for (complex short-float)?
+;; Use the host COMPLEX class while cross-compiling; target short-float
+;; constants are represented by CROSS-COMPLEX-SHORT-FLOAT below.
 (setf (find-class 'complex) (find-class 'cl:complex))
 
 (defmethod cl:make-load-form ((object byte) &optional environment)

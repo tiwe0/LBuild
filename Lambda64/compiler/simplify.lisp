@@ -1368,11 +1368,14 @@ First return value is a list of elements, second is the final dotted component (
           (ofs-2 (mezzano.runtime::location-offset-t loc-2)))
       (cond ((eql (1+ ofs-1) ofs-2)
              (assert (oddp ofs-1))
-             ;; FIXME: The result from %DCAS-OBJECT should be wrapped in
-             ;; THE, but the compiler has issues with VALUES types here.
-             `(call sys.int::%dcas-object
-                    ,object ',ofs-1
-                    ,old-1 ,old-2 ,new-1 ,new-2))
+             `(multiple-value-bind (successp value-1 value-2)
+                  (call sys.int::%dcas-object
+                        ,object ',ofs-1
+                        ,old-1 ,old-2 ,new-1 ,new-2)
+                (call values
+                      successp
+                      (the ,(mezzano.clos:slot-definition-type slot-1) value-1)
+                      (the ,(mezzano.clos:slot-definition-type slot-2) value-2))))
             ((eql (1+ ofs-2) ofs-1)
              ;; Inverted slots.
              (assert (oddp ofs-2))

@@ -440,13 +440,14 @@
         (t
          (values (gethash symbol cross-support::*system-symbol-declarations*)))))
 
-;; TODO: Wrap form in a bunch of macrolets.
 (defun x-eval (form env)
   (declare (ignore env))
   (when *compile-print*
     (let ((*print-length* 3)
           (*print-level* 2))
       (format t ";; X-eval: ~S~%" form)))
+  ;; The cross compiler's evaluator intentionally targets the host image;
+  ;; lexical macro expansion is performed before reaching this boundary.
   (eval form))
 
 (defstruct cross-function
