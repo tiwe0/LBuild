@@ -43,6 +43,10 @@ if "(defun complex (realpart imagpart)" not in cross or "Cannot promote" not in 
 keywords = (root / "compiler/keyword-arguments.lisp").read_text()
 if '"COUNT"' not in keywords or '"REST"' not in keywords or ":dynamic-extent t" not in keywords:
     raise SystemExit("TF-WI-0054 synthesized REST/COUNT contract missing")
+if "(if (lexical-variable-p original-rest)" not in keywords or "(call symbol-value (quote ,original-rest))" not in keywords:
+    raise SystemExit("TF-WI-0054 special REST lexical bridge missing")
+if "(etypecase count" not in keywords or "(call symbol-value (quote ,count))" not in keywords:
+    raise SystemExit("TF-WI-0054 special COUNT ABI bridge missing")
 control = (root / "compiler/simplify-control-flow.lisp").read_text()
 if "defmethod simplify-control-flow-1 ((form ast-call)" not in control or "sys.int::%%unreachable" not in control:
     raise SystemExit("TF-WI-0063 no-return primitive contract missing")
