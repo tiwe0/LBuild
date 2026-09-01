@@ -146,7 +146,15 @@
       ;; every symbol/string reachable from the name; serialize their fref and
       ;; concrete function body directly.
       (if (eql name 'mezzano.supervisor::*arm64-exception-vector-base*)
-          (ser:serialize-object symbol image environment))
+          (progn
+            (ser:serialize-object symbol image environment)
+            ;; SYMBOL serialization deliberately avoids creating a missing
+            ;; global value cell.  This cell was created above when seeding
+            ;; the exception-vector base, so serialize it explicitly to make
+            ;; sure its initializer runs before FINALIZE-AREAS.
+            (ser:serialize-object
+             (env:symbol-global-value-cell environment symbol)
+             image environment)))
       (let ((fn (env:function-reference-function fref)))
         (when fn
           ;; kboot eagerly loads only wired pages before jumping to the image

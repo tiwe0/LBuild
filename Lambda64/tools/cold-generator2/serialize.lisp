@@ -438,7 +438,10 @@ Must not call SERIALIZE-OBJECT."))
                         (16 sys.int::+object-tag-array-unsigned-byte-16+)
                         (32 sys.int::+object-tag-array-unsigned-byte-32+)))
          (str (allocate 6 image area sys.int::+tag-object+))
-         (data (allocate (max 1 (ceiling (* (length object) element-size) 64))
+         ;; ALLOCATE counts the object header word as well as payload words.
+         ;; Reserve one extra word so the packed string data cannot overlap
+         ;; the next object in the area.
+         (data (allocate (1+ (max 1 (ceiling (* (length object) element-size) 64)))
                          image area sys.int::+tag-object+)))
     ;; String container.
     (initialize-object-header image str sys.int::+object-tag-simple-string+ 1)
