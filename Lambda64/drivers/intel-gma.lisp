@@ -252,6 +252,9 @@
 (defconstant +pipeconf-force-border+ (byte 1 25))
 (defconstant +pipeconf-display-disable+ (byte 1 19))
 (defconstant +pipeconf-cursor-disable+ (byte 1 18))
+(defconstant +pipeconf-interlace+ (byte 3 21))
+(defconstant +pipeconf-progressive+ 0)
+(defconstant +pipeconf-interlace-field-indication+ 6)
 ;; Fields in the DSP{A,B]CNTR registers.
 (defconstant +dspcntr-plane-enable+ (byte 1 31))
 (defconstant +dspcntr-gamma-enable+ (byte 1 30))
@@ -281,17 +284,88 @@
   vert-image-size
   interlaced
   stereo
-  ;; FIXME: Figure this out.
   sync-config)
+
+;; EDID detailed-timing sync configuration, flags byte bits 4:1.
+(defconstant +sync-config-type+ (byte 2 2))
+(defconstant +sync-config-analog-composite+ #b00)
+(defconstant +sync-config-bipolar-analog-composite+ #b01)
+(defconstant +sync-config-digital-composite+ #b10)
+(defconstant +sync-config-digital-separate+ #b11)
+(defconstant +sync-config-positive-vsync+ (byte 1 1))
+(defconstant +sync-config-positive-hsync+ (byte 1 0))
+
+(defun make-separate-sync-config (positive-vsync-p positive-hsync-p)
+  (logior (dpb +sync-config-digital-separate+ +sync-config-type+ 0)
+          (dpb (if positive-vsync-p 1 0) +sync-config-positive-vsync+ 0)
+          (dpb (if positive-hsync-p 1 0) +sync-config-positive-hsync+ 0)))
+
+(defun sync-config-positive-vsync-p (sync-config)
+  (logbitp (byte-position +sync-config-positive-vsync+) sync-config))
+
+(defun sync-config-positive-hsync-p (sync-config)
+  (logbitp (byte-position +sync-config-positive-hsync+) sync-config))
+
+(defun separate-sync-config-p (sync-config)
+  (= (ldb +sync-config-type+ sync-config) +sync-config-digital-separate+))
 
 (defun timing-refresh-rate (timing)
   (round (timing-pixel-clock timing)
-         (* (+ (timing-horz-sync timing)
+         (* (+ (timing-horz-left-border timing)
+               (timing-horz-active timing)
+               (timing-horz-right-border timing)
+               (timing-horz-sync timing)
                (timing-horz-back-porch timing)
                (timing-horz-front-porch timing))
-            (+ (timing-vert-sync timing)
+            (+ (timing-vert-top-border timing)
+               (timing-vert-active timing)
+               (timing-vert-bottom-border timing)
+               (timing-vert-sync timing)
                (timing-vert-back-porch timing)
                (timing-vert-front-porch timing)))))
+
+(defun validate-gma-timing (timing)
+  (unless (separate-sync-config-p (timing-sync-config timing))
+    (error "GMA analog output requires separate horizontal/vertical sync."))
+  (when (timing-stereo timing)
+    (error "GMA 950 display pipes do not support EDID stereo modes."))
+  timing)
+
+(defun adpa-with-timing-sync (adpa timing)
+  (let ((sync-config (timing-sync-config timing)))
+    (unless (separate-sync-config-p sync-config)
+      (error "ADPA cannot encode sync configuration #x~X." sync-config))
+    (setf (ldb +adpa-vsync-polarity+ adpa)
+          (if (sync-config-positive-vsync-p sync-config) 1 0)
+          (ldb +adpa-hsync-polarity+ adpa)
+          (if (sync-config-positive-hsync-p sync-config) 1 0))
+    adpa))
+
+(defun pipeconf-with-timing-scan (pipeconf timing)
+  (setf (ldb +pipeconf-interlace+ pipeconf)
+        (if (timing-interlaced timing)
+            +pipeconf-interlace-field-indication+
+            +pipeconf-progressive+))
+  pipeconf)
+
+(defun wait-for-vblank-transitions (read-scanline count &optional (poll-limit 200000))
+  "Wait for COUNT scanline-counter wraps, or signal on a stalled pipe."
+  (check-type count (integer 0))
+  (check-type poll-limit (integer 1))
+  (when (plusp count)
+    (let ((previous (funcall read-scanline))
+          (wraps 0))
+      (loop repeat poll-limit
+            for current = (funcall read-scanline)
+            do (when (< current previous)
+                 (incf wraps)
+                 (when (= wraps count)
+                   (return-from wait-for-vblank-transitions t)))
+               (setf previous current)
+               (sleep 0.00001))
+      (error "Display pipe did not complete ~D vertical blank transitions."
+             count)))
+  t)
 
 (defmacro with-gma-access ((device) &body body)
   `(sup:with-device-access ((pci:pci-device-boot-id (gma-device ,device))
@@ -303,6 +377,8 @@
   (logand (pci:pci-io-region (gma-device device) +pci-bar-gmadr+) (lognot #xF)))
 
 (defconstant +reference-frequency+ 96000000)
+(defconstant +maximum-dot-clock-error+ 0.005
+  "Maximum fractional error accepted for a generated pixel clock.")
 
 (defun pll-parameters-to-dot-clock (n m1 m2 p1 p2 &key (refclk +reference-frequency+))
   (let* ((p1 (ecase p1
@@ -324,6 +400,7 @@
 (defun compute-pll-parameters (target-clock)
   "Calculate the best PLL paramters for TARGET-CLOCK.
 Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
+  (check-type target-clock (real (0)))
   (let ((best-clock 0)
         (best-n 0) (best-m1 0) (best-m2 0)
         ;; p1 raw value, not register value
@@ -358,9 +435,12 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
                                     best-m1 m1
                                     best-m2 m2
                                     best-p1 p1)))))))
-    (let ((error (float (abs (- 1 (/ target-clock best-clock))))))
-      ;; TODO: This should bail if the error is too great. It's not clear
-      ;; what "too great" is though.
+    (when (zerop best-clock)
+      (error "No valid GMA PLL parameters for dot clock ~DHz." target-clock))
+    (let ((error (float (/ (abs (- target-clock best-clock)) target-clock))))
+      (when (> error +maximum-dot-clock-error+)
+        (error "Best GMA PLL dot clock for ~DHz is ~DHz (~,3F%% error)."
+               target-clock (truncate best-clock) (* error 100)))
       (values best-n best-m1 best-m2
               (ash 1 (1- best-p1)) ; Convert to register value.
               #b00 ; p2 register value
@@ -375,6 +455,8 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
                (pci:pci-io-region/32 mmio idx)))
         (let* ((dplla-ctrl (reg +dplla-ctrl+))
                (fpa0 (reg +fpa0+))
+               (pipeaconf (reg +pipeaconf+))
+               (adpa (reg +adpa+))
                (htotal-a (reg +htotal-a+))
                (hblank-a (reg +hblank-a+))
                (hsync-a (reg +hsync-a+))
@@ -412,14 +494,18 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
            :vert-back-porch (- (1+ (ldb +vblank-end+ vblank-a))
                                (1+ (ldb +vsync-end+ vsync-a)))
            :vert-image-size (truncate (* (/ (1+ (ldb +vtotal-active+ vtotal-a)) 72) 25.4)) ; Assume 72dpi
-           ;; TODO: Pick up interlaced modes
-           :interlaced nil
-           ;; TODO: Pick up stereo modes
+           :interlaced (not (= (ldb +pipeconf-interlace+ pipeaconf)
+                               +pipeconf-progressive+))
+           ;; Stereo modes are rejected by MODE-SWITCH because this generation
+           ;; has no corresponding display-pipe programming mode.
            :stereo nil
-           ;; TODO: Sync...
-           :sync-config 15)))))) ; Digital, serrated +vsync, +hsync.
+           :sync-config
+           (make-separate-sync-config
+            (not (zerop (ldb +adpa-vsync-polarity+ adpa)))
+            (not (zerop (ldb +adpa-hsync-polarity+ adpa))))))))))
 
 (defun mode-switch (device mode)
+  (validate-gma-timing mode)
   (with-gma-access (device)
     ;; Update the video framebuffer.
     ;; Do this first so that the compositor updates display before
@@ -448,13 +534,14 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
               (ldb +dspcntr-plane-enable+ (reg +dspacntr+)) 0
               (reg +dspasurf+) 0
               (reg +dspalinoff+) 0)
+        ;; Let the disabled plane drain for two complete display frames before
+        ;; stopping the pipe and its clock.
+        (wait-for-vblank-transitions
+         (lambda () (ldb (byte 13 0) (reg +pipea-dsl+))) 2)
         ;; Disable pipe [pipeline, timings]
         (setf (ldb +pipeconf-enable+ (reg +pipeaconf+)) 0)
         ;; Disable VGA display [vgacntrl]
         (setf (ldb (byte 1 31) (reg +vgacntrl+)) 1)
-        ;; FIXME: There should be a delay between disabling the pipe and disabling
-        ;; the DPLL. Wait for a VBLANK or two.
-        (sleep 0.1)
         ;; Disable DPLL
         (setf (ldb +dpll-vco-enable+ (reg +dplla-ctrl+)) 0)
         ;; Program new mode and enable.
@@ -470,7 +557,7 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
         (setf (ldb +dpll-vco-enable+ (reg +dplla-ctrl+)) 1)
         ;; Wait for DPLL warmup (150us)
         (sleep 0.00015)
-        ;; TODO: Set sync polarity, etc
+        (setf (reg +adpa+) (adpa-with-timing-sync (reg +adpa+) mode))
         ;; Program pipe timings (can be done before DPLL setup)
         (setf (ldb +htotal-active+ (reg +htotal-a+))
               (1- (timing-horz-active mode)))
@@ -529,7 +616,9 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
         ;; Enable pipe
         (setf (ldb +pipesrc-horz+ (reg +pipeasrc+)) (1- (timing-horz-active mode))
               (ldb +pipesrc-vert+ (reg +pipeasrc+)) (1- (timing-vert-active mode)))
-        (setf (ldb +pipeconf-enable+ (reg +pipeaconf+)) 1)
+        (setf (reg +pipeaconf+)
+              (pipeconf-with-timing-scan (reg +pipeaconf+) mode)
+              (ldb +pipeconf-enable+ (reg +pipeaconf+)) 1)
         ;; Enable planes
         (setf (reg +dspastride+) (* (timing-horz-active mode) 4)
               (reg +dspasurf+) 0
@@ -925,6 +1014,7 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
   year-of-manufacture
   horizontal-screen-size
   vertical-screen-size
+  screen-aspect-ratio
   display-gamma
   display-type
   srgb-colour-space
@@ -934,72 +1024,130 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
 
 (defun decode-edid-established-timings (edid)
   (let ((timings '()))
-    (flet ((add (byte bit width height pixel-clock hsync hbporch hactive hfporch vsync vbporch vactive vfporch)
+    (flet ((add (byte bit width height pixel-clock
+                      hfporch hsync hbporch vfporch vsync vbporch
+                      positive-vsync-p positive-hsync-p &optional interlaced)
              (when (logbitp bit (aref edid byte))
                (push (make-timing
                       :pixel-clock pixel-clock
-                      :horz-left-border (floor (- hactive width) 2)
+                      :horz-left-border 0
                       :horz-active width
-                      :horz-right-border (ceiling (- hactive width) 2)
+                      :horz-right-border 0
                       :horz-back-porch hbporch
                       :horz-sync hsync
                       :horz-front-porch hfporch
                       :horz-image-size (truncate (* (/ width 72) 25.4)) ; Assume 72dpi
-                      :vert-top-border (floor (- vactive height) 2)
+                      :vert-top-border 0
                       :vert-active height
-                      :vert-bottom-border (ceiling (- vactive height) 2)
+                      :vert-bottom-border 0
                       :vert-back-porch vbporch
                       :vert-sync vsync
                       :vert-front-porch vfporch
                       :vert-image-size (truncate (* (/ height 72) 25.4))
+                      :interlaced interlaced
                       :stereo nil
-                      ;; Digital, serrated +vsync, +hsync.
-                      :sync-config 15)
+                      :sync-config
+                      (make-separate-sync-config positive-vsync-p
+                                                 positive-hsync-p))
                      timings))))
-      ;; TODO: Double check these timings, make sure sync polarity is right, etc.
-      (add 35 7  720  400  28322000  108  51  726 15  2 32 404 11) ; (VGA) 720x400@70
-      ;;(add 35 6  720  400 ...) ; (XGA) 720x400@88
-      (add 35 5  640  480  25175000   96  48  640 16  2 31 480 11) ; (VGA) 640x480@60
-      (add 35 4  640  480  30240000   64  93  646 61  3 37 484  1) ; (Apple Macintosh II) 640x480@66
-      (add 35 3  640  480  31500000   40 128  640 24  3 28 480  9) ; 640x480@72
-      (add 35 2  640  480  31500000   96  48  640 16  2 32 480 11) ; 640x480@75
-      (add 35 1  800  600  38100000  128 128  800 32  4 14 600  1) ; 800x600@56
-      (add 35 0  800  600  40000000  128  88  800 40  4 23 600  1) ; 800x600@60
-      (add 36 7  800  600  50000000  120  64  800 56  6 23 600 37) ; 600x600@72
-      (add 36 6  800  600  49500000   80 160  800 16  2 21 600  1) ; 800x600@75
-      ;;(add 36 5  832  624 ...) ; (Apple Macintosh II) 832x642@75
-      ;;(add 36 4 1024  768 ...) ; (1024×768i) 1024x768@87 interlaced
-      (add 36 3 1024  768  65000000  136 160 1024 24  6 29 768 3) ; 1024x768@60
-      ;;(add 36 2 1024  768 ...) ; 1024x768@70 [this uses -h-v sync]
-      (add 36 1 1024  768  78750000   96 176 1024 16  3 28 768 1) ; 1024x768@75
-      (add 36 0 1280 1024 135000000  144 248 1280 16  3 38 1024 1) ; 1280x1024@75
-      ;;(add 37 7 1152  870 ...) ; (Apple Macintosh II) 1152x870@75
-      timings)))
+      (add 35 7  720  400  28320000 18 108 54 12 2 35 t nil)
+      (add 35 6  720  400  35500000 18 108 54 21 2 26 nil nil)
+      (add 35 5  640  480  25175000 16  96 48 10 2 33 nil nil)
+      (add 35 4  640  480  30240000 64  64 96 3 3 39 nil nil)
+      (add 35 3  640  480  31500000 24  40 128 9 3 28 nil nil)
+      (add 35 2  640  480  31500000 16  64 120 1 3 16 nil nil)
+      (add 35 1  800  600  36000000 24  72 128 1 2 22 t t)
+      (add 35 0  800  600  40000000 40 128 88 1 4 23 t t)
+      (add 36 7  800  600  50000000 56 120 64 37 6 23 t t)
+      (add 36 6  800  600  49500000 16  80 160 1 3 21 t t)
+      (add 36 5  832  624  57284000 32  64 224 1 3 39 nil nil)
+      (add 36 4 1024  768  44900000 8 176 56 0 8 41 t t t)
+      (add 36 3 1024  768  65000000 24 136 160 3 6 29 nil nil)
+      (add 36 2 1024  768  75000000 24 136 144 3 6 29 nil nil)
+      (add 36 1 1024  768  78750000 16  96 176 1 3 28 t t)
+      (add 36 0 1280 1024 135000000 16 144 248 1 3 38 t t)
+      (add 37 7 1152  870 100000000 32 128 144 1 3 41 t t)
+      (nreverse timings))))
+
+(defun make-gtf-timing (width height refresh-rate aspect-ratio)
+  "Generate a non-interlaced VESA GTF timing using the standard defaults."
+  (declare (ignore aspect-ratio))
+  (check-type width (integer 8))
+  (check-type height (integer 1))
+  (check-type refresh-rate (real (0)))
+  (let* ((cell-granularity 8)
+         (horizontal-pixels (* (round width cell-granularity)
+                               cell-granularity))
+         (minimum-vsync-back-porch 550) ; microseconds
+         (vertical-front-porch 1)
+         (estimated-horizontal-period
+           (/ (- (/ 1000000 refresh-rate) minimum-vsync-back-porch)
+              (+ height vertical-front-porch)))
+         (vsync 3)
+         (vsync-back-porch
+           (max (+ vsync 1)
+                (round minimum-vsync-back-porch
+                       estimated-horizontal-period)))
+         (total-vertical-lines (+ height vertical-front-porch
+                                  vsync-back-porch))
+         (estimated-field-rate
+           (/ 1000000 (* estimated-horizontal-period total-vertical-lines)))
+         (horizontal-period
+           (* estimated-horizontal-period (/ estimated-field-rate refresh-rate)))
+         ;; GTF default constants after applying K=128 and J=20.
+         (ideal-duty-cycle (- 30 (/ (* 300 horizontal-period) 1000)))
+         (horizontal-blank
+           (* (round (/ (* horizontal-pixels ideal-duty-cycle)
+                        (* (- 100 ideal-duty-cycle)
+                           (* 2 cell-granularity))))
+              (* 2 cell-granularity)))
+         (total-horizontal-pixels (+ horizontal-pixels horizontal-blank))
+         (hsync (* (round (/ (* total-horizontal-pixels 8/100)
+                              cell-granularity))
+                   cell-granularity))
+         (horizontal-front-porch (- (/ horizontal-blank 2) hsync))
+         (horizontal-back-porch (/ horizontal-blank 2))
+         (pixel-clock (round (* 1000000 (/ total-horizontal-pixels
+                                           horizontal-period)))))
+    (make-timing
+     :pixel-clock pixel-clock
+     :horz-left-border 0 :horz-active horizontal-pixels :horz-right-border 0
+     :horz-front-porch horizontal-front-porch :horz-sync hsync
+     :horz-back-porch horizontal-back-porch
+     :horz-image-size (truncate (* (/ horizontal-pixels 72) 25.4))
+     :vert-top-border 0 :vert-active height :vert-bottom-border 0
+     :vert-front-porch vertical-front-porch :vert-sync vsync
+     :vert-back-porch (- vsync-back-porch vsync)
+     :vert-image-size (truncate (* (/ height 72) 25.4))
+     :interlaced nil :stereo nil
+     :sync-config (make-separate-sync-config t nil))))
 
 (defun decode-edid-standard-timings (edid)
-  ;; TODO: Decoding these timing requires using the VESA GTF
-  ;; to produce detailed timing information.
-  ;; Just ignore them for now.
-  (declare (ignore edid))
-  '()
-  #+(or)
   (loop
      for i below 8
      for byte1 = (aref edid (+ 38 (* i 2)))
      for byte2 = (aref edid (+ 38 (* i 2) 1))
      unless (and (eql byte1 #x01) (eql byte2 #x01))
      collect (let* ((width (* (+ byte1 31) 8))
-                    (height (truncate
-                             width
-                             ;; Decode aspect ratio
-                             (ecase (ldb (byte 2 6) byte2)
-                               (#b00 16/10)
-                               (#b01 4/3)
-                               (#b10 5/4)
-                               (#b11 16/9)))))
-               (make-timing :width width
-                            :height height
-                            :refresh-rate (+ (ldb (byte 6 0) byte2) 60)))))
+                    (aspect-ratio (ecase (ldb (byte 2 6) byte2)
+                                    (#b00 16/10)
+                                    (#b01 4/3)
+                                    (#b10 5/4)
+                                    (#b11 16/9)))
+                    (height (round width aspect-ratio))
+                    (refresh-rate (+ (ldb (byte 6 0) byte2) 60)))
+               (make-gtf-timing width height refresh-rate aspect-ratio))))
+
+(defun decode-edid-stereo (flags)
+  (case (logior (ash (ldb (byte 2 5) flags) 1)
+                (ldb (byte 1 0) flags))
+    ((#b000 #b001) nil)
+    (#b010 :field-sequential-right)
+    (#b011 :field-sequential-left)
+    (#b100 :2-way-interleaved-right)
+    (#b101 :2-way-interleaved-left)
+    (#b110 :4-way-interleaved)
+    (#b111 :side-by-side-interleaved)))
 
 (defun decode-edid-detailed-timing (edid offset)
   (let ((pixel-clock (* (mezzano.internals::ub16ref/le edid (+ offset 0)) 10000))
@@ -1043,16 +1191,7 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
      :vert-front-porch vfporch
      :vert-image-size vsize
      :interlaced (logbitp 7 flags)
-     :stereo (if (zerop (ldb (byte 2 5) flags))
-                 nil
-                 (ecase (logior (ash (ldb (byte 2 5) flags) 1)
-                                (ldb (byte 1 0) flags))
-                   (#b010 :field-sequential-right)
-                   (#b110 :field-sequential-left)
-                   (#b011 :2-way-interleaved-right)
-                   (#b101 :2-way-interleaved-left)
-                   (#b110 :4-way-interleaved)
-                   (#b111 :side-by-side-interleaved)))
+     :stereo (decode-edid-stereo flags)
      :sync-config (ldb (byte 4 1) flags))))
 
 (defun decode-edid-detailed-timings (edid)
@@ -1064,6 +1203,18 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
      when (not (and (zerop (aref edid offset))
                          (zerop (aref edid (+ offset 1)))))
      collect (decode-edid-detailed-timing edid offset)))
+
+(defun decode-edid-screen-geometry (horizontal-size vertical-size)
+  "Decode EDID physical size bytes, including the aspect-only encodings."
+  (cond ((and (zerop horizontal-size) (zerop vertical-size))
+         (values nil nil nil))
+        ((zerop vertical-size)
+         (values nil nil (/ (+ horizontal-size 99) 100)))
+        ((zerop horizontal-size)
+         (values nil nil (/ 100 (+ vertical-size 99))))
+        (t
+         (values horizontal-size vertical-size
+                 (/ horizontal-size vertical-size)))))
 
 (defun decode-raw-edid (edid)
   ;; Verify header and checksum.
@@ -1083,15 +1234,17 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
     (warn "Unsupported EDID version ~D.~D"
           (aref edid 18) (aref edid 19)))
   (let ((detailed-timings (decode-edid-detailed-timings edid)))
-    (make-edid-data
+    (multiple-value-bind (horizontal-size vertical-size aspect-ratio)
+        (decode-edid-screen-geometry (aref edid 21) (aref edid 22))
+      (make-edid-data
      :manufacturer-id (mezzano.internals::ub16ref/be edid 8)
      :product-code (mezzano.internals::ub16ref/le edid 10)
      :serial-number (mezzano.internals::ub32ref/le edid 12)
      :week-of-manufacture (aref edid 16)
      :year-of-manufacture (+ 1990 (aref edid 17))
-     ;; TODO: These two can be zero indicating an aspect ratio.
-     :horizontal-screen-size (aref edid 21)
-     :vertical-screen-size (aref edid 22)
+     :horizontal-screen-size horizontal-size
+     :vertical-screen-size vertical-size
+     :screen-aspect-ratio aspect-ratio
      :display-gamma (/ (+ (aref edid 23) 100) 100.0)
      :display-type (if (logbitp 7 (aref edid 20))
                        ;; Digital display
@@ -1127,7 +1280,7 @@ Returns the N, M1, M2, P1, P2, and the actual dot clock frequency."
      :timing-modes (append
                     detailed-timings
                     (decode-edid-established-timings edid)
-                    (decode-edid-standard-timings edid)))))
+                    (decode-edid-standard-timings edid))))))
 
 (defun intel-gma-probe (pci-device)
   (format t "Detected intel-gma at ~S~%" pci-device)
