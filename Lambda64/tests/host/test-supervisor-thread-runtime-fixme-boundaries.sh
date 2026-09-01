@@ -15,6 +15,7 @@ thread_path = root / "supervisor/thread.lisp"
 runtime_path = root / "system/runtime-support.lisp"
 thread = thread_path.read_text(encoding="utf-8")
 runtime = runtime_path.read_text(encoding="utf-8")
+sync = (root / "supervisor/sync.lisp").read_text(encoding="utf-8")
 x86_thread = (root / "supervisor/x86-64/thread.lisp").read_text(encoding="utf-8")
 arm64_thread = (root / "supervisor/arm64/thread.lisp").read_text(encoding="utf-8")
 if mutate:
@@ -62,6 +63,15 @@ for reg in ("q0", "q2", "q16", "q30"):
 cleanup = thread[thread.index("(defun thread-final-cleanup"):]
 if cleanup.index("(setf (event-state") > cleanup.index("(acquire-global-thread-lock"):
     raise SystemExit("thread cleanup lock-order boundary changed")
+# `event-state` wakes threads while holding the big wait-object lock and a
+# wait-queue lock; wake-thread then acquires the global thread lock.  Taking
+# the global lock first in cleanup would therefore invert this established
+# order and can deadlock on SMP.
+event_setter = sync[sync.index("(defun (setf event-state)"):]
+if event_setter.find("with-place-spinlock (*big-wait-for-objects-lock*)") < 0:
+    raise SystemExit("event-state lock graph lost big wait-object lock")
+if event_setter.find("with-wait-queue-lock") < 0 or event_setter.find("wake-thread") < 0:
+    raise SystemExit("event-state must wake waiters under wait-queue lock")
 
 required_runtime = (
     "FREF should be locked for the duration",
