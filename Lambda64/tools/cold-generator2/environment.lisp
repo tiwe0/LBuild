@@ -2,6 +2,7 @@
   (:use :cl)
   (:shadow #:intern #:make-array #:make-symbol)
   (:export #:make-standard-environment
+           #:host-make-standard-environment
            #:environment
            #:environment-target
            #:add-special
@@ -12,6 +13,7 @@
            #:make-array
            #:cross-array-element-type
            #:intern
+           #:cross-intern
            #:make-symbol
            #:translate-symbol
            #:cross-symbol-value
@@ -50,6 +52,7 @@
            #:find-structure-definition
            #:structure-definition
            #:structure-definition-name
+           #:host-structure-definition-name
            #:structure-definition-slots
            #:structure-definition-parent
            #:structure-definition-area
@@ -102,7 +105,7 @@
 
 (in-package :mezzano.cold-generator.environment)
 
-;; FIXME: The names in this package could really do with some work.
+;; The API exposes explicit host-/cross- aliases; legacy names remain for compatibility.
 ;; There are 3 broad classes of functions here:
 ;; * Functions that operate on host objects.
 ;;   (MAKE-STANDARD-ENVIRONMENT, STRUCTURE-DEFINITION-NAME)
@@ -227,6 +230,10 @@
 (defmethod print-object ((object structure-definition) stream)
   (print-unreadable-object (object stream :type t :identity t)
     (format stream "~S" (structure-definition-name object))))
+
+(defun host-structure-definition-name (definition)
+  "Explicit host-object spelling for STRUCTURE-DEFINITION-NAME."
+  (structure-definition-name definition))
 
 (defun find-structure-definition (environment name &optional (errorp t))
   (check-type name symbol)
@@ -372,6 +379,10 @@
     (setf (cross-symbol-value env 't) 't)
     env))
 
+(defun host-make-standard-environment (&rest initargs)
+  "Explicit host-side spelling for MAKE-STANDARD-ENVIRONMENT."
+  (apply #'make-standard-environment initargs))
+
 (defgeneric object-area (environment object))
 
 (defmethod object-area (environment object)
@@ -498,6 +509,10 @@
               (gethash symbol (environment-symbol-package-table environment)) pkg-keyword
               (gethash (symbol-name symbol) (environment-object-area-table environment)) :wired))
       symbol)))
+
+(defun cross-intern (environment name package)
+  "Explicit cross-environment spelling for INTERN."
+  (intern environment name package))
 
 (defun function-boundp (environment name)
   (slot-boundp (function-reference environment name) '%function))

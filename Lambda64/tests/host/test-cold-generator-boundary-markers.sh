@@ -16,7 +16,9 @@ assert 'TODO: Turn this into a direct named call.' in x86
 assert 'FIXME: Source locations for these are lost.' in classes
 assert "FIXME: This doesn't quite work with large bytes." in classes
 assert 'FIXME: Need to include an initfunction' in clos
-assert 'FIXME: Should be weak, but how to deal with complex keys?' in environment
+assert 'defun host-make-standard-environment' in environment
+assert 'defun cross-intern' in environment
+assert 'defun host-structure-definition-name' in environment
 assert ':test' in environment and ':weakness :key' in environment
 assert 'drain-initialization-queue' in serialize
 assert 'deterministic package/name order' in serialize
