@@ -510,7 +510,7 @@
 
 (defmethod emit-lap (backend-function (instruction ir:swap-instruction) uses defs)
   (let ((temporary-slot (gethash instruction *prepass-data*)))
-    (assert (integerp temporary-slot) ()
+    (assert (and (integerp temporary-slot) (<= 0 temporary-slot)) ()
             "Missing prepass slot for ARM64 register swap.")
   (let ((lhs (ir:swap-lhs instruction))
         (rhs (ir:swap-rhs instruction)))
