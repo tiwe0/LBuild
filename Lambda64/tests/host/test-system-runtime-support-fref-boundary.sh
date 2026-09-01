@@ -9,8 +9,18 @@ python3 - "$source_file" "$mutation" <<'PY'
 from pathlib import Path
 import sys
 
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
+source_path = Path(sys.argv[1])
+source = source_path.read_text(encoding="utf-8")
 mutation = sys.argv[2]
+# The four-slot FREF ABI is consumed by runtime assembly and GC; a lock/state
+# slot cannot be added implicitly without changing these fixed offsets.
+data_types = (source_path.parent / "data-types.lisp").read_text(encoding="utf-8")
+for name, value in (("+fref-undefined-entry-point+", "0"),
+                    ("+fref-name+", "1"),
+                    ("+fref-function+", "2"),
+                    ("+fref-code+", "3")):
+    if f"(defconstant {name} {value})" not in data_types:
+        raise SystemExit(f"FREF ABI offset changed: {name}")
 # The setter's publication contract depends on both architecture activation
 # helpers remaining present; removing either helper invalidates this boundary.
 for helper in ("%activate-function-reference-full-path", "%activate-function-reference-fast-path"):
