@@ -54,7 +54,6 @@ form = source[start:end]
 if mutation:
     replacements = {
         "lock": "FIXME: FREF should be locked for the duration",
-        "fence": "FIXME: Fences.",
         "cpu": "FIXME: Cross-CPU synchronization.",
     }
     marker = replacements.get(mutation, "")
@@ -63,12 +62,13 @@ if mutation:
 
 markers = (
     "FIXME: FREF should be locked for the duration",
-    "FIXME: Fences.",
     "FIXME: Cross-CPU synchronization.",
 )
 for marker in markers:
     if marker not in form:
         raise SystemExit(f"missing function-reference publication marker: {marker}")
+if form.count("sys.int::dma-write-barrier") != 3:
+    raise SystemExit("function-reference setter must fence each publication branch")
 
 # Each setter branch must publish its target independently.  Counting the
 # writes prevents a branch-local publication from being silently dropped while
@@ -92,7 +92,7 @@ for branch in ("((not value)", "((%object-of-type-p value", "(t"):
 print("runtime-support function-reference boundary contract passed (mutation-aware)")
 PY
 if [[ -z "$mutation" ]]; then
-  for marker in lock fence cpu; do
+  for marker in lock cpu; do
     if RUNTIME_FREF_MUTATION_RUN=1 RUNTIME_SUPPORT_FREF_MUTATION_RUN="$marker" bash "$0" >/dev/null 2>&1; then
       echo "function-reference marker mutation unexpectedly survived: $marker" >&2
       exit 1

@@ -743,12 +743,14 @@ VALUE may be nil to make the fref unbound."
   (check-type value (or function null))
   (check-type fref function-reference)
   ;; FIXME: FREF should be locked for the duration.
-  ;; FIXME: Fences.
+  ;; The architecture-specific DMA barrier orders the target publication before
+  ;; dispatch-byte activation; cross-CPU synchronization remains unresolved.
   ;; FIXME: Cross-CPU synchronization.
   (cond
     ((not value)
      ;; Making it unbound.
      (setf (%object-ref-t fref +fref-function+) fref)
+     (sys.int::dma-write-barrier)
      (%activate-function-reference-full-path fref))
     ((%object-of-type-p value +object-tag-function+)
      ;; Plain function, use the fast path.
@@ -756,11 +758,13 @@ VALUE may be nil to make the fref unbound."
      ;; the function live for the duration. We return value
      ;; so all is ok.
      (setf (%object-ref-t fref +fref-function+) value)
+     (sys.int::dma-write-barrier)
      (%activate-function-reference-fast-path
       fref (%object-ref-unsigned-byte-64 value +function-entry-point+)))
     (t
      ;; Bound to an unusual function. Full path.
      (setf (%object-ref-t fref +fref-function+) value)
+     (sys.int::dma-write-barrier)
      (%activate-function-reference-full-path fref)))
   value)
 
