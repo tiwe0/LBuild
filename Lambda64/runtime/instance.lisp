@@ -242,30 +242,38 @@
     new-layout))
 
 (defun supersede-instance (old-instance replacement)
-  (let ((layout (sys.int::%instance-layout old-instance)))
-    (cond ((null (sys.int::layout-new-instance layout))
-           ;; Hasn't been superseded before, we need to replace the layout
-           ;; so it's not shared.
-           (let ((new-layout (copy-layout-with-appropriate-area layout)))
-             (setf (sys.int::layout-new-instance new-layout) replacement)
-             (with-live-objects (new-layout)
-               ;; ###: Should this be a CAS?
-               (setf (sys.int::%object-ref-unsigned-byte-64 old-instance -1)
-                     ;; Construct a new obsolete-instance header containing
-                     ;; our new obsolete layout.
-                     (logior (ash (sys.int::lisp-object-address new-layout)
-                                  sys.int::+object-data-shift+)
-                             (if (sys.int::funcallable-instance-p old-instance)
-                                 (ash sys.int::+object-tag-funcallable-instance+
-                                      sys.int::+object-type-shift+)
-                                 (ash sys.int::+object-tag-instance+
-                                      sys.int::+object-type-shift+)))))))
-          (t
-           ;; This instance has already been superseded, replace it in-place.
-           ;; FIXME: Can race with the GC. It can snap the old instance away
-           ;; from underneath us, losing the replacement.
-           ;; Check if the old instance's layout matches after this?
-           (setf (sys.int::layout-new-instance layout) replacement))))
+  ;; Publish a replacement with atomic transitions so GC and concurrent
+  ;; obsolete-instance updates cannot lose a newer layout or replacement.
+  (loop
+    for layout = (sys.int::%instance-layout old-instance)
+    do (cond
+         ((null (sys.int::layout-new-instance layout))
+          ;; Freshly allocated instances share their class layout.  Copy it
+          ;; before publishing the obsolete header, then CAS the header so a
+          ;; concurrent GC/CHANG-CLASS transition forces a retry.
+          (let ((new-layout (copy-layout-with-appropriate-area layout)))
+            (setf (sys.int::layout-new-instance new-layout) replacement)
+            (with-live-objects (new-layout)
+              (let ((old-header (sys.int::%object-ref-unsigned-byte-64
+                                 old-instance -1))
+                    (new-header (logior
+                                 (ash (sys.int::lisp-object-address new-layout)
+                                      sys.int::+object-data-shift+)
+                                 (if (sys.int::funcallable-instance-p old-instance)
+                                     (ash sys.int::+object-tag-funcallable-instance+
+                                          sys.int::+object-type-shift+)
+                                     (ash sys.int::+object-tag-instance+
+                                          sys.int::+object-type-shift+)))))
+                (when (sys.int::cas
+                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)
+                       old-header new-header)
+                  (return))))))
+         (t
+          ;; Already-obsolete instances update the private replacement slot.
+          ;; CAS makes a racing updater retry instead of overwriting it.
+          (when (sys.int::cas (sys.int::layout-new-instance layout)
+                              nil replacement)
+            (return))))
   (values))
 
 (in-package :mezzano.internals)
