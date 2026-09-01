@@ -10,7 +10,6 @@ checks={
  '0021':('compiler/backend/canon.lisp','TODO: Insert debug variable updates where needed.'),
  '0025':('compiler/backend/instructions.lisp','TODO: Support arbitrary environments.'),
  '0029':('compiler/backend/ssa.lisp',"FIXME: The CFG doesn't quite represent NLX regions correctly"),
- '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
 }
 for ident,(rel,marker) in checks.items():
  src=(root/rel).read_text()
@@ -54,6 +53,7 @@ resolved={
  '0041':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
  '0014':('compiler/backend/arm64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
  '0009':('compiler/backend/arm64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
+ '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
 }
 for ident,(rel,legacy_marker) in resolved.items():
  src=(root/rel).read_text()

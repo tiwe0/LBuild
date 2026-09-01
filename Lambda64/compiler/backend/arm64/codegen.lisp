@@ -13,6 +13,7 @@
 (defvar *labels*)
 (defvar *literals*)
 (defvar *literals/128*)
+(defvar *jump-tables*)
 
 (defun resolve-label (label)
   (or (gethash label *labels*)
@@ -240,6 +241,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
                 (t
                  (lap-prepass backend-function inst-or-label uses defs))))
         (let ((*emitted-lap* '())
+              (*jump-tables* '())
               (*callee-save-loc* (loop for reg in uses-callee-save-regs
                                        collect (cons reg (allocate-stack-slots 1))))
               (*current-frame-layout* (coerce (loop
@@ -288,6 +290,13 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
                          (emit-gc-info :multiple-values 0)
                          (emit-gc-info)))
                    (emit-lap backend-function inst-or-label uses defs))))
+          ;; Emit NLX dispatch tables after the function body so they do not
+          ;; occupy the hot instruction stream. ADR remains valid as long as
+          ;; the assembler's architectural range check accepts the trailer.
+          (dolist (table (reverse *jump-tables*))
+            (emit (car table))
+            (dolist (target (cdr table))
+              (emit `(:d64/le (- ,(resolve-label target) ,(car table))))))
           (emit '(:align 16)
                 'literal-pool/128)
           (loop for value across *literals/128* do
@@ -952,8 +961,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
 
 (defmethod emit-lap (backend-function (instruction ir:begin-nlx-instruction) uses defs)
   (let ((control-info (gethash instruction *prepass-data*))
-        (jump-table (gensym))
-        (over (gensym)))
+        (jump-table (mezzano.lap:make-label)))
     ;; Construct jump info.
     (emit `(lap:adr :x9 ,jump-table))
     (emit-stack-store :x9 (+ control-info 3))
@@ -965,12 +973,9 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
     ;; Save in the environment.
     (load-literal :x9 (control-stack-frame-offset (+ control-info 3)))
     (emit `(lap:add ,(ir:nlx-context instruction) :x29 :x9))
-    ;; FIXME: Emit jump table as trailer.
-    (emit `(lap:b ,over)
-          jump-table)
-    (dolist (target (ir:begin-nlx-targets instruction))
-      (emit `(:d64/le (- ,(resolve-label target) ,jump-table))))
-    (emit over)))
+    ;; Keep NLX dispatch data out of the hot instruction stream. The table is
+    ;; emitted once as a trailer after all function instructions.
+    (push (cons jump-table (ir:begin-nlx-targets instruction)) *jump-tables*)))
 
 (defmethod emit-lap (backend-function (instruction ir:finish-nlx-instruction) uses defs)
   )
