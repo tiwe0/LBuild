@@ -10,7 +10,8 @@ assert 'FIXME: IRQ routing.' not in text
 start=text.index('(defun sup::virtio-mmio-fdt-register')
 body=text[start:text.index('(defun virtio-legacy-mmio-transport-kick', start)]
 for token in ('fdt-read-u32 interrupts 0', 'fdt-read-u32 interrupts 1',
-              '(0 32)', '(1 16)', 'unsupported FDT IRQ type'):
+              '(0 32)', '(1 16)', 'unsupported FDT IRQ type',
+              'return-from sup::virtio-mmio-fdt-register'):
     assert token in body, token
 # GIC global IRQ conversion contract: SPI IDs start at 32, PPI IDs at 16.
 def global_irq(kind, ident):

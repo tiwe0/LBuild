@@ -145,7 +145,10 @@
          (irq-base (case irq-type (0 32) (1 16) (otherwise nil))))
     (when (null irq-base)
       (sup:debug-print-line "virtio-mmio: unsupported FDT IRQ type " irq-type)
-      (return-from virtio-mmio-fdt-register nil))
+      ;; The function is interned in the SUP package; qualify the block name
+      ;; so RETURN-FROM targets the actual DEFUN name from this transport
+      ;; package (an unqualified symbol would be a different block).
+      (return-from sup::virtio-mmio-fdt-register nil))
     (virtio-mmio-register address (+ irq-base irq-id))))
 
 (defun virtio-legacy-mmio-transport-kick (dev vq-id)
