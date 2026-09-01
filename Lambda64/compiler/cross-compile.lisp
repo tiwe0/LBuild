@@ -752,12 +752,23 @@ This should only fill in the START- slots and ignore the END- slots.")
 (defun complex (realpart imagpart)
   (cond ((or (cross-support::cross-short-float-p realpart)
              (cross-support::cross-short-float-p imagpart))
-         ;; TODO: Promote as appropriate.
-         (assert (cross-support::cross-short-float-p realpart))
-         (assert (cross-support::cross-short-float-p imagpart))
-         (cross-support::make-cross-complex-short-float
-          :realpart realpart
-          :imagpart imagpart))
+         ;; Promote exact scalar zero/one components to target short-floats.
+         ;; Other host values require target rounding/exception rules that are
+         ;; intentionally not guessed during cross compilation.
+         (flet ((promote (part)
+                  (if (cross-support::cross-short-float-p part)
+                      part
+                      (case part
+                        ((0 0.0f0 0.0d0)
+                         (cross-support::make-cross-short-float :value #x0000))
+                        ((1 1.0f0 1.0d0)
+                         (cross-support::make-cross-short-float :value #x3C00))
+                        (t
+                         (error "Cannot promote ~S to target short-float during cross compilation."
+                                part))))))
+           (cross-support::make-cross-complex-short-float
+            :realpart (promote realpart)
+            :imagpart (promote imagpart))))
         (t
          (cl:complex realpart imagpart))))
 
