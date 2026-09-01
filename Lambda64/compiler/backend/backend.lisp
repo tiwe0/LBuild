@@ -22,8 +22,11 @@
   (lambda-information-name (ast backend-function)))
 
 (defclass backend-instruction ()
-  ((%next-instruction)
-   (%prev-instruction)))
+  ;; Instructions are often created before they are linked into a function.
+  ;; Give the links an explicit NIL state so debug/analysis passes can safely
+  ;; inspect an unlinked label instead of signalling UNBOUND-SLOT.
+  ((%next-instruction :initform nil)
+   (%prev-instruction :initform nil)))
 
 (defun first-instruction (function)
   (slot-value function '%first-instruction))
@@ -33,11 +36,17 @@
 
 (defun next-instruction (function instruction)
   (declare (ignore function))
-  (slot-value instruction '%next-instruction))
+  (and instruction
+       (if (slot-boundp instruction '%next-instruction)
+           (slot-value instruction '%next-instruction)
+           nil)))
 
 (defun prev-instruction (function instruction)
   (declare (ignore function))
-  (slot-value instruction '%prev-instruction))
+  (and instruction
+       (if (slot-boundp instruction '%prev-instruction)
+           (slot-value instruction '%prev-instruction)
+           nil)))
 
 (defun insert-before (function instruction new-instruction)
   (setf (slot-value new-instruction '%prev-instruction) (slot-value instruction '%prev-instruction)

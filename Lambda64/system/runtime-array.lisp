@@ -68,7 +68,10 @@
                ;(long-float             #.+object-tag-array-long-float+           128 t   0.0l0)
                ((complex single-float) #.+object-tag-array-complex-single-float+  64 t   #C(0.0f0 0.0f0))
                ((complex double-float) #.+object-tag-array-complex-double-float+ 128 t   #C(0.0d0 0.0d0))
-               ((complex short-float)  #.+object-tag-array-complex-short-float+   32 t   #C(0.0s0 0.0s0))
+               ;; Use an explicit constructor here.  During host bootstrap the
+               ;; reader represents SHORT-FLOAT values as cross-compiler
+               ;; objects, which the reader's #C REALP check cannot recognize.
+               ((complex short-float)  #.+object-tag-array-complex-short-float+   32 t   (complex 0.0s0 0.0s0))
                ;((complex long-float)   #.+object-tag-array-complex-long-float+   256 t   #C(0.0l0 0.0l0))
                (character)
                (t))

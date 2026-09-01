@@ -179,7 +179,7 @@ alongside keys accepted by the standard initialization protocol."
                            collect name)))
         (when invalid
           (error "Invalid initargs ~:S when creating instance of ~S (~S)"
-                 invalid class (class-name class)))))))
+                 invalid class (class-name class))))))
   initargs)
 
 (defmethod make-instance ((class structure-class) &rest initargs &key &allow-other-keys)

@@ -1700,10 +1700,10 @@ Additionally update the card table offset fields and clear the mark bits."
              (verify-generic object (1+ heap-size)))
              (heap-layout
               ;; Bit vector of slot boxedness.
-              (dotimes (i heap-size)
-                (when (eql (bit heap-layout i) 1)
-                  (verify-one (object-base-address object)
-                              (+ (object-base-address object) (* (1+ i) 8))))))))
+           (dotimes (i heap-size)
+               (when (eql (bit heap-layout i) 1)
+                 (verify-one (object-base-address object)
+                              (+ (object-base-address object) (* (1+ i) 8)))))))))
     (#.+object-tag-function-reference+
      ;; Only the first 4 words. The remaining words are code words.
      (verify-generic object 4))
@@ -2488,7 +2488,7 @@ No type information will be provided."
                      "Finalizer error: " condition))))
            ;; Leave the weak pointer completely empty: no references to any
            ;; other object remain after this invocation.
-           (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil))))
+           (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil)))))
 
 (defun fixup-tlabs ()
   (do ((thread mezzano.supervisor::*all-threads*

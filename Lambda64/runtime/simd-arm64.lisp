@@ -337,7 +337,7 @@
            (funcall #',%row-major-aref
                     ,@(loop for val in values collect `(,vector-type ,val))
                     storage
-                    (+ index offset))))))
+                    (+ index offset)))))))
 
 ;;; Generate aref accessors for the given type.
 

@@ -982,7 +982,13 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
     (emit `(lap:add ,(ir:nlx-context instruction) :x29 :x9))
     ;; Keep NLX dispatch data out of the hot instruction stream. The table is
     ;; emitted once as a trailer after all function instructions.
-    (push (cons jump-table (ir:begin-nlx-targets instruction)) *jump-tables*)))
+    ;; Dead-code elimination can leave a stale thunk target behind; only
+    ;; retain labels that are still linked into this backend function.
+    (push (cons jump-table
+                (remove-if-not (lambda (target)
+                                 (gethash target *labels*))
+                               (ir:begin-nlx-targets instruction)))
+          *jump-tables*)))
 
 (defmethod emit-lap (backend-function (instruction ir:finish-nlx-instruction) uses defs)
   )

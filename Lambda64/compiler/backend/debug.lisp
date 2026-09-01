@@ -20,8 +20,11 @@
                     (format *debug-io* "ast: ~S~%" (mezzano.compiler::unparse-compiler-form (ast backend-function))))
                   (assert (equal (gethash bb result) active-debug-values))))
                (t
+                ;; A backend function may end in an unlinked label while it is
+                ;; still being normalized.  Stop at the end of the list rather
+                ;; than assuming every path already has a terminator.
                 (do ((inst bb (next-instruction backend-function inst)))
-                    (nil)
+                    ((null inst))
                   (setf (gethash inst result) active-debug-values)
                   ;; Track changed & bound values.
                   (typecase inst

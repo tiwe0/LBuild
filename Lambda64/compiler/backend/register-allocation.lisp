@@ -80,6 +80,21 @@
                                       order))
                   (vector-pop stack)
                   (return))
+                ;; Empty or partially-built functions can reach register
+                ;; allocation before a terminator is inserted.  Treat the end
+                ;; of the instruction chain as a normal block boundary rather
+                ;; than repeatedly visiting NIL.
+                (when (null inst)
+                  ;; BEGIN-NLX records dispatch targets separately from normal
+                  ;; CFG successors.  Preserve those targets even when the
+                  ;; fall-through chain ends before a terminator is present.
+                  (dolist (succ (reverse (second current)))
+                    (when (not (gethash succ visited))
+                      (setf (gethash succ visited) t)
+                      (vector-push-extend (list succ '() '() nil) stack)))
+                  (setf (second current) '())
+                  (setf (fourth current) t)
+                  (return))
                 (push inst (third current))
                 (when (typep inst 'ir:terminator-instruction)
                   (dolist (succ (reverse
@@ -231,7 +246,15 @@
         (ir::remove-debug-variable-instructions backend-function)
         (let* ((order (if ordering
                           (funcall ordering backend-function)
-                          (instructions-reverse-postorder backend-function)))
+                          (let* ((reachable (instructions-reverse-postorder backend-function))
+                                 (all (program-ordering backend-function)))
+                            ;; LAP generation walks the complete instruction
+                            ;; chain, so retain linked labels that are not
+                            ;; reachable from the current CFG entry yet.
+                            (nconc reachable
+                                   (remove-if (lambda (inst)
+                                                (member inst reachable :test #'eq))
+                                              all)))))
                (instruction-to-index-table (make-hash-table :test 'eq))
                (mv-flow (ir::multiple-value-flow backend-function architecture))
                (clobbers (make-hash-table :test 'eq)))
@@ -260,7 +283,13 @@
 
 (defun virtual-registers-used-by-debug-info (allocator inst)
   (if (max-debug-p allocator)
-      (mapcar #'second (gethash inst (allocator-debug-variable-value-map allocator)))
+      ;; Debug bindings can describe constants as well as compiler virtual
+      ;; registers.  Only vregs participate in liveness/interval allocation;
+      ;; passing literal NIL (or another constant) through here creates bogus
+      ;; zombie ranges and later "missing interval" failures.
+      (remove-if-not (lambda (value)
+                       (typep value 'ir:virtual-register))
+                     (mapcar #'second (gethash inst (allocator-debug-variable-value-map allocator))))
       '()))
 
 (defun build-live-ranges (allocator)
@@ -916,7 +945,11 @@
            (dolist (range (gethash (1+ instruction-index)
                                    (allocator-range-starts allocator)))
              (when (and (live-range-zombie range)
-                        (not (spilledp allocator (live-range-vreg range) instruction-index)))
+                        ;; RANGE starts at the next instruction, so querying
+                        ;; it by the current index is intentionally before its
+                        ;; interval and cannot succeed.  Use the range object
+                        ;; we already have instead.
+                        (not (interval-spilled-p allocator range)))
                (ir:insert-after backend-function inst
                                 (make-instance 'ir:spill-instruction
                                                :destination (live-range-vreg range)
