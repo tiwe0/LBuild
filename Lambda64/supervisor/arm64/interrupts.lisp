@@ -138,10 +138,10 @@
 (defun %page-fault-handler (interrupt-frame fault-addr reason)
   (let ((hook (local-cpu-page-fault-hook)))
     (when hook
-      ;; FIXME: This doesn't work when the hook was bound in SP_EL0,
-      ;; it doesn't switch back to EL0, which will leave SP_EL1 pointing at the EL0
-      ;; stack. Even if it did switch back to SP_EL0 it would also need to restore
-      ;; the original SP_EL1.
+      ;; Hooks run on the exception's SP_EL1 stack. A hook that was bound in
+      ;; SP_EL0 must not be invoked until an exception-return trampoline can
+      ;; switch stacks and restore the original SP_EL1; this handler currently
+      ;; provides no such trampoline, so callers must bind supervisor-safe hooks.
       (funcall hook interrupt-frame reason fault-addr nil)))
   (cond ((not *paging-disk*)
          (unhandled-interrupt interrupt-frame "early-page-fault"))
