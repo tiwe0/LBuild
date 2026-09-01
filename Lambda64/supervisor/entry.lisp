@@ -173,7 +173,13 @@
     ;; Treat that state as an uninitialized first boot; relying on BOUNDP alone
     ;; incorrectly selected the warm-boot path and reused stale thread queues.
     (when (or (not (boundp '*boot-id*))
-              (not (event-p *boot-id*)))
+              (not (event-p *boot-id*))
+              ;; The cold generator supplies INITIAL-BOOT-EVENT so the first
+              ;; boot can avoid dynamic allocation.  Treat that exact event
+              ;; as the cold sentinel; otherwise a serialized event value is
+              ;; mistaken for a warm reboot and allocator bootstrap is skipped.
+              (and (boundp '*initial-boot-event*)
+                   (eq *boot-id* *initial-boot-event*)))
       (setf first-run-p t)
       (mezzano.runtime::first-run-initialize-allocator)
       ;; These globals are intentionally reset at first supervisor boot. The
