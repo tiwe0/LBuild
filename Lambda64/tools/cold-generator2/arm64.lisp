@@ -111,7 +111,7 @@
                   ;; memory, and the bootloader entry invokes the data
                   ;; initializer first.  Keep their function bodies alive,
                   ;; not just their frefs.
-                  sys.int::%%pe-bootstrap
+                  sup::%%pe-bootstrap
                   sup::initialize-pe-bootstrap-data
                   sup::%el0-common
                   sup::%synchronous-el0-handler
