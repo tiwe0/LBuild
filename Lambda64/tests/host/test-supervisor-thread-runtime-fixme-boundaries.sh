@@ -15,6 +15,8 @@ thread_path = root / "supervisor/thread.lisp"
 runtime_path = root / "system/runtime-support.lisp"
 thread = thread_path.read_text(encoding="utf-8")
 runtime = runtime_path.read_text(encoding="utf-8")
+x86_thread = (root / "supervisor/x86-64/thread.lisp").read_text(encoding="utf-8")
+arm64_thread = (root / "supervisor/arm64/thread.lisp").read_text(encoding="utf-8")
 if mutate:
     # Mutation-aware guard: accidental removal of any tracked marker fails.
     if sys.argv[2] == "virtio":
@@ -48,6 +50,14 @@ save_pos = voluntary.find("(save-fpu-state current-thread)")
 partial_pos = voluntary.find("(setf (thread-full-save-p current-thread) nil)")
 if save_pos < 0 or partial_pos < 0 or save_pos > partial_pos:
     raise SystemExit("voluntary switch must save FPU state before marking partial save")
+# Until the compiler proves that a yield cannot have live vector values, both
+# architecture backends must retain the complete register file (FXSAVE on
+# x86-64; Q0-Q31 stores on ARM64).
+if "(fxsave " not in x86_thread:
+    raise SystemExit("x86-64 voluntary switch lacks complete FPU save primitive")
+for reg in ("q0", "q2", "q16", "q30"):
+    if f":stp :{reg} " not in arm64_thread:
+        raise SystemExit(f"ARM64 FPU save missing vector register {reg}")
 # The join event is intentionally published before taking the global lock.
 cleanup = thread[thread.index("(defun thread-final-cleanup"):]
 if cleanup.index("(setf (event-state") > cleanup.index("(acquire-global-thread-lock"):
