@@ -813,8 +813,10 @@
                                        (+ index (%complex-array-info array)))
                        old new)))))
         ((character-array-p array)
-         ;; TODO. The promotion from narrow backing arrays to wide backing arrays complicates this...
-         (error "CAS not supported on character arrays"))
+         ;; Character stores may widen their backing array.  Refusing CAS keeps
+         ;; the operation atomic; a widening store cannot be combined with a
+         ;; compare-and-swap without a separate promotion lock.
+         (error "CAS not supported on character arrays (backing storage may widen)"))
         (t ;; Normal array, backed by a simple array.
          (cas (%simple-array-aref (%complex-array-storage array) index) old new))))
 
