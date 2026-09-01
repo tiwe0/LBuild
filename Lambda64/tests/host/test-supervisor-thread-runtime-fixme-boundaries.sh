@@ -38,6 +38,16 @@ for marker in required_thread:
 # Keep the ARM64 BSP restriction explicit until a real multi-PE Virtio test exists.
 if "#+arm64 (eql (local-cpu-info) *bsp-cpu*)" not in thread:
     raise SystemExit("ARM64 supervisor queue is no longer visibly BSP-constrained")
+# Voluntary switches still save the architectural FPU state before publishing
+# the partial-save flag.  This ordering is part of the current ABI contract;
+# reducing the save to control registers requires a separate cross-architecture
+# lazy-state design and must not happen as an incidental cleanup.
+voluntary = thread[thread.index("(defun %%switch-to-thread-via-wired-stack"):]
+voluntary = voluntary[:voluntary.index("(defun %%switch-to-thread-via-interrupt")]
+save_pos = voluntary.find("(save-fpu-state current-thread)")
+partial_pos = voluntary.find("(setf (thread-full-save-p current-thread) nil)")
+if save_pos < 0 or partial_pos < 0 or save_pos > partial_pos:
+    raise SystemExit("voluntary switch must save FPU state before marking partial save")
 # The join event is intentionally published before taking the global lock.
 cleanup = thread[thread.index("(defun thread-final-cleanup"):]
 if cleanup.index("(setf (event-state") > cleanup.index("(acquire-global-thread-lock"):
