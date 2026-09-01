@@ -241,9 +241,7 @@
 
 (defclass ehci-device (usb-device)
   ((%addr          :initarg  :addr         :accessor device-addr)
-   (%speed         :initarg  :speed        :accessor device-speed)
-   ;; TODO - move this to usb-device?
-   (%control-event :initarg  :control-event :accessor device-control-event)))
+   (%speed         :initarg  :speed        :accessor device-speed)))
 
 (defmethod (setf usb-device-max-packet) :after (max-packet (device ehci-device))
   (let ((qh (device-control-qh device)))
@@ -696,52 +694,6 @@
           (setf (pending-qtds ehci) (delete qtd (pending-qtds ehci))))
         (free-qtd ehci qtd)
         t))))
-
-;; TODO move this routine to usd-defs.lisp, delete here and in ohci.lisp
-(defun transfer-complete (driver event-type endpt-num device status length buf)
-  ;; Signal driver a transfer is complete - based oon the event type
-  (cond ((typep event-type 'keyword)
-         ;; enqueue an event with this type
-         (let ((event (make-usb-event
-                       :type event-type
-                       :dest driver
-                       :device device)))
-           (setf (usb-event-plist-value event :endpoint-num) endpt-num
-                 (usb-event-plist-value event :status) status
-                 (usb-event-plist-value event :length) length
-                 (usb-event-plist-value event :buf) buf)
-           (enqueue-event event)))
-        ((typep event-type 'sup:event)
-         ;; this means some thread is waiting on this interrupt
-         ;; which may not be a good idea
-         (setf (sup:event-state event-type) t))
-        ((typep event-type 'sync:semaphore)
-         ;; this means some thread is waiting on this interrupt
-         ;; which may not be a good idea
-         (sync:semaphore-up event-type))
-        (T
-         (funcall event-type driver endpt-num status length buf))))
-
-(defun handle-bulk-endpt (ehci xfer-info qtd)
-  (enter-function "handle-bulk-endpt")
-  (with-hcd-access (ehci)
-    (unwind-protect
-         (let ((status (logand (qtd-token qtd) +qtd-status-mask+)))
-
-           ;; Preserve the EHCI condition-code bits in STATUS.  Consumers of
-           ;; TRANSFER-COMPLETE decode this mask and decide whether to retry or
-           ;; surface the controller error; completion delivery must not hide
-           ;; the raw status.
-           (let* ((endpoint (xfer-info-endpoint xfer-info)))
-             (transfer-complete (ehci-endpoint-driver endpoint)
-                                (xfer-info-event-type xfer-info)
-                                (ehci-endpoint-num endpoint)
-                                (ehci-endpoint-device endpoint)
-                                status
-                                (- (xfer-info-buf-size xfer-info)
-                                   (ldb (byte 15 16) (qtd-token qtd)))
-                                (xfer-info-buf xfer-info))))
-      (free-qtd ehci qtd))))
 
 ;;======================================================================
 ;; set-device-address

@@ -711,28 +711,6 @@ page the descriptor no longer contains the original physical address."
 ;;======================================================================
 ;;
 ;;======================================================================
-
-(defun transfer-complete (driver event-type endpt-num device status length buf)
-  ;; Signal driver a transfer is complete - based oon the event type
-  (cond ((typep event-type 'keyword)
-         ;; enqueue an event with this type
-         (let ((event (make-usb-event
-                       :type event-type
-                       :dest driver
-                       :device device)))
-           (setf (usb-event-plist-value event :endpoint-num) endpt-num
-                 (usb-event-plist-value event :status) status
-                 (usb-event-plist-value event :length) length
-                 (usb-event-plist-value event :buf) buf)
-           (enqueue-event event)))
-        ((typep event-type 'sync:semaphore)
-         ;; this means some thread is waiting on this interrupt
-         ;; which may not be a good idea
-         (sync:semaphore-up event-type))
-        (T
-         (funcall event-type driver endpt-num status length buf))))
-
-;;======================================================================
 ;; Interrupt Endpoint code
 ;;======================================================================
 

@@ -16,6 +16,7 @@
    :with-hcd-access
    :controller-disconnect
    :disconnect-hcd
+   :transfer-complete
 
    ;; USBD Class
    :usbd

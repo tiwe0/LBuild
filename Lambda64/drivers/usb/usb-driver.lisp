@@ -32,6 +32,31 @@
 ;;======================================================================
 ;;======================================================================
 
+(defun transfer-complete (driver event-type endpt-num device status length buf)
+  "Signal completion to a USB driver using its requested event mechanism.
+
+  This shared helper is used by all host-controller drivers so completion
+  semantics do not drift between EHCI and OHCI implementations."
+  (cond ((typep event-type 'keyword)
+         (let ((event (make-usb-event
+                       :type event-type
+                       :dest driver
+                       :device device)))
+           (setf (usb-event-plist-value event :endpoint-num) endpt-num
+                 (usb-event-plist-value event :status) status
+                 (usb-event-plist-value event :length) length
+                 (usb-event-plist-value event :buf) buf)
+           (enqueue-event event)))
+        ((typep event-type 'sup:event)
+         (setf (sup:event-state event-type) t))
+        ((typep event-type 'sync:semaphore)
+         (sync:semaphore-up event-type))
+        (T
+         (funcall event-type driver endpt-num status length buf))))
+
+;;======================================================================
+;;======================================================================
+
 (defvar *trace* 0)
 
 (defmacro with-trace-level ((trace-level) &body body)
@@ -126,7 +151,10 @@
    (class      :initarg :class)
    (subclass   :initarg :subclass)
    ;; for debug
-   (%configuration  :initform NIL          :accessor usb-device-configuration)))
+   (%configuration  :initform NIL          :accessor usb-device-configuration)
+   ;; Controller-specific completion event (used by EHCI control transfers).
+   ;; Kept on the common device object so HCDs share ownership semantics.
+   (%control-event :initarg :control-event :accessor device-control-event)))
 
 (defmethod initialize-instance :after ((device usb-device)
                                        &key &allow-other-keys)
