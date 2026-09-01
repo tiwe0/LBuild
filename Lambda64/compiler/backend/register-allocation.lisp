@@ -1112,15 +1112,21 @@ Returns the interference graph and the set of spilled virtual registers."
        do
          (dotimes (i (length slots)
                    (progn
-                     ;; SSE slots are 2 wide.
-                     ;; TODO: Force 16-byte alignment.
+                     ;; SSE/ADVSIMD slots are 2 wide and must begin at an
+                     ;; even slot index (16-byte stack alignment).
                      (when (member (ir:virtual-register-kind vreg) '(:sse :advsimd))
+                       (when (oddp (length slots))
+                         (vector-push-extend nil slots)
+                         (vector-push-extend :pad slot-classes))
                        (vector-push-extend (list vreg-id) slots)
                        (vector-push-extend :pad slot-classes))
                      (setf (gethash vreg locations) (length slots))
                      (vector-push-extend (list vreg-id) slots)
                      (vector-push-extend (ir:virtual-register-kind vreg) slot-classes)))
            (when (and (eql (aref slot-classes i) (ir:virtual-register-kind vreg))
+                      (or (not (member (ir:virtual-register-kind vreg)
+                                       '(:sse :advsimd)))
+                          (evenp i))
                       (not (dolist (entry (aref slots i) nil)
                              (when (vreg-set-contains (svref interference-graph entry) vreg-id)
                                (return t)))))

@@ -255,7 +255,6 @@ Successors of jumps and branches must be labels."
                (insert-before backend-function bb (make-instance 'jump-instruction :target bb :values '()))
                new-bb)))
       (do-instructions (inst backend-function)
-        ;; TODO: Support switches too.
         (when (typep inst 'branch-instruction)
           (when (not (endp (rest (gethash (branch-true-target inst) bb-preds))))
             (when (not *shut-up*)
@@ -264,4 +263,15 @@ Successors of jumps and branches must be labels."
           (when (not (endp (rest (gethash (branch-false-target inst) bb-preds))))
             (when (not *shut-up*)
               (format t "Split edge ~S -> ~S~%" inst (branch-false-target inst)))
-            (setf (branch-false-target inst) (split-edge (branch-false-target inst)))))))))
+            (setf (branch-false-target inst) (split-edge (branch-false-target inst)))))
+        ;; Switches have an arbitrary number of outgoing edges. Split each
+        ;; edge whose destination has multiple predecessors, including
+        ;; duplicate case entries (each occurrence is a distinct edge).
+        (when (typep inst 'switch-instruction)
+          (dolist (target-cell (loop for tail on (switch-targets inst)
+                                     collect tail))
+            (let ((target (first target-cell)))
+              (when (not (endp (rest (gethash target bb-preds))))
+                (unless *shut-up*
+                  (format t "Split edge ~S -> ~S~%" inst target))
+                (setf (first target-cell) (split-edge target))))))))))
