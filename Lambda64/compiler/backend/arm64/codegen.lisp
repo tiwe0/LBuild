@@ -1477,10 +1477,13 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
   (emit `(lap:orr ,(arm64-dcas-current-1 instruction) :xzr :x2))
   (emit `(lap:orr ,(arm64-dcas-current-2 instruction) :xzr :x3))
   (emit `(lap:subs :xzr :x2 ,(arm64-dcas-old-1 instruction)))
-  ;; The first comparison is intentionally followed by the second; the
-  ;; generic predicate reifier consumes the final flags for the conjunction.
+  ;; Fold both comparisons into x0, then leave flags representing the final
+  ;; conjunction for lower-builtin's predicate reifier.
+  (emit `(lap:ldr :x0 (:constant t)))
+  (emit `(lap:csel.eq :x0 :x0 :x26))
   (emit `(lap:subs :xzr :x3 ,(arm64-dcas-old-2 instruction)))
-  )
+  (emit `(lap:csel.eq :x0 :x0 :x26))
+  (emit `(lap:subs :xzr :x0 :x26))))
 
 (defmethod emit-lap (backend-function (instruction arm64-ld/st-multiple-instruction) uses defs)
   ;; Convert to unboxed integer (scaled appropriately), with tag adjustment.

@@ -89,18 +89,9 @@
                        :source value-2
                        :destination result-2)))
 
-;; TODO: dcas memref-t. The generic compare-exchange IR currently supports
-;; object-relative accesses only, and ARM64 has no 128-bit memref CAS lowering.
-;;
-;; CAS/DCAS for memref-t remain intentionally unsupported: the generic
-;; compare-exchange IR models object-relative slots, while memref addresses are
-;; raw effective addresses. Adding these operations requires dedicated IR/codegen
-;; forms that carry arbitrary addresses and specify their memory-order contract
-;; (including a 16-byte form for DCAS).
-;;
-;; Integer memref CAS below already lowers through ARM64 CASL instructions. The
-;; lowering keeps old/new/current values in distinct virtual registers, so it is
-;; SSA-safe and does not require the object-relative compare-exchange IR form.
+;; Integer memref CAS below lowers through ARM64 CASL instructions.  DCAS uses
+;; the dedicated CASPAL lowering, which carries an arbitrary effective address
+;; and returns both observed words while preserving CAS condition flags.
 
 (define-builtin (sys.int::cas sys.int::%memref-t) ((old new address index) result)
   (let ((address-unboxed (make-instance 'ir:virtual-register :kind :integer))
@@ -124,6 +115,29 @@
     (emit (make-instance 'ir:move-instruction
                          :source current-value
                          :destination result))))
+
+(define-builtin (sys.int::dcas sys.int::%memref-t)
+    ((old-1 old-2 new-1 new-2 address index) (:z result-1 result-2))
+  (let ((address-unboxed (make-instance 'ir:virtual-register :kind :integer))
+        (generated-address (make-instance 'ir:virtual-register :kind :integer))
+        (current-1 (make-instance 'ir:virtual-register :kind :integer))
+        (current-2 (make-instance 'ir:virtual-register :kind :integer)))
+    (emit (make-instance 'ir:unbox-fixnum-instruction
+                         :source address :destination address-unboxed))
+    (with-scaled-fixnum-index (scaled-index index 8)
+      (emit (make-instance 'arm64-instruction
+                           :opcode 'lap:add
+                           :operands (list generated-address address-unboxed scaled-index)
+                           :inputs (list address-unboxed scaled-index)
+                           :outputs (list generated-address))))
+    (emit (make-instance 'arm64-dcas-mem-instruction
+                         :address generated-address
+                         :old-1 old-1 :old-2 old-2
+                         :new-1 new-1 :new-2 new-2
+                         :current-1 current-1 :current-2 current-2))
+    (emit (make-instance 'ir:move-instruction :source current-1 :destination result-1))
+    (emit (make-instance 'ir:move-instruction :source current-2 :destination result-2))
+    ))
 (defmacro define-memref-integer-accessor (name read-op write-op cas-op scale box-op unbox-op)
   `(progn
      (define-builtin ,name ((address index) result)

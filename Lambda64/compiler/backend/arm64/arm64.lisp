@@ -166,6 +166,39 @@
                            ,(arm64-cas-old-value instruction)
                            ,(arm64-cas-current-value instruction))))
 
+;; ARMv8 CASP operates on a pair of adjacent 64-bit registers.  Keep the
+;; pair in fixed even/odd register pairs in the emitter; advertising these
+;; registers as clobbers prevents the allocator from assigning live values to
+;; them across the operation while avoiding an (unsupported) adjacency
+;; constraint in the generic allocator.
+(defclass arm64-dcas-mem-instruction (ir:backend-instruction)
+  ((%address :initarg :address :accessor arm64-dcas-mem-address)
+   (%new-1 :initarg :new-1 :accessor arm64-dcas-new-1)
+   (%new-2 :initarg :new-2 :accessor arm64-dcas-new-2)
+   (%old-1 :initarg :old-1 :accessor arm64-dcas-old-1)
+   (%old-2 :initarg :old-2 :accessor arm64-dcas-old-2)
+   (%current-1 :initarg :current-1 :accessor arm64-dcas-current-1)
+   (%current-2 :initarg :current-2 :accessor arm64-dcas-current-2)))
+
+(defmethod ra:instruction-clobbers ((instruction arm64-dcas-mem-instruction) (architecture c:arm64-target))
+  '(:x0 :x2 :x3 :x6 :x7))
+(defmethod ra:instruction-inputs-read-before-outputs-written-p ((instruction arm64-dcas-mem-instruction) (architecture c:arm64-target)) nil)
+(defmethod ir:instruction-inputs ((instruction arm64-dcas-mem-instruction))
+  (list (arm64-dcas-mem-address instruction) (arm64-dcas-old-1 instruction)
+        (arm64-dcas-old-2 instruction) (arm64-dcas-new-1 instruction)
+        (arm64-dcas-new-2 instruction)))
+(defmethod ir:instruction-outputs ((instruction arm64-dcas-mem-instruction))
+  (list (arm64-dcas-current-1 instruction)
+        (arm64-dcas-current-2 instruction)))
+(defmethod ir:replace-all-registers ((instruction arm64-dcas-mem-instruction) f)
+  (setf (arm64-dcas-mem-address instruction) (funcall f (arm64-dcas-mem-address instruction))
+        (arm64-dcas-new-1 instruction) (funcall f (arm64-dcas-new-1 instruction))
+        (arm64-dcas-new-2 instruction) (funcall f (arm64-dcas-new-2 instruction))
+        (arm64-dcas-old-1 instruction) (funcall f (arm64-dcas-old-1 instruction))
+        (arm64-dcas-old-2 instruction) (funcall f (arm64-dcas-old-2 instruction))
+        (arm64-dcas-current-1 instruction) (funcall f (arm64-dcas-current-1 instruction))
+        (arm64-dcas-current-2 instruction) (funcall f (arm64-dcas-current-2 instruction))))
+
 ;; Expects object in :x1
 (defclass arm64-ld/st-multiple-instruction (ir:backend-instruction)
   ((%opcode :initarg :opcode :reader arm64-instruction-opcode)
