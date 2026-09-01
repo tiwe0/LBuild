@@ -1230,10 +1230,9 @@
 (defun merge (result-type sequence1 sequence2 predicate &key key)
   "Merge the sequences SEQUENCE1 and SEQUENCE2 destructively into a
    sequence of type RESULT-TYPE using PREDICATE to order the elements."
-  ;; FIXME: This implementation is remarkably inefficient in various
-  ;; ways. In decreasing order of estimated user astonishment, I note:
-  ;; full calls to SPECIFIER-TYPE at runtime; copying input vectors
-  ;; to lists before doing MERGE-LISTS -- WHN 2003-01-05
+  ;; Keep the general sequence protocol, but avoid copying vectors that already
+  ;; satisfy the vector input contract.  COERCE is still required for lists and
+  ;; other sequence types; vectors can be consumed directly with AREF/SVREF.
   (cond
     ((subtypep result-type 'list)
      (dolist (sequence (list sequence1 sequence2))
@@ -1257,8 +1256,12 @@
              (error "MERGE result type has too few elements.")))
        (error "Result type ~S looks a bit like 'LIST, but is too complicated!" result-type)))
     ((subtypep result-type 'vector)
-     (let* ((vector-1 (coerce sequence1 'vector))
-            (vector-2 (coerce sequence2 'vector))
+     (let* ((vector-1 (if (vectorp sequence1)
+                           sequence1
+                           (coerce sequence1 'vector)))
+            (vector-2 (if (vectorp sequence2)
+                           sequence2
+                           (coerce sequence2 'vector)))
             (length-1 (length vector-1))
             (length-2 (length vector-2))
             (result (make-sequence result-type (+ length-1 length-2))))
