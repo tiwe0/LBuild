@@ -6,8 +6,6 @@
 ;;;; These functions are unsafe and must be called with the proper arguments,
 ;;;; ie the table must be a fast-class-hash-table and the class must be a class.
 
-;;;; TODO: Be smarter/more proactive pruning dead weak pointers.
-
 (in-package :mezzano.clos)
 
 ;; Must be a power of two.
@@ -88,7 +86,26 @@
                  (eq class (mezzano.extensions:weak-pointer-key slot)))
         (return (values slot offset))))))
 
+(defun %prune-fast-class-hash-table (table)
+  "Discard dead weak keys before a mutating operation on TABLE.
+The caller holds the table's update lock; reads therefore remain wait-free."
+  (let ((storage (fast-class-hash-table-table table)))
+    (cond
+      ((mezzano.extensions:weak-pointer-p storage)
+       (unless (mezzano.extensions:weak-pointer-key storage)
+         (setf (fast-class-hash-table-table table) nil
+               (fast-class-hash-table-count table) 0)))
+      ((vectorp storage)
+       (dotimes (index (length storage))
+         (let ((slot (svref storage index)))
+           (when (and (mezzano.extensions:weak-pointer-p slot)
+                      (not (mezzano.extensions:weak-pointer-key slot)))
+             (setf (svref storage index) t)
+             (decf (fast-class-hash-table-count table))))))))
+  table)
+
 (defun (setf fast-class-hash-table-entry) (value table class)
+  (%prune-fast-class-hash-table table)
   (cond ((null (fast-class-hash-table-table table))
          (when (not (eql value nil))
            (setf (fast-class-hash-table-table table) (mezzano.extensions:make-weak-pointer class :value value))
