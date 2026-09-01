@@ -274,7 +274,7 @@
           (when (sys.int::cas (sys.int::layout-new-instance layout)
                               nil replacement)
             (return))))
-  (values))
+  (values)))
 
 (in-package :mezzano.internals)
 

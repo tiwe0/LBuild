@@ -453,8 +453,8 @@
   ;; Reify lexical macro definitions for the host evaluator.  MACROLET needs
   ;; source forms, while our environment stores expansion functions, so route
   ;; each generated macro through a fresh, dynamically bound symbol.
-  (let ((defs (and env (slot-value (environment-macro-definitions-only env)
-                                   '%functions)))
+        (let ((defs (and env (slot-value (mezzano.compiler::environment-macro-definitions-only env)
+                                   'mezzano.compiler::%functions)))
         (holders '()))
     (unwind-protect
          (if (null defs)
