@@ -20,7 +20,7 @@ if sys.argv[2]:
 required = [
     "(make-restart",
     "(%restart-bind",
-    "(with-condition-restarts ,condition",
+    "(with-condition-restarts",
 ]
 missing = [token for token in required if token not in form]
 if "TODO: Do this without the calls to FIND-RESTART." in form:

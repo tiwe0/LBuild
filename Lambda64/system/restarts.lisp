@@ -105,12 +105,12 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
 
-(defun handle-restart-case-clause (clause block-name arguments)
+(defun handle-restart-case-clause (clause tag)
   (let ((name (car clause))
         (lambda-list (cadr clause))
         (forms (cddr clause))
         interactive report test
-        (label (gensym)))
+        (label (gensym "RESTART-")))
     (do () ((null forms))
       (case (car forms)
         (:interactive
@@ -132,66 +132,75 @@
                forms (cddr forms)))
         (t (return))))
     (values `(,name #'(lambda (&rest temp)
-                        (setq ,arguments (copy-list temp))
-                        (go ,label))
+                        ;; GO tags are not visible inside a closure under the
+                        ;; cross-compiler's lexical rules.  Throw a private
+                        ;; catch payload instead; RESTART-CASE dispatches it
+                        ;; after the restartable form unwinds.
+                        (throw ',tag (list ',label (copy-list temp))))
                     ,@(when interactive `(:interactive-function ,interactive))
                     ,@(when report `(:report-function ,report))
                     ,@(when test `(:test-function ,test)))
             label
-            `(return-from ,block-name
-               (apply #'(lambda ,lambda-list ,@forms) ,arguments)))))
+            `(apply #'(lambda ,lambda-list ,@forms)
+                    (rest restart-result)))))
 
 )
 
 (defmacro restart-case (&environment env restartable-form &rest clauses)
-  (let ((block-name (gensym))
-        (arguments (gensym))
+  (let ((tag (gensym "RESTART-CASE-"))
         (restart-bindings '())
-        (restart-bodies '()))
+        (restart-labels '())
+        (restart-bodies '())
+        (expanded-restartable-form (macroexpand restartable-form env)))
     (dolist (clause clauses)
       (multiple-value-bind (binding label body)
-          (handle-restart-case-clause clause block-name arguments)
+          (handle-restart-case-clause clause tag)
         (push binding restart-bindings)
-        (push label restart-bodies)
-        (push body restart-bodies)))
-    (let ((expanded-restartable-form (macroexpand restartable-form env)))
-      (cond ((and (listp expanded-restartable-form)
-                  (member (first expanded-restartable-form)
-                          '(signal error cerror warn)))
-             (let ((condition (gensym "CONDITION"))
-                   (restart-variables (loop for binding in (reverse restart-bindings)
-                                            collect (gensym "RESTART"))))
-               ;; Construct and bind the restart objects directly.  The previous
-               ;; expansion nested another RESTART-CASE and looked each object up
-               ;; with FIND-RESTART; keeping the objects in lexical bindings avoids
-               ;; that traversal while preserving their condition association.
-               `(let ((,condition (coerce-to-condition ',(ecase (first expanded-restartable-form)
-                                                           ((signal) 'simple-condition)
-                                                           ((error cerror) 'simple-error)
-                                                           ((warn) 'simple-warning))
-                                                       ,(second expanded-restartable-form)
-                                                       (list ,@(cddr expanded-restartable-form)))))
-                  (let ,(loop for variable in restart-variables
-                              for binding in (reverse restart-bindings)
-                              collect `(,variable
-                                        (make-restart ',(first binding) ,@(rest binding))))
-                    (block ,block-name
-                      (let ((,arguments nil))
-                        (tagbody
-                           (%restart-bind (list ,@restart-variables)
-                             (lambda ()
-                               (return-from ,block-name
-                                 (with-condition-restarts ,condition
-                                     (list ,@restart-variables)
-                                   (,(first expanded-restartable-form) ,condition)))))
-                           ,@(reverse restart-bodies))))))))
-            (t
-             `(block ,block-name
-                (let ((,arguments nil))
-                  (tagbody
-                     (restart-bind ,(reverse restart-bindings)
-                       (return-from ,block-name ,restartable-form))
-                     ,@(reverse restart-bodies)))))))))
+        (push label restart-labels)
+        (push body restart-bodies))
+    (let* ((restart-bindings (reverse restart-bindings))
+           (restart-labels (reverse restart-labels))
+           (restart-bodies (reverse restart-bodies))
+           (restart-variables (loop for binding in restart-bindings
+                                    collect (gensym "RESTART")))
+           (condition (and (listp expanded-restartable-form)
+                           (member (first expanded-restartable-form)
+                                   '(signal error cerror warn))
+                           (gensym "CONDITION")))
+           (wrapped-form (if condition
+                             `(with-condition-restarts
+                                  ,condition (list ,@restart-variables)
+                                ,(if (eql (first expanded-restartable-form) 'signal)
+                                     `(signal ,condition)
+                                     `(,(first expanded-restartable-form) ,condition)))
+                             restartable-form)))
+      `(let ,(when condition
+               `((,condition
+                   (coerce-to-condition ',(ecase (first expanded-restartable-form)
+                                            ((signal) 'simple-condition)
+                                            ((error cerror) 'simple-error)
+                                            ((warn) 'simple-warning))
+                                        ,(second expanded-restartable-form)
+                                        (list ,@(cddr expanded-restartable-form))))))
+         (let ,(loop for variable in restart-variables
+                     for binding in restart-bindings
+                     collect `(,variable
+                               (make-restart ',(first binding) ,@(rest binding))))
+           (let ((restart-result
+                   (catch ',tag
+                     (%restart-bind (list ,@restart-variables)
+                       (lambda ()
+                         (multiple-value-call
+                             (lambda (&rest values)
+                               (list :normal values))
+                           ,wrapped-form)))))
+             (if (eq (first restart-result) :normal)
+                 (values-list (second restart-result))
+                 (cond
+                   ,@(loop for label in restart-labels
+                           for body in restart-bodies
+                           collect `((eq (first restart-result) ',label)
+                                     ,body))))))))))))
 
 (defmacro with-simple-restart ((name format-control &rest format-arguments) &body forms)
   `(restart-case (progn ,@forms)
