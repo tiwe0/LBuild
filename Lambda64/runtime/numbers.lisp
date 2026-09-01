@@ -435,17 +435,19 @@
        (double-float
         (sys.int::%%double-float-< x y))))))
 
-;; Implement these in terms of the other directions.
-;; FIXME: One of these should have a complete implementation so that floating point
-;; NaN values are correctly ordered.
+;; Implement the inclusive directions as strict comparison or equality.
+;; This preserves IEEE unordered semantics: NaN is neither less, greater, nor
+;; equal, so all four relational predicates return NIL for it.
 (defun sys.int::generic-> (x y)
   (sys.int::generic-< y x))
 
 (defun sys.int::generic->= (x y)
-  (not (sys.int::generic-< x y)))
+  (or (sys.int::generic-> x y)
+      (sys.int::generic-= x y)))
 
 (defun sys.int::generic-<= (x y)
-  (not (sys.int::generic-< y x)))
+  (or (sys.int::generic-< x y)
+      (sys.int::generic-= x y)))
 
 (declaim (inline fixnum-fits-in-short-float-p
                  fixnum-fits-in-single-float-p
