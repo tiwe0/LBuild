@@ -145,11 +145,15 @@
       (gensym (string pref))))
 
 
-;; FIXME: This used to be 'real, but that really puts pressure on the
-;; compiler to be smart now. Unfortunately it isn't smart, so...
+;; LOOP emits these types on compiler-generated bindings.  Keep the broad
+;; type here: the compiler treats declarations as assumptions (and can wrap
+;; initializers in THE), so narrowing this to REAL changes code generation for
+;; unknown MAX/MIN forms instead of merely documenting the ANSI contract.
 (defvar *loop-real-data-type* 't)
 
-;; FIXME: Likewise, but 'list.
+;; Likewise, LIST would make the generated binding an optimizer assumption.
+;; A user supplied :BY function is opaque to LOOP, so retain the compatible
+;; untyped binding and let the normal CAR/CDR operations enforce semantics.
 (defvar *loop-list-data-type* 't)
 
 (defun loop-optimization-quantities (env)
