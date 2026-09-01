@@ -107,9 +107,10 @@
                                (if (eql element-count '*)
                                    4
                                    element-count))))
-        ;; TODO: Since everything is packed into the header (including object type tag),
-        ;; this should boil down to a single load/cmp instruction. But we currently check
-        ;; the header payload and type tag separately.
+        ;; The wildcard branches mask selected header fields, while the
+        ;; fully specified branch compares the packed payload in one step.
+        ;; Keep the explicit SIMD-PACK-P guard so the object tag is validated
+        ;; before decoding header bits.
         (cond ((and (eql element-type '*)
                     (eql element-count '*))
                ;; Both universal, simple type tag test.
