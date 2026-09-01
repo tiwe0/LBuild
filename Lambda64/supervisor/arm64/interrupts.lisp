@@ -47,7 +47,8 @@
   (mezzano.lap.arm64:msr :daifclr #b1111)
   (mezzano.lap.arm64:ret))
 
-;; TODO: Use SEV/WFE hints
+;; Keep CPU-RELAX as YIELD rather than WFE: callers do not publish a matching
+;; SEV event on every state transition, so WFE could sleep indefinitely.
 (sys.int::define-lap-function sys.int::cpu-relax (())
   (:gc :no-frame :layout #*)
   (mezzano.lap.arm64:yield)

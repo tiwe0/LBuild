@@ -240,7 +240,9 @@
 Protected by the world stop lock."
   (setf *non-quiescent-cpus-remaining* (1- *n-up-cpus*))
   (broadcast-ipi +quiesce-sgi-id+)
-  ;; FIXME: Use WFE/SEV instead of this spin-loop.
+  ;; Keep this bounded-progress spin loop on the quiesce counter.  Switching
+  ;; to WFE would require every decrement below to issue a matching SEV, and
+  ;; that wakeup protocol is not present in the current IPI path.
   (loop
      (when (eql *non-quiescent-cpus-remaining* 0)
        (return))
