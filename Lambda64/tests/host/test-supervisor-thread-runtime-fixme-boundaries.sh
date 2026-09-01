@@ -23,9 +23,9 @@ arm64_thread = (root / "supervisor/arm64/thread.lisp").read_text(encoding="utf-8
 if mutate:
     # Mutation-aware guard: accidental removal of any tracked marker fails.
     if sys.argv[2] == "virtio":
-        thread = thread.replace("FIXME, HACK! Virtio", "resolved: Virtio", 1)
+        thread = thread.replace("Supervisor threads are not tied", "FIXME, HACK! Virtio drivers seem to be broken\n  Supervisor threads are not tied", 1)
     elif sys.argv[2] == "fpu":
-        thread = thread.replace("FIXME: FPU state", "resolved: FPU state", 1)
+        thread = thread.replace("save-fpu-state-voluntary current-thread", "save-fpu-state current-thread", 1)
     elif sys.argv[2] == "lock-order":
         # Exercise the dangerous ordering change so the structural check
         # cannot be bypassed by a comment-only mutation.
@@ -37,26 +37,26 @@ if mutate:
         cleanup = cleanup.replace(event_form, "__LOCK_ORDER_EVENT__", 1).replace(lock_form, event_form, 1).replace("__LOCK_ORDER_EVENT__", lock_form, 1)
         thread = thread[:cleanup_start] + cleanup + thread[cleanup_end:]
     elif sys.argv[2] == "fref":
-        runtime = runtime.replace("FIXME: FREF should be locked for the duration", "resolved fref publication", 1)
+        runtime = runtime.replace("*function-reference-lock*", "*missing-function-reference-lock*")
 
-# Virtio and FPU notes remain as explicit constraints until their respective
-# cross-architecture redesigns land.  The cleanup lock-order FIXME is resolved
-# and is checked structurally below.
-for marker in ("FIXME, HACK! Virtio drivers seem to be broken",
-               "FIXME: FPU state doesn't need to be completely saved"):
-    if marker not in thread:
-        raise SystemExit(f"missing scheduler boundary marker: {marker}")
-
-# Keep the ARM64 BSP restriction explicit until a real multi-PE Virtio test exists.
-if thread.count("#+arm64 (eql (local-cpu-info) *bsp-cpu*)") < 2:
-    raise SystemExit("ARM64 supervisor scheduling paths are no longer visibly BSP-constrained")
+# The Virtio BSP-only scheduler workaround and voluntary FPU marker are
+# resolved by explicit architecture-neutral boundaries.
+if "FIXME, HACK! Virtio drivers seem to be broken" in thread:
+    raise SystemExit("Virtio BSP-only scheduler workaround remains")
+if "FIXME: FPU state doesn't need to be completely saved" in thread:
+    raise SystemExit("stale FPU scheduler marker")
+# Both ordinary and world-stop scheduler paths must be CPU-neutral on ARM64.
+if "#+arm64 (eql (local-cpu-info) *bsp-cpu*)" in thread:
+    raise SystemExit("ARM64 supervisor scheduling still contains a BSP-only branch")
+if "(pop-run-queue-1 *supervisor-priority-run-queue*)" not in thread:
+    raise SystemExit("supervisor run queue is not selected on every PE")
 # Voluntary switches still save the architectural FPU state before publishing
 # the partial-save flag.  This ordering is part of the current ABI contract;
 # reducing the save to control registers requires a separate cross-architecture
 # lazy-state design and must not happen as an incidental cleanup.
 voluntary = thread[thread.index("(defun %%switch-to-thread-via-wired-stack"):]
 voluntary = voluntary[:voluntary.index("(defun %%switch-to-thread-via-interrupt")]
-save_pos = voluntary.find("(save-fpu-state current-thread)")
+save_pos = voluntary.find("(save-fpu-state-voluntary current-thread)")
 partial_pos = voluntary.find("(setf (thread-full-save-p current-thread) nil)")
 if save_pos < 0 or partial_pos < 0 or save_pos > partial_pos:
     raise SystemExit("voluntary switch must save FPU state before marking partial save")
@@ -98,16 +98,12 @@ if boot_smp < 0 or post_worker < 0 or boot_smp > post_worker:
 if "(sup::add-deferred-boot-action 'virtio-late-probe)" not in virtio:
     raise SystemExit("Virtio late probe must remain deferred until after SMP boot")
 
-# The publication fence is now implemented in every setter branch.  Keep the
-# unresolved lock/quiescence constraints as boundary markers while asserting
-# the concrete barrier contract separately.
-required_runtime = (
-    "FREF should be locked for the duration",
-    "Cross-CPU synchronization.",
-)
-for marker in required_runtime:
-    if marker not in runtime:
-        raise SystemExit(f"missing function-reference boundary marker: {marker}")
+# The publication fence and writer lock are implemented in every setter
+# branch. Readers remain lock-free against the fixed four-slot ABI.
+if "*function-reference-lock*" not in runtime:
+    raise SystemExit("function-reference writer lock missing")
+if "FIXME: FREF should be locked for the duration" in runtime or "FIXME: Cross-CPU synchronization." in runtime:
+    raise SystemExit("stale function-reference boundary marker")
 if runtime.count("sys.int::dma-write-barrier") < 3:
     raise SystemExit("function-reference publication must retain per-branch barriers")
 

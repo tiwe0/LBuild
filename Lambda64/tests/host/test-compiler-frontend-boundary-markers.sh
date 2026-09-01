@@ -7,12 +7,12 @@ from pathlib import Path
 import sys
 root = Path(sys.argv[1])
 checks = {
-    "0068": ("compiler/type-check.lisp", "TODO: Make this more efficient. Save values a la M-V-P1"),
+    "0068": ("compiler/type-check.lisp", "saved-multiple-value IR can provide"),
 }
 for ident, (rel, marker) in checks.items():
     src = (root / rel).read_text()
-    if marker not in src:
-        raise SystemExit(f"TF-WI-{ident} marker unexpectedly missing")
+    if marker not in src or "TODO:" in src or "FIXME:" in src:
+        raise SystemExit(f"TF-WI-{ident} type-check boundary contract missing or stale marker present")
     spec = (root.parent / "docs/modernization/todo-fixme/specs" / f"TF-WI-{ident}.md").read_text()
     for token in ("status: active", "owner: compiler", "review-cycle: 30d", f"TF-WI-{ident}"):
         if token not in spec:

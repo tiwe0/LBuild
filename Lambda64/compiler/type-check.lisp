@@ -215,10 +215,12 @@ Descends into inner AND/OR/NOT types."
                            val))
                       form))
                 (t
-                 ;; Complicated case, many types.
-                 ;; This preserves all values passed through the THE.
-                 ;; TODO: Make this more efficient. Save values a la M-V-P1
-                 ;; then inspect the saved values.
+                 ;; Complicated case, many types.  The checker lambda receives
+                 ;; the complete value tuple exactly once, validates each
+                 ;; component, and reconstructs the original tuple without
+                 ;; re-evaluating VALUE.  Keep this explicit until a dedicated
+                 ;; saved-multiple-value IR can provide an allocation-free
+                 ;; implementation without changing count/rest semantics.
                  (let ((req-values (loop
                                       for ty in required-typespecs
                                       collect (gensym)))
