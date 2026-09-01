@@ -234,7 +234,13 @@
     (initialize-platform)
     (when (not (boot-option +boot-option-no-detect+))
       (detect-disk-partitions))
+    ;; Paging initialization may issue PAGER-RPC while constructing the store
+    ;; freelist.  Temporarily enable interrupts so the pager thread can run;
+    ;; the timer handler ignores ticks until INITIALIZE-TIME publishes its
+    ;; heartbeat state, and interrupts are masked again before later setup.
+    (%enable-interrupts)
     (initialize-paging-system)
+    (%disable-interrupts)
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
     ;; after this point; allocating them earlier recursively entered PAGER-RPC
