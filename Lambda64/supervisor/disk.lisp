@@ -140,6 +140,19 @@
                (eql direction :flush))
       ;; Disk is read-only, flush does nothing.
       (return-from process-one-disk-request t))
+    ;; Driver transfer limits are expressed in sectors.  Do not hand a driver
+    ;; an oversized request: unlike the public disk API, the low-level driver
+    ;; callbacks are not required to split requests themselves.  Reject before
+    ;; allocating a bounce buffer so an over-limit request cannot leak or
+    ;; retain resources while being completed asynchronously.  NIL/zero keeps
+    ;; the historical meaning of an unlimited transfer.
+    (let ((max-transfer (disk-max-transfer disk)))
+      (when (and (plusp (disk-request-n-sectors request))
+                 max-transfer
+                 (plusp max-transfer)
+                 (> (disk-request-n-sectors request) max-transfer))
+        (return-from process-one-disk-request
+          (values nil "Disk request exceeds device transfer limit."))))
     (case direction
       (:read (set-disk-read-light t))
       ((:write :flush) (set-disk-write-light t)))
@@ -184,7 +197,6 @@
                                (:write (disk-write-fn disk)))
                              (disk-device disk)
                              (disk-request-lba request)
-                             ;; FIXME: Deal with n-sectors > disk max-sectors.
                              (disk-request-n-sectors request)
                              real-buffer)
                   (when bounce-buffer

@@ -49,8 +49,9 @@
                                ((and print-labels label)
                                 (push (format nil "#x~8,'0X" (+ address target)) annotations)
                                 (format t "L~D" label))
-                               ((member (inst-opcode instruction) '(sys.lap-x86:call sys.lap-x86:jmp))
-                                ;; TODO: Differentiate between direct calls and indirect calls that
+                               ((and (member (inst-opcode instruction) '(sys.lap-x86:call sys.lap-x86:jmp))
+                                     (not (inst-direct-rip-target-p instruction)))
+                                ;; RIP-relative memory operands for indirect calls/jumps
                                 ;; use an rip-based memory operand.
                                 (let* ((abs-addr (+ address target))
                                        ;; Hopefully a real object!
@@ -197,7 +198,10 @@
   ((%size :reader dis:inst-size)
    (%lock-prefix :initarg :lock-prefix :reader inst-lock-prefix)
    (%opcode :initarg :opcode :reader inst-opcode)
-   (%operands :initarg :operands :reader inst-operands)))
+   (%operands :initarg :operands :reader inst-operands)
+   ;; True for E8/E9 relative control-flow targets, not RIP memory indirection.
+   (%direct-rip-target-p :initarg :direct-rip-target-p :initform nil
+                         :reader inst-direct-rip-target-p)))
 
 (defun make-instruction (opcode &rest operands)
   (make-instance 'x86-64-instruction :opcode opcode :operands operands))
@@ -1119,15 +1123,21 @@
 
 (defun decode-jb (context info opcode)
   (declare (ignore info))
-  (make-instruction opcode (make-instance 'effective-address
+  (let ((instruction (make-instruction opcode (make-instance 'effective-address
                                           :base :rip
-                                          :disp (dis:consume-sb8 context))))
+                                          :disp (dis:consume-sb8 context)))))
+    (when (eql opcode 'sys.lap-x86:jmp)
+      (setf (slot-value instruction '%direct-rip-target-p) t))
+    instruction))
 
 (defun decode-jz (context info opcode)
   (declare (ignore info))
-  (make-instruction opcode (make-instance 'effective-address
+  (let ((instruction (make-instruction opcode (make-instance 'effective-address
                                           :base :rip
-                                          :disp (dis:consume-sb32/le context))))
+                                          :disp (dis:consume-sb32/le context)))))
+    (when (member opcode '(sys.lap-x86:call sys.lap-x86:jmp))
+      (setf (slot-value instruction '%direct-rip-target-p) t))
+    instruction))
 
 (defun decode-group-1a (context info)
   (multiple-value-bind (reg r/m)
