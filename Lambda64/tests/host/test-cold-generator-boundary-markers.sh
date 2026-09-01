@@ -17,6 +17,8 @@ assert '(:object :r13 ,sys.int::+fref-code+)' in x86
 assert '(lap:call :rax)' in x86
 assert 'FIXME: Source locations for these are lost.' in classes
 assert "FIXME: This doesn't quite work with large bytes." in classes
+assert '(check-type size (integer 0 #x1FFF))' in environment
+assert '(check-type position (integer 0 #x1FFFFFFFFFFF))' in environment
 assert 'FIXME: Need to include an initfunction' in clos
 assert 'defun host-make-standard-environment' in environment
 assert 'defun cross-intern' in environment

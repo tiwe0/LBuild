@@ -371,6 +371,11 @@
    (%position :initarg :position :reader cross-byte-position)))
 
 (defun make-byte (size position)
+  ;; Immediate BYTE objects reserve 13 bits for SIZE and the remaining payload
+  ;; for POSITION.  Reject values that would silently truncate during cold
+  ;; serialization instead of producing a malformed descriptor.
+  (check-type size (integer 0 #x1FFF))
+  (check-type position (integer 0 #x1FFFFFFFFFFF))
   (make-instance 'cross-byte :size size :position position))
 
 (defmethod print-object ((object cross-byte) stream)
