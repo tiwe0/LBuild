@@ -9,16 +9,31 @@
 (defconstant +november-17-1858+ 678882)
 (defconstant +weekday-november-17-1858+ 2)
 
+(defglobal *daylight-saving-time-function* nil
+  "Optional function used to resolve the local DST state.
+The function is called with UNIVERSAL-TIME and the configured time-zone
+(hours west of UTC), and returns DAYLIGHT-P and SECONDS-WEST.  A NIL value
+keeps the historical fixed-offset behavior; callers may install a rule
+provider without changing the universal-time representation.")
+
+(defun %resolve-time-zone (universal-time time-zone)
+  (if time-zone
+      (values nil (* time-zone 60 60))
+      (let ((resolver *daylight-saving-time-function*))
+        (if resolver
+            (multiple-value-bind (daylight seconds-west)
+                (funcall resolver universal-time *time-zone*)
+              (values (not (null daylight)) seconds-west))
+            (values nil (* *time-zone* 60 60))))))
+
 (defun decode-universal-time (universal-time &optional time-zone)
   "Converts a universal-time to decoded time format returning the following
    nine values: second, minute, hour, date, month, year, day of week (0 =
    Monday), T (daylight savings time) or NIL (standard time), and timezone.
-   Completely ignores daylight-savings-time when time-zone is supplied."
+   An explicitly supplied time-zone uses a fixed offset, as required by CL.
+   When omitted, *DAYLIGHT-SAVING-TIME-FUNCTION* may provide DST rules."
   (multiple-value-bind (daylight seconds-west)
-      (if time-zone
-          (values nil (* time-zone 60 60))
-          ;; TODO: DST!
-          (values nil (* *time-zone* 60 60)))
+      (%resolve-time-zone universal-time time-zone)
     (multiple-value-bind (weeks secs)
         (truncate (+ (- universal-time seconds-west) +seconds-offset+)
                   +seconds-in-week+)

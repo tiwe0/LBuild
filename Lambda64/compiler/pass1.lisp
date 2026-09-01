@@ -699,14 +699,13 @@
 (defun hack-macrolet-definition (def lexenv)
   "Turn a MACROLET function definition into a name and expansion function."
   (destructuring-bind (name lambda-list &body forms) def
-    ;; FIXME: docstring permitted here.
     (let ((whole (gensym "WHOLE")))
       (multiple-value-bind (lambda-list env)
           (sys.int::fix-lambda-list-environment lambda-list)
         (when (not env)
           (setf env (gensym "ENV")))
         (multiple-value-bind (body declares)
-            (sys.int::parse-declares forms)
+            (sys.int::parse-declares forms :permit-docstring t)
           (list name
                 (sys.int::eval-in-lexenv
                  `(lambda (,whole ,env)

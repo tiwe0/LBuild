@@ -307,7 +307,6 @@
 ;;; Takes a function & a list of arguments.
 ;;; The function must be a function, but type-checking
 ;;; will be performed on the argument list.
-;;; FIXME: should enforce CALL-ARGUMENTS-LIMIT.
 (sys.int::define-lap-function %apply ()
   (:gc :no-frame :layout #*0)
   (sys.lap-x86:push :rbp)
@@ -333,10 +332,14 @@
   (sys.lap-x86:and8 :al #b1111)
   (sys.lap-x86:cmp8 :al #.sys.int::+tag-cons+)
   (sys.lap-x86:jne list-type-error)
-  ;; Push car & increment arg count
+  ;; Push car & increment arg count.
   (sys.lap-x86:push (:car :r13))
   (:gc :frame :pushed-values-register :rcx :pushed-values 1)
   (sys.lap-x86:add32 :ecx #.(ash 1 sys.int::+n-fixnum-bits+)) ; fixnum 1
+  ;; APPLY must reject lists longer than CALL-ARGUMENTS-LIMIT before
+  ;; continuing to grow the temporary argument stack.
+  (sys.lap-x86:cmp32 :ecx #.(ash sys.int::call-arguments-limit sys.int::+n-fixnum-bits+))
+  (sys.lap-x86:jae too-many-arguments)
   (:gc :frame :pushed-values-register :rcx)
   ;; Advance.
   (sys.lap-x86:mov64 :r13 (:cdr :r13))
@@ -418,6 +421,14 @@
   (sys.lap-x86:leave)
   (:gc :no-frame :layout #*0)
   (sys.lap-x86:jmp (:object :rbx #.sys.int::+function-entry-point+))
+  too-many-arguments
+  (:gc :frame)
+  ;; Discard temporary list elements before reporting the program error.
+  (sys.lap-x86:and64 :rsp #.(lognot 15))
+  (sys.lap-x86:mov64 :r8 (:constant program-error))
+  (sys.lap-x86:mov32 :ecx #.(ash 1 sys.int::+n-fixnum-bits+)) ; fixnum 1
+  (sys.lap-x86:call (:named-call error))
+  (sys.lap-x86:ud2)
   ;; R8 = function, R9 = arg-list.
   ;; (raise-type-error arg-list 'proper-list)
   list-type-error
