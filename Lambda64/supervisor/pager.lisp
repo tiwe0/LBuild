@@ -195,8 +195,11 @@ the data. Free the page with FREE-PAGE when done."
                     (boot-uuid 14) ":" (boot-uuid 15))
   (dolist (disk (all-disks))
     (let* ((sector-size (disk-sector-size disk))
-           (page (allocate-physical-pages (ceiling (max +4k-page-size+ sector-size) +4k-page-size+)
-                                          :mandatory-p "DETECT-PAGING-DISK disk buffer"))
+           ;; Paging discovery runs before the pager backend exists; avoid the
+           ;; keyword wrapper's general-area temporary argument vector here.
+           (page (%allocate-physical-pages
+                  (ceiling (max +4k-page-size+ sector-size) +4k-page-size+)
+                  :other "DETECT-PAGING-DISK disk buffer" nil))
            (page-addr (convert-to-pmap-address (* page +4k-page-size+))))
       ;; Read first 4k, figure out what to do with it.
       (when (not (disk-read disk 0 (ceiling +4k-page-size+ sector-size) page-addr))
