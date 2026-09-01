@@ -217,11 +217,12 @@
           (debug-print-line "Allocated " n-pages " pages " frame))
         frame))))
 
-(defun allocate-physical-pages (n-pages &key (type :other) mandatory-p 32-bit-only)
-  "Allocate N-PAGES of contiguous physical page frames.
-If the allocation could not be satisfied then NIL will be returned
-when MANDATORY-P is false, otherwise PANIC will be called.
-If MANDATORY-P is non-NIL, it should be a string describing the allocation."
+(defun %allocate-physical-pages (n-pages type mandatory-p 32-bit-only)
+  "Positional physical-page allocator used by cold bootstrap paths.
+
+This entry point deliberately has no keyword arguments: keyword invocation
+materializes a temporary argument vector in the general area, which is not
+safe before the pager has been initialized."
   (ensure (not (zerop n-pages)) "Tried to allocate 0 frames.")
   (when (verbose-physical-allocation-p)
     (debug-print-line "Allocating " n-pages " of type " type))
@@ -244,6 +245,13 @@ If MANDATORY-P is non-NIL, it should be a string describing the allocation."
                mandatory-p)
       (panic "No physical memory: " mandatory-p))
     frame))
+
+(defun allocate-physical-pages (n-pages &key (type :other) mandatory-p 32-bit-only)
+  "Allocate N-PAGES of contiguous physical page frames.
+If the allocation could not be satisfied then NIL will be returned
+when MANDATORY-P is false, otherwise PANIC will be called.
+If MANDATORY-P is non-NIL, it should be a string describing the allocation."
+  (%allocate-physical-pages n-pages type mandatory-p 32-bit-only))
 
 (defun physical-page-exists (page-number)
   (let ((page (* page-number +4k-page-size+)))

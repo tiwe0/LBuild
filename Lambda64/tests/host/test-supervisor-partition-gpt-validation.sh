@@ -68,11 +68,15 @@ cat >"$test_file" <<'LISP'
 
 (defun all-disks () *disks*)
 
-(defun allocate-physical-pages (n-pages &key mandatory-p &allow-other-keys)
-  (declare (ignore mandatory-p))
+(defun %allocate-physical-pages (n-pages type mandatory-p 32-bit-only)
+  (declare (ignore type mandatory-p 32-bit-only))
   (when (<= (+ *next-page* n-pages) 32)
     (prog1 *next-page*
       (incf *next-page* n-pages))))
+
+(defun allocate-physical-pages (n-pages &key mandatory-p &allow-other-keys)
+  (declare (ignore mandatory-p))
+  (%allocate-physical-pages n-pages :other mandatory-p nil))
 
 (defun convert-to-pmap-address (address) address)
 (defun release-physical-pages (&rest arguments) (declare (ignore arguments)))

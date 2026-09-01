@@ -50,9 +50,15 @@
 
 (defmacro with-pages ((virtual-address n-pages &rest options) &body body)
   (let ((n-pages-sym (gensym "N-PAGES"))
-        (page (gensym "PAGE")))
+        (page (gensym "PAGE"))
+        (type (getf options :type :other))
+        (mandatory-p (getf options :mandatory-p nil))
+        (32-bit-only (getf options :32-bit-only nil)))
     `(let* ((,n-pages-sym ,n-pages)
-            (,page (allocate-physical-pages ,n-pages-sym ,@options))
+            ;; Use the positional entry point so partition probing can
+            ;; allocate its temporary wired page before PAGER-RPC exists.
+            (,page (%allocate-physical-pages ,n-pages-sym ,type
+                                             ,mandatory-p ,32-bit-only))
             (,virtual-address (when ,page
                                 (convert-to-pmap-address (* ,page +4k-page-size+)))))
        (unwind-protect
