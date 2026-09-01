@@ -971,14 +971,25 @@
     (setf imm (ldb (byte reg-size 0) imm)))
   ;; Not all zeros or all ones, and within range.
   (assert (< 0 imm (1- (ash 1 reg-size))))
-  ;; Must be a single contiguous run of bits.
-  ;; TODO: Support masks that wrap.
-  (assert (shifted-mask-p imm))
-  (let* ((shift (count-zeros-from-lsb imm))
-         (width (count-zeros-from-lsb (lognot (ash imm (- shift))))))
+  ;; Rotate wrapping masks until the run of set bits is contiguous.  The
+  ;; rotation is folded into IMMR below, so the encoded value is unchanged.
+  (let ((rotation 0)
+        (rotated nil)
+        (mask (1- (ash 1 reg-size))))
+    (loop while (< rotation reg-size)
+          for candidate = (logand mask
+                                  (logior (ash imm (- rotation))
+                                          (ash imm (- reg-size rotation))))
+          when (shifted-mask-p candidate)
+            do (setf rotated candidate) (return)
+          do (incf rotation))
+    (assert rotated () "Mask is not a contiguous or wrapping run of bits.")
+    (let* ((shift (count-zeros-from-lsb rotated))
+           (width (count-zeros-from-lsb (lognot (ash rotated (- shift)))))
+           (rotate (mod (+ rotation shift) reg-size)))
     (logior (ash 1 12)
-            (ash (logand (- 64 shift) #x3f) 6)
-            (1- width))))
+            (ash (logand (- reg-size rotate) #x3f) 6)
+            (1- width)))))
 
 (defun encodable-bit-mask-p (imm reg-size)
   (ignore-errors (encode-bit-mask imm reg-size)))
