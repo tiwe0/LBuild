@@ -79,8 +79,11 @@
                           (eql (box-type inst) (box-type def))
                           ;; Make sure we keep this value around if the box
                           ;; result becomes visible.
-                          ;; FIXME: This is only relevant for pairs that have
-                          ;; different layouts (f32.4 vs f64.2, etc).
+                          ;; Keep the conservative visibility check for boxed
+                          ;; values. It matters most for pairs with different
+                          ;; layouts (f32.4 vs f64.2, etc.), while the
+                          ;; simd-pack exclusion below avoids exposing a
+                          ;; representation that has no stable pair layout.
                           (or (not (eql (box-type inst) 'mezzano.simd:simd-pack))
                               (notany (lambda (use)
                                         (typep use '(or base-call-instruction
