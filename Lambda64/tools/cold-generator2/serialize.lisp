@@ -1059,13 +1059,22 @@ the cold serializer without duplicating their definitions here."
     ;; Serialize NIL as the very first thing, this gives it a reasonably stable
     ;; value across images. Helps with debugging.
     (serialize-object 'nil image environment)
-    ;; Main part: Serialize all symbols & objects reachable from them.
-    ;; TODO: This traverses the object graph in depth-first order, leading
-    ;; to functions being scattered over the image randomly. It'd be nice
-    ;; to traverse in load order which would cluster functions from the same
-    ;; file together.
-    (env:do-all-environment-symbols (symbol environment)
-      (serialize-object symbol image environment))
+    ;; Main part: serialize roots in deterministic package/name order.  The
+    ;; environment registry is a hash table, so direct iteration made image
+    ;; addresses vary between identical builds.
+    (let ((symbols '()))
+      (env:do-all-environment-symbols (symbol environment)
+        (push symbol symbols))
+      (setf symbols
+            (sort symbols #'string<
+                  :key (lambda (symbol)
+                         (format nil "~A::~A"
+                                 (or (let ((package (env:cross-symbol-package environment symbol)))
+                                       (and package (package-name package)))
+                                     "")
+                                 (symbol-name symbol)))))
+      (dolist (symbol symbols)
+        (serialize-object symbol image environment)))
     (drain-initialization-queue image)
     ;; Tell the GC the area sizes.
     (finalize-areas image environment)
