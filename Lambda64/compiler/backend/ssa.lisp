@@ -186,25 +186,19 @@ Virtual registers must be defined exactly once."
                                         simple-transforms))
         (push (store-local-local inst) full-transforms)))
     (when (not (endp full-transforms))
-      ;; Bail if there are any NLX regions in the function at all.
-      (do-instructions (inst backend-function)
-        (when (typep inst 'begin-nlx-instruction)
-          (setf rejected-transforms full-transforms
-                full-transforms '())
-          (return)))
-      ;; Build dynamic contours and eliminate variables live during NLX regions.
-      ;; FIXME: The CFG doesn't quite represent NLX regions correctly, with
-      ;; nlx-begin instructions being treated as branches to NLX targets.
-      ;; Instead all call instructions within an NLX region should be treated
-      ;; as branches to live NLX targets.
-      #+(or)
+      ;; A local whose binding is live when an NLX context is established must
+      ;; not be converted: an asynchronous transfer to the context's thunk can
+      ;; bypass the SSA rename path.  Dynamic contours describe lexical state
+      ;; only; actual NLX control edges are handled by COMPUTE-ACTUAL-SUCCESSORS.
       (let ((contours (dynamic-contours backend-function)))
         (do-instructions (inst backend-function)
           (when (typep inst 'begin-nlx-instruction)
-            (let ((reject (intersection (gethash inst contours)
-                                        full-transforms)))
-              (setf rejected-transforms (append reject rejected-transforms)))
-            (setf full-transforms (set-difference full-transforms (gethash inst contours)))))))
+            (let ((live (gethash inst contours '())))
+              (setf rejected-transforms
+                    (append (intersection live full-transforms)
+                            rejected-transforms))
+              (setf full-transforms
+                    (set-difference full-transforms live)))))))
     (values simple-transforms
             full-transforms
             rejected-transforms)))

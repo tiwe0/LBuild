@@ -664,8 +664,11 @@
   (list (nlx-context instruction)))
 
 (defmethod successors (function (instruction begin-nlx-instruction))
-  (append (call-next-method)
-          (begin-nlx-targets instruction)))
+  ;; Establishing an NLX context does not transfer control to its targets.
+  ;; Those targets are entered asynchronously by a call which performs a
+  ;; non-local exit.  Treating them as ordinary CFG successors pollutes
+  ;; dominance (and dynamic-contour propagation) with impossible edges.
+  (call-next-method))
 
 (defmethod replace-all-registers ((instruction begin-nlx-instruction) substitution-function)
   (setf (nlx-context instruction) (funcall substitution-function (nlx-context instruction))))

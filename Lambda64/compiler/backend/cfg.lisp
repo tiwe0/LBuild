@@ -20,12 +20,10 @@
          (setf active-bb (next-instruction backend-function inst))
          (when active-bb
            (push active-bb basic-blocks)))
-        (begin-nlx-instruction
-         (dolist (succ (begin-nlx-targets inst))
-           (assert (typep succ 'label))
-           (pushnew succ targets)
-           (pushnew succ (gethash active-bb successors))
-           (pushnew active-bb (gethash succ predecessors))))))
+        ;; BEGIN-NLX only establishes a dynamic context; it is not a control
+        ;; transfer.  NLX target edges are added to the *actual* CFG for call
+        ;; instructions by COMPUTE-ACTUAL-SUCCESSORS instead.
+        (begin-nlx-instruction nil)))
     (dolist (targ targets)
       (assert (member targ basic-blocks)))
     (values (reverse basic-blocks) predecessors successors)))

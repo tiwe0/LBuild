@@ -27,10 +27,8 @@ if mutate:
     elif sys.argv[2] == "fpu":
         thread = thread.replace("FIXME: FPU state", "resolved: FPU state", 1)
     elif sys.argv[2] == "lock-order":
-        thread = thread.replace("FIXME: This should be done", "resolved: This should be done", 1)
-        # Also exercise the dangerous ordering change while retaining the
-        # marker, so the structural check cannot be bypassed by a comment-only
-        # mutation.
+        # Exercise the dangerous ordering change so the structural check
+        # cannot be bypassed by a comment-only mutation.
         cleanup_start = thread.index("(defun thread-final-cleanup")
         cleanup_end = thread.find("(defun thread-join", cleanup_start)
         cleanup = thread[cleanup_start:cleanup_end]
@@ -41,12 +39,11 @@ if mutate:
     elif sys.argv[2] == "fref":
         runtime = runtime.replace("FIXME: FREF should be locked for the duration", "resolved fref publication", 1)
 
-required_thread = (
-    "FIXME, HACK! Virtio drivers seem to be broken",
-    "FIXME: FPU state doesn't need to be completely saved",
-    "FIXME: This should be done with the global lock held",
-)
-for marker in required_thread:
+# Virtio and FPU notes remain as explicit constraints until their respective
+# cross-architecture redesigns land.  The cleanup lock-order FIXME is resolved
+# and is checked structurally below.
+for marker in ("FIXME, HACK! Virtio drivers seem to be broken",
+               "FIXME: FPU state doesn't need to be completely saved"):
     if marker not in thread:
         raise SystemExit(f"missing scheduler boundary marker: {marker}")
 
@@ -72,10 +69,16 @@ arm64_save = arm64_thread[arm64_thread.index("define-lap-function save-fpu-state
 for reg in range(32):
     if f":q{reg}" not in arm64_save:
         raise SystemExit(f"ARM64 FPU save missing vector register q{reg}")
-# The join event is intentionally published before taking the global lock.
+# Cleanup transitions to :dead while holding the global lock, then publishes
+# the join event after releasing it, and reacquires before rescheduling.
 cleanup = thread[thread.index("(defun thread-final-cleanup"):]
-if cleanup.index("(setf (event-state") > cleanup.index("(acquire-global-thread-lock"):
-    raise SystemExit("thread cleanup lock-order boundary changed")
+lock = cleanup.index("(acquire-global-thread-lock)")
+dead = cleanup.index("(setf (thread-state self) :dead)")
+unlock = cleanup.index("(release-global-thread-lock)", dead)
+event = cleanup.index("(setf (event-state (thread-join-event self))", unlock)
+relock = cleanup.index("(acquire-global-thread-lock)", event)
+if not (lock < dead < unlock < event < relock):
+    raise SystemExit("thread cleanup must publish join event after dead transition and lock release")
 # `event-state` wakes threads while holding the big wait-object lock and a
 # wait-queue lock; wake-thread then acquires the global thread lock.  Taking
 # the global lock first in cleanup would therefore invert this established
