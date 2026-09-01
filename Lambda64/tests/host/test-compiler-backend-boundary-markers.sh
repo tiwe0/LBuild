@@ -11,7 +11,6 @@ checks={
  '0025':('compiler/backend/instructions.lisp','TODO: Support arbitrary environments.'),
  '0029':('compiler/backend/ssa.lisp',"FIXME: The CFG doesn't quite represent NLX regions correctly"),
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
- '0032':('compiler/backend/x86-64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0033':('compiler/backend/x86-64/codegen.lisp','FIXME: Emit jump table as trailer.'),
 }
 for ident,(rel,marker) in checks.items():
@@ -48,6 +47,7 @@ resolved={
  '0011':('compiler/backend/arm64/codegen.lisp','FIXME: This is wildly wrong and will cause the GC to lose live values.'),
  '0012':('compiler/backend/arm64/codegen.lisp',"FIXME: Fuckin' stop doing this!!!"),
  '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
+ '0032':('compiler/backend/x86-64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0034':('compiler/backend/x86-64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
  '0035':('compiler/backend/x86-64/codegen.lisp','TODO: Do this without a temporary integer register.'),
  '0040':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
