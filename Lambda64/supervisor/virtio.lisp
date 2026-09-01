@@ -570,7 +570,11 @@
   (setf *virtio-registry-lock* :unlocked)
   (when (not (boundp '*virtio-drivers*))
     (setf *virtio-drivers* '()))
-  ;; TODO: This should notify drivers that devices are gone.
+  ;; Device objects from a previous boot are invalidated by the boot epoch;
+  ;; notifying their drivers here would touch stale transport state before the
+  ;; new FDT/PCI scan has rebuilt the registry.  Driver detach notifications
+  ;; are therefore limited to explicit runtime removal via
+  ;; VIRTIO-DRIVER-DETACHED.
   (setf *virtio-devices* '()
         *virtio-late-probe-devices* '())
   (sup::add-deferred-boot-action 'virtio-late-probe))
