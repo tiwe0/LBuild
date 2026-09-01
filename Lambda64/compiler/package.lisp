@@ -234,7 +234,7 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (cl:defmacro mezzano.extensions:cas (place old new)
     `(progn (setf ,place ,new) ,old))
-  (cl:defmacro mezzano.extensions:atomic-swapf (new place)
+  (cl:defmacro mezzano.extensions:atomic-swapf (place new)
     `(prog1 ,place (setf ,place ,new))))
 
 (defpackage :mezzano.debug

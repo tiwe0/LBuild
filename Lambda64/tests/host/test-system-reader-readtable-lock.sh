@@ -18,7 +18,7 @@ required = [
     "(lock nil)",
     "(defmacro with-readtable-lock",
     "(sys.int::cas (readtable-lock ,rt) nil t)",
-    "(sys.int::atomic-swapf nil (readtable-lock ,rt))",
+    "(sys.int::atomic-swapf (readtable-lock ,rt) nil)",
     "(with-readtable-lock (readtable)",
     "(with-readtable-lock (rt)",
     "(%readtable-syntax-type disp-char rt)",

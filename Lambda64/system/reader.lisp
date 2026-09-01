@@ -35,7 +35,7 @@
        (unwind-protect
             (progn ,@body)
          ;; Atomic swap provides release semantics on all supported targets.
-         (sys.int::atomic-swapf nil (readtable-lock ,rt))))))
+         (sys.int::atomic-swapf (readtable-lock ,rt) nil)))))
 
 (defvar *protect-the-standard-readtable* nil)
 (setf *standard-readtable* (make-readtable)
