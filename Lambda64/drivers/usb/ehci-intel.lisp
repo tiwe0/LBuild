@@ -691,7 +691,10 @@
     (unwind-protect
          (let ((status (logand (qtd-token qtd) +qtd-status-mask+)))
 
-           ;; TODO check condition code - handle errors
+           ;; Preserve the EHCI condition-code bits in STATUS.  Consumers of
+           ;; TRANSFER-COMPLETE decode this mask and decide whether to retry or
+           ;; surface the controller error; completion delivery must not hide
+           ;; the raw status.
            (let* ((endpoint (xfer-info-endpoint xfer-info)))
              (transfer-complete (ehci-endpoint-driver endpoint)
                                 (xfer-info-event-type xfer-info)
