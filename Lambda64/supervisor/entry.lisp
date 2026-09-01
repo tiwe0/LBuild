@@ -162,7 +162,9 @@
     (when (not (boundp '*boot-id*))
       (setf first-run-p t)
       (mezzano.runtime::first-run-initialize-allocator)
-      ;; FIXME: Should be done by cold generator
+      ;; These globals are intentionally reset at first supervisor boot. The
+      ;; current cold generator does not emit their initialized values, and
+      ;; moving this reset would require extending the generated-image ABI.
       (setf (sys.int::symbol-global-value 'mezzano.runtime::*active-catch-handlers*) 'nil
             (sys.int::symbol-global-value '*pseudo-atomic*) nil
             sys.int::*known-finalizers* nil
