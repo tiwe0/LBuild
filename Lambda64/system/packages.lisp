@@ -12,10 +12,11 @@
 (defvar *keyword-package* nil
   "The keyword package.")
 
-;; FIXME: This is a recursive mutex because some package functions (eg INTERN)
-;; call other package functions (eg FIND-PACKAGE). This needs to be untangled
-;; at some point by providing versions of the inner functions that don't
-;; take the locks.
+;; Package operations may call one another (for example INTERN calls
+;; FIND-PACKAGE).  The mutex itself is non-recursive; nested calls detect that
+;; the current thread already owns it and execute without reacquiring it.
+;; Keeping this ownership check here also lets the error handler temporarily
+;; release the lock while the debugger runs, then reacquire it for restarts.
 (defun call-with-package-system-lock (thunk)
    (if (mezzano.supervisor:mutex-held-p *package-system-lock*)
        (funcall thunk)
