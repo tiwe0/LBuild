@@ -580,7 +580,11 @@
   (setf (virtio-device-claimed device) nil)
   (sup:with-device-access ((virtio-device-boot-id device) nil)
     (setf (virtio-device-status device) +virtio-status-failed+)
-    ;; TODO: Maybe reprobe the device?
+    ;; Do not automatically reprobe here.  A failed device must first be
+    ;; reset by its transport, and invoking another driver's probe while the
+    ;; detaching driver still owns device-access can deadlock or race queue
+    ;; teardown.  Registry registration/probe remains the explicit reprobe
+    ;; boundary once transport reset support is available.
     ;; Free the virtqueues.
     (dotimes (queue (length (virtio-device-virtqueues device)))
       (virtio-deconfigure-1-virtqueue device queue))))
