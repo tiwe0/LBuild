@@ -68,9 +68,10 @@ if save_pos < 0 or partial_pos < 0 or save_pos > partial_pos:
 # x86-64; Q0-Q31 stores on ARM64).
 if "(fxsave " not in x86_thread:
     raise SystemExit("x86-64 voluntary switch lacks complete FPU save primitive")
-for reg in ("q0", "q2", "q16", "q30"):
-    if f":stp :{reg} " not in arm64_thread:
-        raise SystemExit(f"ARM64 FPU save missing vector register {reg}")
+arm64_save = arm64_thread[arm64_thread.index("define-lap-function save-fpu-state"):arm64_thread.index("define-lap-function restore-fpu-state")]
+for reg in range(32):
+    if f":q{reg}" not in arm64_save:
+        raise SystemExit(f"ARM64 FPU save missing vector register q{reg}")
 # The join event is intentionally published before taking the global lock.
 cleanup = thread[thread.index("(defun thread-final-cleanup"):]
 if cleanup.index("(setf (event-state") > cleanup.index("(acquire-global-thread-lock"):
