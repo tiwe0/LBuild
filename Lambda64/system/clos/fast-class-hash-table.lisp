@@ -27,10 +27,9 @@
   (let ((storage (fast-class-hash-table-table table)))
     (cond ((mezzano.extensions:weak-pointer-p storage)
            ;; Single entry.
-           ;; TODO: Replace with WEAK-POINTER-PAIR when optimizations are implemented
-           (if (eq class (sys.int::%weak-pointer-key (the mezzano.extensions:weak-pointer storage)))
-               (sys.int::%weak-pointer-value (the mezzano.extensions:weak-pointer storage))
-               nil))
+           (multiple-value-bind (key value livep)
+               (mezzano.extensions:weak-pointer-pair storage)
+             (and livep (eq class key) value)))
           ((not storage)
            ;; No entries.
            nil)
