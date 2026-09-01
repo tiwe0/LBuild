@@ -45,8 +45,12 @@
     (list* mc method-combination-options)))
 
 (defun resolve-method-combination (name &rest args)
-  ;; FIXME: Needs to use an appropriate instance of the generic function
-  (find-method-combination #'class-name name args))
+  ;; DEFGENERIC has not installed the eventual generic function yet.  Dispatch
+  ;; method-combination lookup with the prototype of its declared GF class,
+  ;; rather than an unrelated generic function such as CLASS-NAME.
+  (find-method-combination
+   (class-prototype (find-class 'standard-generic-function))
+   name args))
 
 (defmacro define-method-combination (name &rest args)
   (cond ((and args
