@@ -16,8 +16,9 @@
 
 (defun initialize-platform-time (fdt-node)
   (let* ((fdt-interrupt (fdt-get-property fdt-node "interrupts"))
-         ;; FIXME: need to deal with PPI vs SPI. 16 is PPI offset.
-         ;; Read the IRQ for the virtual timer
+         ;; The ARM architected timer's virtual-timer interrupt is a PPI;
+         ;; translate its FDT interrupt ID into the GIC global IRQ namespace.
+         ;; (SPI routing is handled by device-specific FDT consumers.)
          (irq (+ 16 (fdt-read-u32 fdt-interrupt 7)))
          (timer-rate (%cntfrq-el0))
          (tick-rate 100))

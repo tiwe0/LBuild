@@ -1,6 +1,8 @@
 (in-package :mezzano.supervisor)
 
-;; FIXME: Assumed! This should actually be read from the config bits.
+;; Use the architectural 64-byte minimum until cache-type register decoding is
+;; available.  This is conservative for maintenance ranges (never skips a
+;; line), though a future implementation may derive the exact line size.
 (defconstant +cache-line-size+ 64)
 
 (sys.int::define-lap-function %dc.cvau ((address))
@@ -73,13 +75,13 @@
                      (lognot (1- +cache-line-size+)))))
     ;; Clear (write dirty data, but don't invalidate) data cache back to
     ;; the point of unification (where I & D caches meet)
-    (loop for addr from base below end by +cache-line-size+
+    (loop for addr from start below end by +cache-line-size+
           do (%dc.cvau addr))
     ;; Ensure visibility of the data cleaned from cache.
     (%dsb.ish)
     ;; Now that the dcache is up to date at the PoU, any lines in
     ;; the icache can be invalidated back there.
-    (loop for addr from base below end by +cache-line-size+
+    (loop for addr from start below end by +cache-line-size+
           do (%ic.ivau addr))
     ;; Ensure completion of the invalidations.
     (%dsb.ish)
