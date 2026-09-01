@@ -66,13 +66,22 @@
 (defun gic-max-interrupts ()
   (* 32 (1+ (ldb (byte 5 0) (gic-dist-reg +gicd-typer+)))))
 
-(defun initialize-gic (distributor-address cpu-address)
-  (setf *gic-distributor-base* distributor-address
-        *gic-cpu-interface-base* cpu-address)
+(defun initialize-gic-irq-table ()
+  "Create software IRQ objects once the pager and dynamic allocator are live."
   (when (not (boundp '*gic-irqs*))
     (setf *gic-irqs* (sys.int::make-simple-vector 1024 :wired)))
   (dotimes (i 1024)
-    (setf (svref *gic-irqs* i) nil))
+    (setf (svref *gic-irqs* i) (make-irq :platform-number i))))
+
+(defun initialize-gic (distributor-address cpu-address)
+  (setf *gic-distributor-base* distributor-address
+        *gic-cpu-interface-base* cpu-address)
+  ;; The early platform pass runs before *BOOT-ID*, the pager, and dynamic
+  ;; allocation are initialized.  Defer construction of the IRQ structures
+  ;; until the post-boot worker; the hardware remains fully configured here.
+  (if (boundp '*boot-id*)
+      (initialize-gic-irq-table)
+      (add-deferred-boot-action #'initialize-gic-irq-table))
   (configure-gic))
 
 (defun initialize-fdt-gic-400 (fdt-node address-cells size-cells)
@@ -94,8 +103,9 @@
       ;; Set external interrupts to target cpu 0.
       (loop for intr from 8 below (truncate n-interrupts 4)
             do (setf (gic-dist-reg (+ +gicd-itargetsr0+ (* intr 4))) #x01010101)))
-    (dotimes (i n-interrupts)
-      (setf (svref *gic-irqs* i) (make-irq :platform-number i))))
+    ;; IRQ objects are populated by INITIALIZE-GIC-IRQ-TABLE after the pager
+    ;; is online; keep this early hardware-only path allocation-free.
+    )
   ;; Enable the distributor.
   (setf (gic-dist-reg +gicd-ctlr+) 1)
   (configure-gic-cpu)

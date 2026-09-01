@@ -1087,15 +1087,24 @@ footholds will be reenabled, otherwise footholds will stay inhibited."
   (release-stw-locks))
 
 (defun call-with-pseudo-atomic (thunk)
-  (when (eql *world-stopper* (current-thread))
-    (panic "Going PA with world stopped!"))
-  (ensure-interrupts-enabled)
-  (inhibit-thread-pool-blocking-hijack
-   (%call-on-wired-stack-without-interrupts #'%enter-pseudo-atomic nil)
-   (unwind-protect
-        (let ((*pseudo-atomic* t))
-          (funcall thunk))
-     (%call-on-wired-stack-without-interrupts #'%leave-pseudo-atomic nil))))
+  ;; Before BOOT-ID is established there is no scheduler or competing thread,
+  ;; and boot code intentionally runs with interrupts masked.  Requiring the
+  ;; normal pseudo-atomic entry contract here would call ENSURE-INTERRUPTS-
+  ;; ENABLED and panic during first object allocation.  Execute the body
+  ;; directly until the first boot epoch exists; normal protection resumes
+  ;; immediately afterwards.
+  (if (not (boundp '*boot-id*))
+      (funcall thunk)
+      (progn
+        (when (eql *world-stopper* (current-thread))
+          (panic "Going PA with world stopped!"))
+        (ensure-interrupts-enabled)
+        (inhibit-thread-pool-blocking-hijack
+         (%call-on-wired-stack-without-interrupts #'%enter-pseudo-atomic nil)
+         (unwind-protect
+              (let ((*pseudo-atomic* t))
+                (funcall thunk))
+           (%call-on-wired-stack-without-interrupts #'%leave-pseudo-atomic nil))))))
 
 (defmacro with-pseudo-atomic (&body body)
   `(call-with-pseudo-atomic (dx-lambda () ,@body)))

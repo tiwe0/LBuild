@@ -114,6 +114,10 @@
 
 (sys.int::defglobal *boot-id*)
 
+;; ARM64 cold images provide a wired event for the first boot.  Creating the
+;; event dynamically would require the pager before it has been initialized.
+(sys.int::defglobal *initial-boot-event*)
+
 (defun current-boot-id ()
   *boot-id*)
 
@@ -172,7 +176,9 @@
     (initialize-early-platform)
     (when (boundp '*boot-id*)
       (setf (event-state *boot-id*) t))
-    (setf *boot-id* (make-event :name 'boot-epoch))
+    (setf *boot-id* (if (and first-run-p (boundp '*initial-boot-event*))
+                        *initial-boot-event*
+                        (make-event :name 'boot-epoch)))
     (initialize-threads)
     (initialize-sync first-run-p)
     (initialize-disk)

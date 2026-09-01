@@ -218,11 +218,18 @@
              (setf (mutex-state mutex) :unlocked))))))
 
 (defun call-with-mutex (thunk mutex wait-p)
-  (unwind-protect
-       (when (acquire-mutex mutex wait-p)
-         (funcall thunk))
-    (when (mutex-held-p mutex)
-      (release-mutex mutex))))
+  ;; During bootstrap the BSP has no scheduler or competing threads yet, and
+  ;; BOOT-ID is intentionally still unbound.  Allocation may nevertheless
+  ;; nest mutex-using helpers while interrupts are disabled.  Entering the
+  ;; normal contended path here calls ENSURE-INTERRUPTS-ENABLED and panics;
+  ;; execute the critical section directly until the first boot epoch exists.
+  (if (not (boundp '*boot-id*))
+      (funcall thunk)
+      (unwind-protect
+           (when (acquire-mutex mutex wait-p)
+             (funcall thunk))
+        (when (mutex-held-p mutex)
+          (release-mutex mutex)))))
 
 (defmacro with-mutex ((mutex &key (wait-p t) resignal-errors) &body body)
   "Run body with MUTEX locked.

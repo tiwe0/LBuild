@@ -34,6 +34,24 @@
         (env:make-stack environment (* 128 1024)))
   (setf (env:cross-symbol-value environment 'mezzano.supervisor::*bsp-cpu*)
         (env:make-structure environment 'mezzano.supervisor::arm64-cpu))
+  ;; BOOTLOADER-ENTRY-POINT creates the first boot event before the pager is
+  ;; initialized.  Provide a wired event object up front so that transition
+  ;; does not enter the dynamic allocator.
+  (setf (env:cross-symbol-value environment 'mezzano.supervisor::*initial-boot-event*)
+        (env:make-structure environment 'mezzano.supervisor::event
+                            :name 'boot-epoch
+                            :%lock :unlocked
+                            :head nil
+                            :tail nil
+                            :%state nil
+                            :monitors nil))
+  ;; CONFIGURE-GIC runs before the pager is online and needs a fixed 1024-slot
+  ;; IRQ table.  Materialize it in the wired image so early boot does not
+  ;; attempt a dynamic-area allocation for the table itself.
+  (setf (env:cross-symbol-value environment 'mezzano.supervisor::*gic-irqs*)
+        (env:make-array environment 1024
+                        :initial-element nil
+                        :area :wired))
   ;; Early boot can fall back from the TLAB fast path into the general
   ;; allocator before FIRST-RUN-INITIALIZE-ALLOCATOR runs.  Provide the lock
   ;; object that those wired-allocation paths expect instead of leaving its
@@ -111,7 +129,28 @@
       ;; These vectors are used when the CPU moves from a lower EL.
       ;; We're always running in EL1, so these are not used.
       (dotimes (i 8)
-        (gen-invalid (+ #x400 (* i #x80)))))))
+        (gen-invalid (+ #x400 (* i #x80)))))
+    ;; Finalize/post-serialization can revisit already materialized symbol
+    ;; cells.  Write the bootstrap allocator defaults after all image object
+    ;; slots exist, otherwise an earlier snapshot may retain UNBOUND.
+    (dolist (name '(sys.int::*general-area-young-gen-bump*
+                    sys.int::*general-area-young-gen-limit*
+                    sys.int::*cons-area-young-gen-bump*
+                    sys.int::*cons-area-young-gen-limit*
+                    sys.int::*young-gen-newspace-bit*
+                    sys.int::*young-gen-newspace-bit-raw*))
+      (setf (ser::image-symbol-value image environment name)
+            (ser:serialize-object 0 image environment)))
+    (dolist (name '(mezzano.runtime::*general-area-expansion-granularity*
+                    mezzano.runtime::*cons-area-expansion-granularity*))
+      (setf (ser::image-symbol-value image environment name)
+            (ser:serialize-object sys.int::+allocation-minimum-alignment+
+                                  image environment)))
+    (dolist (name '(sys.int::*gc-in-progress*
+                    mezzano.runtime::*enable-allocation-profiling*
+                    mezzano.supervisor::*world-stopper*))
+      (setf (ser::image-symbol-value image environment name)
+            (ser:serialize-object nil image environment)))))
 
 (defmethod ser:pre-serialize-image-for-target (image environment (target (eql :arm64)))
   ;; FINALIZE-AREAS freezes allocation and constructs freelists.  The ARM64
@@ -162,10 +201,16 @@
                   sys.int::*general-area-young-gen-limit*
                   sys.int::*cons-area-young-gen-bump*
                   sys.int::*cons-area-young-gen-limit*
+                  sys.int::*young-gen-newspace-bit*
                   sys.int::*young-gen-newspace-bit-raw*))
     (setf (env:symbol-global-value environment
                                    (env:translate-symbol environment name))
           0))
+  (dolist (name '(mezzano.runtime::*general-area-expansion-granularity*
+                  mezzano.runtime::*cons-area-expansion-granularity*))
+    (setf (env:symbol-global-value environment
+                                   (env:translate-symbol environment name))
+          sys.int::+allocation-minimum-alignment+))
   (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
                   sys.int::*gc-in-progress*
                   mezzano.runtime::*enable-allocation-profiling*
@@ -173,10 +218,15 @@
                   sys.int::*general-area-young-gen-limit*
                   sys.int::*cons-area-young-gen-bump*
                   sys.int::*cons-area-young-gen-limit*
+                  sys.int::*young-gen-newspace-bit*
                   sys.int::*young-gen-newspace-bit-raw*
+                  mezzano.runtime::*general-area-expansion-granularity*
+                  mezzano.runtime::*cons-area-expansion-granularity*
                   mezzano.supervisor::*world-stopper*
                   mezzano.supervisor::*bsp-cpu*
                   mezzano.supervisor::*bsp-wired-stack*
+                  mezzano.supervisor::*initial-boot-event*
+                  mezzano.supervisor::*gic-irqs*
                   mezzano.supervisor::*n-up-cpus*
                   mezzano.supervisor::*cpus*
                   ;; These two functions run before the normal Lisp roots are
@@ -225,10 +275,15 @@
                          sys.int::*general-area-young-gen-limit*
                          sys.int::*cons-area-young-gen-bump*
                          sys.int::*cons-area-young-gen-limit*
+                         sys.int::*young-gen-newspace-bit*
                          sys.int::*young-gen-newspace-bit-raw*
+                         mezzano.runtime::*general-area-expansion-granularity*
+                         mezzano.runtime::*cons-area-expansion-granularity*
                          mezzano.supervisor::*world-stopper*
                          mezzano.supervisor::*bsp-cpu*
                          mezzano.supervisor::*bsp-wired-stack*
+                         mezzano.supervisor::*initial-boot-event*
+                         mezzano.supervisor::*gic-irqs*
                          mezzano.supervisor::*n-up-cpus*
                          mezzano.supervisor::*cpus*))
           (progn
@@ -264,4 +319,27 @@
           (ser:serialize-object fn image environment)))
       (ser:serialize-object fref image environment)
     )
+  ;; Some bootstrap symbols may already have been serialized while traversing
+  ;; earlier roots.  Updating only the cross-environment cell above would then
+  ;; leave the image's copied value slot at the original unbound marker.  Patch
+  ;; the serialized slots explicitly so the first allocator probe observes
+  ;; the same zero/NIL defaults in the image itself.
+  (dolist (name '(sys.int::*general-area-young-gen-bump*
+                  sys.int::*general-area-young-gen-limit*
+                  sys.int::*cons-area-young-gen-bump*
+                  sys.int::*cons-area-young-gen-limit*
+                  sys.int::*young-gen-newspace-bit*
+                  sys.int::*young-gen-newspace-bit-raw*))
+    (setf (ser::image-symbol-value image environment name)
+          (ser:serialize-object 0 image environment)))
+  (dolist (name '(mezzano.runtime::*general-area-expansion-granularity*
+                  mezzano.runtime::*cons-area-expansion-granularity*))
+    (setf (ser::image-symbol-value image environment name)
+          (ser:serialize-object sys.int::+allocation-minimum-alignment+
+                                image environment)))
+  (dolist (name '(sys.int::*gc-in-progress*
+                  mezzano.runtime::*enable-allocation-profiling*
+                  mezzano.supervisor::*world-stopper*))
+    (setf (ser::image-symbol-value image environment name)
+          (ser:serialize-object nil image environment)))
   nil))

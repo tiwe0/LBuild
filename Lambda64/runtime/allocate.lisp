@@ -423,9 +423,16 @@
        (>= remaining (* expansion 2))))
 
 (defun expand-allocation-area (name required-minimum-expansion granularity-symbol limit-symbol address-tag)
-  (setf required-minimum-expansion (sys.int::align-up required-minimum-expansion sys.int::+allocation-minimum-alignment+))
+  ;; This path can run before the dynamic function area is mapped.  Keep the
+  ;; alignment arithmetic inline instead of calling SUP::ALIGN-UP, whose
+  ;; function object may not be resident yet during bootstrap.
+  (setf required-minimum-expansion
+        (logand (+ required-minimum-expansion
+                   (1- sys.int::+allocation-minimum-alignment+))
+                (lognot (1- sys.int::+allocation-minimum-alignment+))))
   (let* ((current-limit (sys.int::symbol-global-value limit-symbol))
-         (remaining (sys.int::align-down (bytes-remaining) sys.int::+allocation-minimum-alignment+))
+         (remaining (let ((alignment sys.int::+allocation-minimum-alignment+))
+                      (logand (bytes-remaining) (lognot (1- alignment)))))
          (expansion (max required-minimum-expansion
                          (sys.int::symbol-global-value granularity-symbol))))
     ;; Dynamic areas need twice the space for collection.
