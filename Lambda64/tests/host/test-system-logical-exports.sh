@@ -10,8 +10,13 @@ python3 - "$source_file" "${LOGICAL_EXPORTS_MUTATION_RUN:-}" <<'PY'
 from pathlib import Path
 import sys
 source = Path(sys.argv[1]).read_text(encoding='utf-8')
-marker = '(eval-when (:compile-toplevel :load-toplevel :execute)\n  (import '
-start = source.index(marker)
+markers = [
+    '(eval-when (:compile-toplevel :load-toplevel :execute)\n  (import ',
+    '(eval-when (:compile-toplevel :load-toplevel :execute)\n  (shadowing-import ',
+]
+start = min((source.index(marker) for marker in markers if marker in source), default=-1)
+if start < 0:
+    raise SystemExit('logical arithmetic export contract marker missing')
 end = source.index('\n\n(macrolet', start)
 form = source[start:end]
 if sys.argv[2]:
