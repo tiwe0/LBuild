@@ -14,7 +14,7 @@ for token in ('*jump-tables*', 'Emit NLX dispatch tables after the function body
     assert token in source, token
 for token in ('per-function `*jump-tables*`', 'literal pools',
               'Minimal implementation design', 'cold serializer',
-              'ADR range'):
+              '`ADR` range'):
     assert token in spec, token
 PY
 printf 'ARM64 NLX jump-table trailer boundary checks passed\n'
