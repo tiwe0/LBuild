@@ -441,14 +441,36 @@
          (values (gethash symbol cross-support::*system-symbol-declarations*)))))
 
 (defun x-eval (form env)
-  (declare (ignore env))
   (when *compile-print*
     (let ((*print-length* 3)
           (*print-level* 2))
       (format t ";; X-eval: ~S~%" form)))
-  ;; The cross compiler's evaluator intentionally targets the host image;
-  ;; lexical macro expansion is performed before reaching this boundary.
-  (eval form))
+  ;; Reify lexical macro definitions for the host evaluator.  MACROLET needs
+  ;; source forms, while our environment stores expansion functions, so route
+  ;; each generated macro through a fresh, dynamically bound symbol.
+  (let ((defs (and env (slot-value (environment-macro-definitions-only env)
+                                   '%functions)))
+        (holders '()))
+    (unwind-protect
+         (if (null defs)
+             (eval form)
+             (progn
+               (dolist (def defs)
+                 (destructuring-bind (name fn) def
+                   (declare (ignore name))
+                   (let ((holder (gensym "X-MACRO-")))
+                     (push (cons holder fn) holders)
+                     (setf (symbol-function holder) fn))))
+               (eval `(macrolet
+                          ,(loop for (name fn) in defs
+                                 for holder = (car (find-if (lambda (x)
+                                                               (eq (cdr x) fn)) holders))
+                                 collect `(,name (&whole whole &environment menv)
+                                           (funcall (symbol-function ',holder)
+                                                    whole menv)))
+                          ,form))))
+      (dolist (entry holders)
+        (fmakunbound (car entry))))))
 
 (defstruct cross-function
   mc
