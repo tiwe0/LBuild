@@ -11,7 +11,22 @@
        (emit (make-instance 'ir:unbox-fixnum-instruction
                             :source ,base-address
                             :destination ,unboxed-address))
-       (cond ((constant-value-p ,index '(signed-byte 6)) ; TODO: This could be cleverer based on the transfer size, instructions can support a 12-bit unsigned scaled-by-width immediate
+       ;; LDR/STR accept an unsigned, transfer-size-scaled 12-bit offset in
+       ;; addition to the signed 9-bit unscaled form.  Keep scale 1 on the
+       ;; register path: the integer accessors use it for *unscaled* accesses
+       ;; whose transfer width may be 2, 4, or 8 bytes, so alignment cannot be
+       ;; inferred from SCALE alone.
+       (cond ((and (constant-value-p ,index 'fixnum)
+                   (let ((offset (* (fetch-constant-value ,index) ,scale)))
+                     (if ,ldp/stp-address
+                         ;; LDP/STP use a signed 7-bit immediate scaled by
+                         ;; the pair width (8 bytes here).
+                         (and (<= -512 offset 504)
+                              (zerop (mod offset 8)))
+                         (or (<= -256 offset 255)
+                             (and (> ,scale 1)
+                                  (<= 0 offset (* 4095 ,scale))
+                                  (zerop (mod offset ,scale)))))))
               (let ((,effective-address (list ,unboxed-address (* (fetch-constant-value ,index) ,scale)))
                     (,additional-inputs (list ,unboxed-address)))
                 ,@body))
