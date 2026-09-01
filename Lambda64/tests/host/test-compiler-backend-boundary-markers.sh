@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1])
 checks={
- '0021':('compiler/backend/canon.lisp','TODO: Insert debug variable updates where needed.'),
  '0025':('compiler/backend/instructions.lisp','TODO: Support arbitrary environments.'),
  '0029':('compiler/backend/ssa.lisp',"FIXME: The CFG doesn't quite represent NLX regions correctly"),
 }
@@ -20,12 +19,12 @@ for ident,(rel,marker) in checks.items():
  for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
   if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
 
-# Mutation-aware guards for the three intentionally retained compiler
-# boundaries.  These checks ensure a future edit cannot silently weaken the
-# conservative behavior while the full ABI/debug fixture is still pending.
+# Mutation-aware guards for the intentionally retained compiler boundaries.
+# These checks ensure a future edit cannot silently weaken the conservative
+# behavior while the full ABI fixtures are still pending.
 canon=(root/'compiler/backend/canon.lisp').read_text()
-if ':destination (ir:call-result inst)' not in canon or ':source return-reg' not in canon:
- raise SystemExit('TF-WI-0021 canonical call-result move contract missing')
+if 'debug-update-variable-instruction' not in canon or ':representation (third entry)' not in canon:
+ raise SystemExit('TF-WI-0021 debug-update contract missing')
 instructions=(root/'compiler/backend/instructions.lisp').read_text()
 if '(list (make-dx-closure-function instruction)\n        (make-dx-closure-environment instruction))' not in instructions:
  raise SystemExit('TF-WI-0025 closure environment operand contract missing')
@@ -52,6 +51,7 @@ resolved={
  '0040':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
  '0041':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
  '0014':('compiler/backend/arm64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
+ '0021':('compiler/backend/canon.lisp','TODO: Insert debug variable updates where needed.'),
  '0009':('compiler/backend/arm64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
 }
