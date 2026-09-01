@@ -19,9 +19,23 @@
              (:copier nil))
   (case :upcase :type (member :upcase :downcase :preserve :invert))
   (base-characters (make-array 256 :initial-element nil) :type (simple-vector 256))
-  ;; Full synchronization. Readtables can be modified from any thread.
-  ;; FIXME: A full lock around the readtable would be better.
+  ;; Readtables can be modified from any thread.  The lock is deliberately a
+  ;; small atomic flag rather than a supervisor mutex: reader.lisp is loaded
+  ;; during cold start, before supervisor synchronization primitives exist.
+  (lock nil)
   (extended-characters (make-hash-table :synchronized t) :type hash-table))
+
+(defmacro with-readtable-lock ((readtable) &body body)
+  "Run BODY while excluding concurrent readers and writers of READTABLE."
+  (let ((rt (gensym "READTABLE")))
+    `(let ((,rt ,readtable))
+       (loop while (not (eql (sys.int::cas (readtable-lock ,rt) nil t)
+                              nil))
+             do (sys.int::cpu-relax))
+       (unwind-protect
+            (progn ,@body)
+         ;; Atomic swap provides release semantics on all supported targets.
+         (sys.int::atomic-swapf nil (readtable-lock ,rt))))))
 
 (defvar *protect-the-standard-readtable* nil)
 (setf *standard-readtable* (make-readtable)
@@ -49,22 +63,24 @@
   (check-type char character)
   (unless readtable
     (setf readtable *standard-readtable*))
-  (cond ((latin1-char-p char)
-         ;; Base character.
-         (svref (readtable-base-characters readtable) (char-code char)))
-        (t ;; Extended character.
-         (gethash char (readtable-extended-characters readtable) nil))))
+  (with-readtable-lock (readtable)
+    (cond ((latin1-char-p char)
+           ;; Base character.
+           (svref (readtable-base-characters readtable) (char-code char)))
+          (t ;; Extended character.
+           (gethash char (readtable-extended-characters readtable) nil)))))
 
 (defun (setf readtable-syntax-type) (value char &optional (readtable *readtable*))
   (check-type readtable (or readtable null) "a readtable designator")
   (check-type char character)
   (unless readtable
     (setf readtable *standard-readtable*))
-  (cond ((latin1-char-p char)
-         ;; Base character.
-         (setf (svref (readtable-base-characters readtable) (char-code char)) value))
-        (t ;; Extended character.
-         (setf (gethash char (readtable-extended-characters readtable)) value))))
+  (with-readtable-lock (readtable)
+    (cond ((latin1-char-p char)
+           ;; Base character.
+           (setf (svref (readtable-base-characters readtable) (char-code char)) value))
+          (t ;; Extended character.
+           (setf (gethash char (readtable-extended-characters readtable)) value)))))
 
 (defun get-macro-character (char &optional (readtable *readtable*))
   (let ((data (readtable-syntax-type char readtable)))
