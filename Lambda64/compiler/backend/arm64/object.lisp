@@ -241,48 +241,6 @@
          (emit (make-instance 'ir:move-instruction
                               :source value
                               :destination result))))
-     #+(or) ; todo
-     (define-builtin (sys.int::cas ,name) ((old new object index) result)
-       (let ((old-unboxed (make-instance 'ir:virtual-register :kind :integer))
-             (new-unboxed (make-instance 'ir:virtual-register :kind :integer))
-             (result-unboxed (make-instance 'ir:virtual-register :kind :integer)))
-         (emit (make-instance ',unbox-op
-                              :source old
-                              :destination old-unboxed))
-         (emit (make-instance ',unbox-op
-                              :source new
-                              :destination new-unboxed))
-         (emit (make-instance 'ir:move-instruction
-                              :source old-unboxed
-                              :destination :rax))
-         (emit (make-instance 'ir:move-instruction
-                              :source new-unboxed
-                              :destination :rdx))
-         (with-builtin-object-access (ea ea-inputs object index ,scale)
-           (emit (make-instance 'x86-instruction
-                                :opcode 'lap:cmpxchg
-                                :prefix '(lap:lock)
-                                :operands (list ea ,(ecase reg
-                                                      (:al :dl)
-                                                      (:ax :dx)
-                                                      (:eax :edx)
-                                                      ((nil) :rdx)))
-                                :inputs (list* :rax :rdx ea-inputs)
-                                :outputs (list :rax)
-                                :clobbers '(:rax))))
-         ,@(when (not (member read-op '(lap:mov32 lap:mov64)))
-             `((emit (make-instance 'x86-instruction
-                                    :opcode ',read-op
-                                    :operands (list :rax ,reg)
-                                    :inputs (list :rax)
-                                    :outputs (list :rax)))))
-         (emit (make-instance 'ir:move-instruction
-                              :source :rax
-                              :destination result-unboxed))
-         (emit (make-instance ',box-op
-                              :source result-unboxed
-                              :destination result))))))
-
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8  lap:ldrb  lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16 lap:ldrh  lap:strh  2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32 lap:ldrw  lap:strw  4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)

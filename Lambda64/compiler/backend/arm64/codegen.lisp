@@ -531,7 +531,6 @@
          (emit-stack-store lhs temporary-slot)
          (emit `(lap:orr ,lhs :xzr ,rhs))
          (emit-stack-load rhs temporary-slot))
-        #+(or)
         (:fp-128
          (emit `(lap:eor.16b ,lhs ,lhs ,rhs)
                `(lap:eor.16b ,rhs ,rhs ,lhs)
