@@ -56,23 +56,21 @@
     nil                                            ; 30
     nil))                                          ; 31
 
-(defparameter *common-interrupt-code*
-  `(;; Common code for all interrupts.
-    ;; There's an interrupt frame set up, a per-interrupt value in r9, and an fref for the high-level handler in r13.
-    ;; Generate a DX interrupt frame object, then call the handler with it.
-    ;; Realign the stack.
-    (lap:and64 :rsp ,(lognot 15))
-    (lap:sub64 :rsp 16) ; 2 elements.
-    (lap:mov64 (:rsp) ,(ash sys.int::+object-tag-interrupt-frame+ sys.int::+object-type-shift+)) ; header
-    (lap:lea64 :rax (:rbp :rbp)) ; Convert frame pointer to fixnum.
-    (lap:mov64 (:rsp 8) :rax) ; 2nd element.
+(defun make-common-interrupt-code (handler)
+  "Generate interrupt dispatch code with a direct call to HANDLER's FREF.
+
+Unlike an indirect call through a register, :named-call still targets the
+function-reference code slot.  Replacing the function therefore remains
+observable while avoiding the per-entry R13 plumbing."
+  `((lap:and64 :rsp ,(lognot 15))
+    (lap:sub64 :rsp 16)
+    (lap:mov64 (:rsp) ,(ash sys.int::+object-tag-interrupt-frame+ sys.int::+object-type-shift+))
+    (lap:lea64 :rax (:rbp :rbp))
+    (lap:mov64 (:rsp 8) :rax)
     (lap:lea64 :r8 (:rsp ,sys.int::+tag-object+))
-    (lap:mov32 :ecx ,(ash 2 sys.int::+n-fixnum-bits+)) ; 2 args.
+    (lap:mov32 :ecx ,(ash 2 sys.int::+n-fixnum-bits+))
     (:gc :frame :interrupt t)
-    ;; TODO: Turn this into a direct named call.
-    (lap:lea64 :rax (:object :r13 ,sys.int::+fref-code+))
-    (lap:call :rax)
-    ;; Restore registers, then return.
+    (lap:call (:named-call ,handler))
     (lap:mov64 :r15 (:rbp -112))
     (lap:mov64 :r14 (:rbp -104))
     (lap:mov64 :r13 (:rbp -96))
@@ -89,6 +87,9 @@
     (lap:mov64 :rax (:rbp -8))
     (lap:leave)
     (lap:iret)))
+
+(defparameter *common-interrupt-code*
+  (make-common-interrupt-code 'sys.int::%user-interrupt-handler))
 
 (defparameter *common-user-interrupt-code*
   `(;; Common code for interrupts 32+.
@@ -109,7 +110,6 @@
     (lap:push :r15) ; -112 (-14)
     ;; Fall into the common interrupt code.
     (lap:mov64 :r9 :rax)
-    (lap:mov64 :r13 (:function sys.int::%user-interrupt-handler))
     (lap:jmp interrupt-common)))
 
 (defun create-exception-isr (handler error-code-p)
@@ -148,13 +148,11 @@
      (lap:push :r12) ; -88 (-11)
      (lap:push :r13) ; -96 (-12)
      (lap:push :r14) ; -104 (-13)
-     (lap:push :r15) ; -112 (-14)
-     ;; Jump to the common exception code.
-     (lap:mov64 :r13 (:function ,handler)))
+     (lap:push :r15)) ; -112 (-14)
    (if error-code-p
        '((lap:lea64 :r9 (:rax :rax))) ; Convert error code to fixnum.
        '((lap:mov32 :r9d :r14d))) ; Nothing interesting
-   '((lap:jmp interrupt-common))))
+   (make-common-interrupt-code handler)))
 
 (defun create-user-interrupt-isr (index)
   ;; Create interrupt frame. No error code, so no shuffling needed.
