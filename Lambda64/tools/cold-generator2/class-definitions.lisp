@@ -139,6 +139,7 @@
    (type :initform 't :initarg :type)
    (read-only :initform nil :initarg :read-only)
    (initform :initform nil :initarg :initform)
+   (initfunction :initform nil :initarg :initfunction)
    (fixed-vector :initform nil :initarg :fixed-vector)
    (align :initform nil :initarg :align)
    (dcas-sibling :initform nil :initarg :dcas-sibling)

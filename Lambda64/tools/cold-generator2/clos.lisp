@@ -255,6 +255,8 @@
                                        (env:translate-symbol environment 'mezzano.clos::structure-effective-slot-definition)
                                        :name (env:structure-slot-definition-name slot-def)
                                        :initform (env:structure-slot-definition-initform slot-def)
+                                       :initfunction (primordial-slot-value (first direct-slots)
+                                                                            (env:translate-symbol environment 'mezzano.clos::initfunction))
                                        :type (env:structure-slot-definition-type slot-def)
                                        :read-only (env:structure-slot-definition-read-only slot-def)
                                        :fixed-vector (env:structure-slot-definition-fixed-vector slot-def)
@@ -430,7 +432,6 @@
             source-location))))
 
 (defun convert-sdef (environment sdef)
-  (declare (ignore environment))
   (let ((name (env:structure-definition-name sdef)))
     (setf (gethash name *primordial-class-table*)
           (list :name name
@@ -457,8 +458,17 @@
                                                :type (env:structure-slot-definition-type slot)
                                                :read-only (env:structure-slot-definition-read-only slot)
                                                :structure-slot-location (env:structure-slot-definition-location slot)
-                                               ;; FIXME: Need to include an initfunction
                                                :initform (env:structure-slot-definition-initform slot)
+                                               :initfunction (let ((slot slot))
+                                                                (lambda ()
+                                                                  (multiple-value-bind (value deferred)
+                                                                      (eval:eval-toplevel
+                                                                       (env:structure-slot-definition-initform slot)
+                                                                       environment)
+                                                                    (when deferred
+                                                                      (error "Unable to initialize structure slot ~S"
+                                                                             (env:structure-slot-definition-name slot)))
+                                                                    value)))
                                                :fixed-vector (env:structure-slot-definition-fixed-vector slot)
                                                :align (env:structure-slot-definition-align slot)
                                                :dcas-sibling (env:structure-slot-definition-dcas-sibling slot)
