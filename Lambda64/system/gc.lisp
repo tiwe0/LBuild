@@ -2477,8 +2477,9 @@ No type information will be provided."
               (handler-case
                   (funcall (%object-ref-t finalizer +weak-pointer-finalizer+))
                 (condition (condition)
-                  (mezzano.supervisor:debug-print-line
-                   "Finalizer error: " condition)))
+                  (ignore-errors
+                    (mezzano.supervisor:debug-print-line
+                     "Finalizer error: " condition))))
            ;; Leave the weak pointer completely empty: no references to any
            ;; other object remain after this invocation.
            (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil))))

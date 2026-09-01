@@ -10,8 +10,8 @@ from pathlib import Path
 import sys
 s=Path(sys.argv[1]).read_text(); start=s.index('(defun run-finalizers ()'); end=s.index('\n(defun fixup-tlabs',start); form=s[start:end]
 if 'TODO' in s[start-300:start+100] or 'FIXME' in form: raise SystemExit('GC finalizer marker remains')
-if sys.argv[2]: form=form.replace('(handler-case', '(progn',1)
-for a in ('(handler-case','(condition (condition)','mezzano.supervisor:debug-print-line','(unwind-protect'):
+if sys.argv[2]: form=form.replace('(ignore-errors', '(progn',1)
+for a in ('(handler-case','(condition (condition)','(ignore-errors\n                    (mezzano.supervisor:debug-print-line','(unwind-protect'):
     if a not in form: raise SystemExit(f'missing finalizer isolation anchor: {a}')
 if form.index('(unwind-protect') > form.index('(handler-case'):
     raise SystemExit('finalizer must be protected before handler execution')
