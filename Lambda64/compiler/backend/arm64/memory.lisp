@@ -89,6 +89,9 @@
                        :source value-2
                        :destination result-2)))
 
+;; TODO: (cas memref-t) & dcas memref-t. The generic
+;; compare-exchange IR currently supports object-relative accesses only.
+;;
 ;; CAS/DCAS for memref-t remain intentionally unsupported: the generic
 ;; compare-exchange IR models object-relative slots, while memref addresses are
 ;; raw effective addresses. Adding these operations requires dedicated IR/codegen

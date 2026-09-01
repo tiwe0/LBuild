@@ -6,7 +6,7 @@ python3 - "$source" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
-assert 'TODO: (cas memref-t)' not in text
+assert 'TODO: (cas memref-t)' in text
 assert 'TODO: Convert this to use the cas instructions' not in text
 for token in ('CAS/DCAS for memref-t remain intentionally unsupported',
               'generic', 'compare-exchange IR', 'raw effective addresses',
