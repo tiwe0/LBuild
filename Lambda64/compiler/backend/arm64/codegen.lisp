@@ -1477,26 +1477,34 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
 
 (defmethod emit-lap (backend-function (instruction arm64-dcas-mem-instruction) uses defs)
   ;; CASPAL requires adjacent registers.  Materialize operands into the
-  ;; dedicated even/odd pairs x2:x3 (compare) and x6:x7 (exchange).
-  (emit `(lap:orr :x2 :xzr ,(arm64-dcas-old-1 instruction)))
-  (emit `(lap:orr :x3 :xzr ,(arm64-dcas-old-2 instruction)))
-  (emit `(lap:orr :x6 :xzr ,(arm64-dcas-new-1 instruction)))
-  (emit `(lap:orr :x7 :xzr ,(arm64-dcas-new-2 instruction)))
+  ;; reserved even/odd pairs x16:x17 (compare) and x20:x21 (exchange), and
+  ;; preserve the computed address in x22.  These registers are excluded
+  ;; from allocator value/integer pools, so DCAS does not create avoidable
+  ;; register pressure or overwrite live values.
+  (emit `(lap:orr :x22 :xzr ,(arm64-dcas-mem-address instruction)))
+  (emit `(lap:orr :x16 :xzr ,(arm64-dcas-old-1 instruction)))
+  (emit `(lap:orr :x17 :xzr ,(arm64-dcas-old-2 instruction)))
+  (emit `(lap:orr :x20 :xzr ,(arm64-dcas-new-1 instruction)))
+  (emit `(lap:orr :x21 :xzr ,(arm64-dcas-new-2 instruction)))
   (emit-gc-info)
-  (emit `(lap:caspal :x2 :x6 (,(arm64-dcas-mem-address instruction))))
+  (emit `(lap:caspal :x16 :x20 (:x22)))
   (emit-gc-info)
-  ;; CASP returns the observed pair in x2:x3.  Preserve it in virtual
+  ;; CASP returns the observed pair in x16:x17.  Preserve it in virtual
   ;; registers, and derive the predicate from both comparisons.
-  (emit `(lap:orr ,(arm64-dcas-current-1 instruction) :xzr :x2))
-  (emit `(lap:orr ,(arm64-dcas-current-2 instruction) :xzr :x3))
-  (emit `(lap:subs :xzr :x2 ,(arm64-dcas-old-1 instruction)))
-  ;; Fold both comparisons into x0, then leave flags representing the final
-  ;; conjunction for lower-builtin's predicate reifier.
-  (emit `(lap:ldr :x0 (:constant t)))
-  (emit `(lap:csel.eq :x0 :x0 :x26))
-  (emit `(lap:subs :xzr :x3 ,(arm64-dcas-old-2 instruction)))
-  (emit `(lap:csel.eq :x0 :x0 :x26))
-  (emit `(lap:subs :xzr :x0 :x26)))
+  ;; Fold both comparisons into x23 (T on success, NIL on failure) before
+  ;; writing the output registers; outputs may legally overlap old inputs.
+  (emit `(lap:subs :xzr :x16 ,(arm64-dcas-old-1 instruction)))
+  (emit `(lap:ldr :x23 (:constant t)))
+  (emit `(lap:csel.eq :x23 :x23 :x26))
+  (emit `(lap:subs :xzr :x17 ,(arm64-dcas-old-2 instruction)))
+  (emit `(lap:csel.eq :x23 :x23 :x26))
+  ;; :Z predicates branch/reify on equality.  Compare against T so Z means
+  ;; the complete DCAS succeeded (rather than the previous inverted test
+  ;; against NIL).
+  (emit `(lap:ldr :x24 (:constant t)))
+  (emit `(lap:subs :xzr :x23 :x24))
+  (emit `(lap:orr ,(arm64-dcas-current-1 instruction) :xzr :x16))
+  (emit `(lap:orr ,(arm64-dcas-current-2 instruction) :xzr :x17)))
 
 (defmethod emit-lap (backend-function (instruction arm64-ld/st-multiple-instruction) uses defs)
   ;; Convert to unboxed integer (scaled appropriately), with tag adjustment.

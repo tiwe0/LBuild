@@ -15,10 +15,10 @@ for token in ('(define-builtin (sys.int::dcas sys.int::%memref-t)',
     assert token in source, token
 backend = Path(sys.argv[1]).with_name('arm64.lisp').read_text()
 codegen = Path(sys.argv[1]).with_name('codegen.lisp').read_text()
-for token in ('defclass arm64-dcas-mem-instruction', "'(:x0 :x2 :x3 :x6 :x7)"):
+for token in ('defclass arm64-dcas-mem-instruction', "'(:x16 :x17 :x20 :x21 :x22 :x23 :x24)"):
     assert token in backend, token
-for token in ('lap:caspal :x2 :x6', 'arm64-dcas-current-1',
-              'arm64-dcas-current-2', 'lap:csel.eq :x0 :x0 :x26'):
+for token in ('lap:caspal :x16 :x20', 'arm64-dcas-current-1',
+              'arm64-dcas-current-2', 'lap:csel.eq :x23 :x23 :x26'):
     assert token in codegen, token
 for token in ('casp[a][l]', '128-bit\ncompare-exchange IR instruction',
               'arbitrary address', '16-byte alignment', 'misaligned', 'arm64-cas-mem-instruction',

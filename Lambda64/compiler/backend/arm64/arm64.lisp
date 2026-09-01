@@ -181,7 +181,11 @@
    (%current-2 :initarg :current-2 :accessor arm64-dcas-current-2)))
 
 (defmethod ra:instruction-clobbers ((instruction arm64-dcas-mem-instruction) (architecture c:arm64-target))
-  '(:x0 :x2 :x3 :x6 :x7))
+  ;; CASPAL requires two fixed adjacent register pairs.  Keep its scratch
+  ;; operands in the reserved ARM64 temporaries rather than allocatable value
+  ;; registers; otherwise a DCAS with several live values can exhaust the
+  ;; value-register pool during allocation.
+  '(:x16 :x17 :x20 :x21 :x22 :x23 :x24))
 (defmethod ra:instruction-inputs-read-before-outputs-written-p ((instruction arm64-dcas-mem-instruction) (architecture c:arm64-target)) nil)
 (defmethod ir:instruction-inputs ((instruction arm64-dcas-mem-instruction))
   (list (arm64-dcas-mem-address instruction) (arm64-dcas-old-1 instruction)
