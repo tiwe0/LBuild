@@ -186,7 +186,13 @@
   boot-id)
 
 (defstruct (virtqueue
-             (:area :wired))
+             (:area :wired)
+             ;; Keyword dispatch allocates a temporary argument vector in the
+             ;; general area.  Virtqueues are created during the pre-pager
+             ;; block-device bootstrap, so use a positional wired constructor
+             ;; on that path instead.
+             (:constructor %make-virtqueue
+                 (index virtual physical size avail-offset used-offset)))
   index
   virtual
   physical
@@ -499,16 +505,15 @@
         (setf (sys.int::memref-unsigned-byte-8 virt i) 0))
       ;; Write the address to the the queue address field.
       (setf (virtio-queue-address device) phys)
-      (let ((vq (make-virtqueue :index queue
-                                :virtual virt
-                                :physical phys
-                                :size queue-size
-                                :avail-offset (* queue-size +virtio-ring-desc-size+)
-                                :used-offset (sup::align-up (+ (* queue-size +virtio-ring-desc-size+)
-                                                               4
-                                                               (* queue-size 2))
-                                                            4096)
-                                :last-seen-used 0)))
+      (let ((vq (%make-virtqueue queue
+                                 virt
+                                 phys
+                                 queue-size
+                                 (* queue-size +virtio-ring-desc-size+)
+                                 (sup::align-up (+ (* queue-size +virtio-ring-desc-size+)
+                                                   4
+                                                   (* queue-size 2))
+                                                4096))))
         (setf (svref (virtio-device-virtqueues device) queue) vq)
         ;; Initialize the free descriptor list.
         (dotimes (i (1- queue-size))
