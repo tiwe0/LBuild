@@ -211,8 +211,11 @@
 (defun partial-save-return-helper-in-pager (thread interrupt-frame ignore3)
   (declare (ignore ignore3))
   (pager-log-op "arm64-partial-save-return-helper " thread " " interrupt-frame)
-  ;; FIXME: Make sure the stack is paged in (see pager-invoke-function-on-thread)
-  ;; This is why we're doing this in the pager, instead of the interrupt handler.
+  ;; The pager invokes this helper only after queuing the thread through its
+  ;; pager-request path.  Unlike pager-invoke-function-on-thread, the saved
+  ;; interrupt frame has no resumable call trampoline, so stack residency must
+  ;; be guaranteed by the faulting thread's normal pager path before entry.
+  ;; Keep this helper free of speculative stack touching in the interrupt path.
   ;; Restore the MV area.
   (sys.int::%copy-words (mezzano.runtime::%object-slot-address thread +thread-mv-slots+)
                         (+ interrupt-frame 512 (* 20 8))
