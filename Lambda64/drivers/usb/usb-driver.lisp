@@ -518,13 +518,12 @@
       (with-buffers ((buf-pool usbd) (config-buf /8 length))
         ;; Get full descriptor
         (when (%get-configuration usbd device idx length config-buf)
-          (with-trace-level (3)
-            (print-descriptor mezzano.internals::*cold-stream* config-buf))
-
           ;; split configuration descriptor into separate descriptors.  Copy
           ;; DMA memory under the HCD lease before parsing it.
           (let ((config-bytes (with-hcd-access (usbd)
                                 (copy-seq config-buf))))
+            (with-trace-level (3)
+              (print-descriptor mezzano.internals::*cold-stream* config-bytes))
             (do* ((offset 0 (+ offset (aref config-bytes offset)))
                 (result nil))
                ((>= offset length) (nreverse result))
