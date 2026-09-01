@@ -98,7 +98,7 @@
                  (when (>= slot start)
                    (setf (gethash vreg spill-locations) (gethash slot mapping))))
                spill-locations)
-      result)))
+      result))))
 
 (defun compute-stack-layout (backend-function spill-locations stack-layout)
   (when (ir:argument-setup-rest (ir:first-instruction backend-function))
@@ -1314,10 +1314,10 @@
     ;; Initialize constant pool. Slot 2 is the legacy environment operand;
     ;; additional descriptor entries follow it for arbitrary environments.
     (emit `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 1) ,(ir:make-dx-closure-function instruction))
-          `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 2) ,(first environments))
-          ,@(loop for environment in (rest environments)
-                  for index from 3
-                  collect `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) ,index) ,environment)))))
+          `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 2) ,(first environments)))
+    (loop for environment in (rest environments)
+          for index from 3
+          do (emit `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) ,index) ,environment)))))
 
 (defmethod emit-lap (backend-function (instruction ir:box-fixnum-instruction) uses defs)
   (emit `(lap:lea64 ,(ir:box-destination instruction) (,(ir:box-source instruction) ,(ir:box-source instruction)))))

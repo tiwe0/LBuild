@@ -94,7 +94,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
                  (when (>= slot start)
                    (setf (gethash vreg spill-locations) (gethash slot mapping))))
                spill-locations)
-      result)))
+      result))))
 
 (defun compute-stack-layout (backend-function spill-locations stack-layout)
   (when (ir:argument-setup-rest (ir:first-instruction backend-function))
@@ -432,7 +432,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
                      (emit `(lap:subs ,destination ,source ,raw-count))
                      (progn
                        (load-literal :x10 raw-count)
-                       (emit `(lap:subs ,destination ,source :x10))))))
+                       (emit `(lap:subs ,destination ,source :x10)))))))
         (declare (inline emit-count-sub))
       (cond ((ir:argument-setup-rest instruction)
              ;; If there are no required parameters, then don't generate a lower-bound check.
@@ -466,7 +466,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
             ;; No arguments
             (t
              (emit `(lap:cbz :x5 ,args-ok))
-             (emit-arg-error))))))))
+             (emit-arg-error)))))))
 
 (defun emit-dx-rest-list (argument-setup)
   (let* ((regular-argument-count (+ (length (ir:argument-setup-required argument-setup))
@@ -577,7 +577,11 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
   ;; stack slot for the old left-hand value; the swap itself has no safepoint,
   ;; and marking this slot raw avoids exposing a duplicate root to the GC.
   (setf (gethash instruction *prepass-data*)
-        (allocate-stack-slots 1 :livep nil)))
+        (allocate-stack-slots (if (eql (lap::register-class (ir:swap-lhs instruction))
+                                      :fp-128)
+                                  2
+                                  1)
+                              :livep nil)))
 
 (defmethod emit-lap (backend-function (instruction ir:swap-instruction) uses defs)
   (let ((temporary-slot (gethash instruction *prepass-data*)))
@@ -593,9 +597,12 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
          (emit `(lap:orr ,lhs :xzr ,rhs))
          (emit-stack-load rhs temporary-slot))
         (:fp-128
-         (emit `(lap:eor.16b ,lhs ,lhs ,rhs)
-               `(lap:eor.16b ,rhs ,rhs ,lhs)
-               `(lap:eor.16b ,lhs ,lhs ,rhs))))))))
+         ;; Preserve the full 128-bit value in a raw two-word stack slot.
+         ;; The integer XOR-swap idiom is not valid for SIMD registers and
+         ;; would also expose transient duplicate roots to the collector.
+         (emit-stack-store (lap::convert-width lhs 128) temporary-slot)
+         (emit `(lap:orr.v :16b ,lhs ,rhs ,rhs))
+         (emit-stack-load (lap::convert-width rhs 128) temporary-slot)))))))
 
 (defmethod emit-lap (backend-function (instruction ir:spill-instruction) uses defs)
   (ecase (ir:virtual-register-kind (ir:spill-destination instruction))
@@ -1483,7 +1490,7 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
   (emit `(lap:csel.eq :x0 :x0 :x26))
   (emit `(lap:subs :xzr :x3 ,(arm64-dcas-old-2 instruction)))
   (emit `(lap:csel.eq :x0 :x0 :x26))
-  (emit `(lap:subs :xzr :x0 :x26))))
+  (emit `(lap:subs :xzr :x0 :x26)))
 
 (defmethod emit-lap (backend-function (instruction arm64-ld/st-multiple-instruction) uses defs)
   ;; Convert to unboxed integer (scaled appropriately), with tag adjustment.

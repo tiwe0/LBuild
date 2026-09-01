@@ -64,7 +64,7 @@
                        :operands (list temp (ash (- last-tag first-tag)
                                                   sys.int::+object-type-shift+))
                        :inputs (list temp)
-                       :outputs '())))))
+                       :outputs '())))
 
 (define-builtin sys.int::%instance-or-funcallable-instance-p ((object) :e)
   (let ((temp (make-instance 'ir:virtual-register :kind :integer)))

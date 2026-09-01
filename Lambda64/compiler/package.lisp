@@ -226,6 +226,17 @@
    #:most-negative-fixnum-long-float
    #:floating-point-denormal-operand))
 
+;; The reader is compiled before the cross-compiler's full CAS shim is
+;; loaded. Its bootstrap readtable lock is single-threaded on the host, so
+;; provide a temporary setf expansion for that early FASL. cross-compile.lisp
+;; replaces this macro with the target-aware implementation later in ASDF's
+;; serial load.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (cl:defmacro mezzano.extensions:cas (place old new)
+    `(progn (setf ,place ,new) ,old))
+  (cl:defmacro mezzano.extensions:atomic-swapf (new place)
+    `(prog1 ,place (setf ,place ,new))))
+
 (defpackage :mezzano.debug
   (:use :cl)
   (:export

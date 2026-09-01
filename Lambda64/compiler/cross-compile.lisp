@@ -2,6 +2,11 @@
 
 (in-package :cross-support)
 
+;; package.lisp installs a bootstrap host expansion for the reader's
+;; readtable lock. Remove the temporary atomic-swap expansion before the
+;; remaining system is compiled so runtime atomic-swapf stays a function.
+(cl:fmakunbound 'mezzano.extensions:atomic-swapf)
+
 (defmacro mezzano.extensions:cas (place old new)
   ;; As a special cross-build exception, support hash-tables.
   (cond ((and (consp place)

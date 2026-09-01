@@ -724,15 +724,17 @@ the cold serializer without duplicating their definitions here."
                   ;; value) since these slots are deliberately untagged.
                   (raw-value
                     (ecase loc-type
-                      ((#.+location-type-single-float+
-                        #.+location-type-double-float+
-                        #.+location-type-short-float+)
+                      ;; Keep these numeric tags local to the serializer.  The
+                      ;; runtime constants are defined in a later ASDF
+                      ;; component and are not available while this file is
+                      ;; read by the host compiler.
+                      ((9 10 11)
                        (ecase loc-type
-                         (#.+location-type-single-float+
+                         (9
                           (sys.int::%single-float-as-integer slot-value))
-                         (#.+location-type-double-float+
+                         (10
                           (sys.int::%double-float-as-integer slot-value))
-                         (#.+location-type-short-float+
+                         (11
                           (sys.int::%short-float-as-integer slot-value))))
                       (otherwise slot-value))))
              (multiple-value-bind (slot-index slot-offset)

@@ -643,16 +643,17 @@ Returns NIL if there is no THE form.")
                               (hi-1 (bound-value max-1))
                               (lo-2 (bound-value min-2))
                               (hi-2 (bound-value max-2)))
-                          (or (and hi-1 lo-2
-                                   (or (< hi-1 lo-2)
-                                       (and (= hi-1 lo-2)
-                                            (or (bound-exclusive-p max-1)
-                                                (bound-exclusive-p min-2)))))
-                              (and hi-2 lo-1
-                                   (or (< hi-2 lo-1)
-                                       (and (= hi-2 lo-1)
-                                            (or (bound-exclusive-p max-2)
-                                                (bound-exclusive-p min-1))))))))
+                          (or
+                           (and hi-1 lo-2
+                                (or (< hi-1 lo-2)
+                                    (and (= hi-1 lo-2)
+                                         (or (bound-exclusive-p max-1)
+                                             (bound-exclusive-p min-2)))))
+                           (and hi-2 lo-1
+                                (or (< hi-2 lo-1)
+                                    (and (= hi-2 lo-1)
+                                         (or (bound-exclusive-p max-2)
+                                             (bound-exclusive-p min-1)))))))))
                (if (ranges-disjoint-p)
                    `(and ,type-1 ,type-2)
                    (let ((new-min (merge-real-type-values min-1 min-2 #'>))
