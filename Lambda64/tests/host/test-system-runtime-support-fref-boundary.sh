@@ -11,6 +11,11 @@ import sys
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 mutation = sys.argv[2]
+# The setter's publication contract depends on both architecture activation
+# helpers remaining present; removing either helper invalidates this boundary.
+for helper in ("%activate-function-reference-full-path", "%activate-function-reference-fast-path"):
+    if source.count(helper) < 3:
+        raise SystemExit(f"missing activation helper contract: {helper}")
 start = source.index("(defun (setf function-reference-function)")
 # Extract one balanced Lisp form, ignoring strings and comments.
 depth = 0
