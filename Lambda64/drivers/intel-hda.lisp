@@ -201,6 +201,9 @@
 (defconstant +max-bdl-entries+ 256)
 (defconstant +playback-period-count+ 3)
 
+;; Bound controller-reset polling so a wedged device cannot hang PCI probing.
+(defconstant +controller-reset-poll-limit+ 10000)
+
 (defparameter *hda-min-period-bytes* 256
   "Minimum size of each HDA audio period in bytes. Must be a multiple of 128.")
 
@@ -308,7 +311,8 @@
   (setf (global-reg/16 hda +corbrp+) 0)
   ;; Reset CORB write pointer.
   (setf (global-reg/16 hda +corbwp+) 0)
-  ;; TODO: Enable CMEIE.
+  ;; CORB memory-error interrupts remain disabled: no dedicated error handler
+  ;; exists, and DMA faults are treated as a controller failure.
   ;; Start the DMA engine.
   (setf (corbctl-corbrun (global-reg/8 hda +corbctl+)) 1))
 
@@ -334,7 +338,8 @@
       (setf (rirbsize-rirbsize rirbsize) thing
             (global-reg/8 hda +rirbsize+) rirbsize)
       (setf (hda-rirbsize hda) buffer-size)))
-  ;; Initialize pointer. TODO: DMA64.
+  ;; Program both halves of the 64-bit-capable RIRB DMA address. Allocation
+  ;; constrains addresses to 32 bits when the controller lacks 64-bit support.
   (let ((rirb-address (+ (hda-corb/rirb/dmap-physical hda) +rirb-offset+)))
     (setf (global-reg/32 hda +rirbubase+) (ldb (byte 32 32) rirb-address)
           (global-reg/32 hda +rirblbase+) (ldb (byte 32 0) rirb-address)))
@@ -346,7 +351,8 @@
   ;; HACK: qemu requires this for RIBR responses to work, even though RIBR
   ;; interrupts aren't currently used.
   (setf (global-reg/16 hda +rintcnt+) #xFF)
-  ;; TODO: Enable interrupts.
+  ;; RIRB responses are polled by COMMAND; stream interrupts are enabled when
+  ;; playback starts after the descriptor has been prepared.
   ;; Start the DMA engine.
   (setf (rirbctl-rirbdmaen (global-reg/8 hda +rirbctl+)) 1))
 
@@ -867,12 +873,20 @@ One of :SINK, :SOURCE, :BIDIRECTIONAL, or :UNDIRECTED."))
     ;; Perform a controller reset by pulsing crst to 0.
     (format t "Begin reset.~%")
     (setf (global-reg/32 hda +gctl+) 0)
-    ;; Wait for it to read back 0.
-    (loop while (not (zerop (gctl-crst (global-reg/32 hda +gctl+)))))
+    ;; Wait for it to read back 0, but never spin forever on a dead device.
+    (loop repeat +controller-reset-poll-limit+
+          while (not (zerop (gctl-crst (global-reg/32 hda +gctl+))))
+          do (sleep 0.000001)
+          finally (when (not (zerop (gctl-crst (global-reg/32 hda +gctl+))))
+                    (error "Intel HDA controller did not leave reset.")))
     (format t "Leaving reset.~%")
     (setf (global-reg/32 hda +gctl+) (mask-field +gctl-crst+ -1))
-    ;; Wait for it to read 1. FIXME: Timeouts...
-    (loop while (zerop (gctl-crst (global-reg/32 hda +gctl+))))
+    ;; Wait for it to read 1, with the same bounded timeout.
+    (loop repeat +controller-reset-poll-limit+
+          while (zerop (gctl-crst (global-reg/32 hda +gctl+))))
+          do (sleep 0.000001)
+          finally (when (zerop (gctl-crst (global-reg/32 hda +gctl+)))
+                    (error "Intel HDA controller did not enter reset-complete state.")))
     (format t "Waiting for codecs.~%")
     ;; Wait for the codecs to report in. 521µs.
     (sleep 0.000521)
