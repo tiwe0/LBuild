@@ -213,8 +213,19 @@ Must not call SERIALIZE-OBJECT."))
   (allocate 6 image :wired sys.int::+tag-object+))
 
 (defmethod initialize-object ((object symbol) value image environment)
-  ;; TODO: Include symbol mode.
-  (initialize-object-header image value sys.int::+object-tag-symbol+ 0)
+  ;; The low bits of the symbol header encode the compiler's variable mode;
+  ;; omitting them makes SPECIAL/CONSTANT/GLOBAL symbols behave as ordinary
+  ;; NIL-mode symbols after boot.  Declarations are available on the host
+  ;; symbol through the cross compiler's VARIABLE-INFORMATION hook.
+  (let* ((mode (and (fboundp 'sys.int::variable-information)
+                    (sys.int::variable-information object)))
+         (mode-value (ecase mode
+                       ((nil) sys.int::+symbol-mode-nil+)
+                       (:special sys.int::+symbol-mode-special+)
+                       (:constant sys.int::+symbol-mode-constant+)
+                       (:symbol-macro sys.int::+symbol-mode-symbol-macro+)
+                       (:global sys.int::+symbol-mode-global+))))
+    (initialize-object-header image value sys.int::+object-tag-symbol+ mode-value))
   (setf (object-slot image value sys.int::+symbol-name+)
         (serialize-object (env:cross-symbol-name environment object) image environment))
   (assert (eql (env:object-area environment (env:cross-symbol-name environment object)) :wired))

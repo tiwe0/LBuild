@@ -387,17 +387,16 @@
          direct-slot-definition))
 
 (defun convert-primordial-class (environment class-name)
-  (destructuring-bind (&key real-class name hash metaclass direct-superclasses
+    (destructuring-bind (&key real-class name hash metaclass direct-superclasses
                             direct-slots direct-default-initargs layout
                             instance-layout area sealed
                             structure-heap-layout structure-heap-size
                             structure-definition
                             source-location)
       (gethash class-name *primordial-class-table*)
-    (declare (ignore layout
+      (declare (ignore layout
                      structure-heap-layout structure-heap-size
-                     structure-definition
-                     source-location))
+                     structure-definition))
     (check-type area (or null (cons symbol null)))
     (check-type sealed (or null (cons boolean null)))
 #|
@@ -423,7 +422,12 @@
             (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::slot-storage-layout)) instance-layout
             (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::allocation-area)) (first area)
             (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::sealed)) (first sealed)
-            (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::hash)) hash))))
+            (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::hash)) hash
+            ;; Preserve compiler-provided source locations for debugger and
+            ;; introspection consumers.  The primordial class table carries
+            ;; this value even though most bootstrap classes leave it NIL.
+            (primordial-slot-value real-class (env:translate-symbol environment 'mezzano.clos::source-location))
+            source-location))))
 
 (defun convert-sdef (environment sdef)
   (declare (ignore environment))

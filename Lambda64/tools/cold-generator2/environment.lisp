@@ -201,19 +201,24 @@
 
 (defun make-structure-definition (environment name slots parent area size layout sealed docstring has-standard-constructor)
   (declare (ignore environment))
-  ;; FIXME: Copy slots list & layout to wired area.
+  ;; Structure definitions are retained by the environment and may outlive
+  ;; the compiler objects that produced them.  Take private snapshots of the
+  ;; aggregate containers so subsequent compiler mutation cannot alter the
+  ;; registered definition (the serializer later places these in :wired).
+  (let ((slots (copy-list slots))
+        (layout (if (arrayp layout) (copy-seq layout) layout)))
   (check-type name symbol)
   (check-type parent (or null structure-definition))
-  (make-instance 'structure-definition
-                 :name name
-                 :slots slots
-                 :parent parent
-                 :area area
-                 :size size
-                 :layout layout
-                 :sealed sealed
-                 :docstring docstring
-                 :has-standard-constructor has-standard-constructor))
+    (make-instance 'structure-definition
+                   :name name
+                   :slots slots
+                   :parent parent
+                   :area area
+                   :size size
+                   :layout layout
+                   :sealed sealed
+                   :docstring docstring
+                   :has-standard-constructor has-standard-constructor)))
 
 (defmethod print-object ((object structure-definition) stream)
   (print-unreadable-object (object stream :type t :identity t)
@@ -231,9 +236,19 @@
   ;; Not actually needed, the file-compiler just sets this to nil.
   ;;(assert (eql (structure-slot-definition-accessor existing-slot)
   ;;             (structure-slot-definition-accessor new-slot)))
-  ;; FIXME: This should be a proper type= test.
-  (assert (equal (structure-slot-definition-type existing-slot)
-                 (structure-slot-definition-type new-slot)))
+  ;; TYPE= is semantic equality, not merely equal syntax (e.g. (integer 0 1)
+  ;; and an equivalent upgraded type specifier).  SUBTYPEP in both directions
+  ;; gives the required equivalence while rejecting unknown relationships.
+  (let ((old-type (structure-slot-definition-type existing-slot))
+        (new-type (structure-slot-definition-type new-slot)))
+    (multiple-value-bind (old-sub-new old-known) (subtypep old-type new-type)
+      (multiple-value-bind (new-sub-old new-known) (subtypep new-type old-type)
+        (assert (or (and old-known new-known old-sub-new new-sub-old)
+                    ;; Some implementation-specific type specifiers cannot be
+                    ;; decided by SUBTYPEP; retain the historical structural
+                    ;; check in that case rather than rejecting compatible
+                    ;; definitions spuriously.
+                    (equal old-type new-type))))))
   (assert (eql (structure-slot-definition-read-only existing-slot)
                (structure-slot-definition-read-only new-slot)))
   (assert (eql (structure-slot-definition-location existing-slot)
