@@ -609,7 +609,11 @@ a LET-like macro, and a SETQ-like macro, which perform LOOP-style destructuring.
 (defvar *loop-names*)
 
 ;;;The macroexpansion environment given to the macro.
-(defvar *loop-macro-environment*)
+;; Keep an explicit NIL default for callers that use LOOP type helpers outside
+;; the dynamic LOOP translator (for example during cold-image bootstrap).
+;; An uninitialized special raises UNBOUND-VARIABLE before TYPEEXPAND can
+;; apply its normal empty environment semantics.
+(defvar *loop-macro-environment* nil)
 
 ;;;This holds variable names specified with the USING clause.
 ;;; See LOOP-NAMED-VARIABLE.
