@@ -688,18 +688,35 @@ the cold serializer without duplicating their definitions here."
 (defun initialize-instance-slot-by-location (instance-value slot-value location index image environment)
   (let ((loc-type (mezzano.runtime::location-type location)))
     (cond ((eql loc-type mezzano.runtime::+location-type-t+)
-           (setf (object-slot image instance-value (+ (mezzano.runtime::location-offset-t location) index))
+          (setf (object-slot image instance-value (+ (mezzano.runtime::location-offset-t location) index))
                  (serialize-object slot-value image environment)))
           (t
-           ;; TODO: Implement single-/double-float locations
            (let* ((loc-offset (mezzano.runtime::location-offset location))
                   (loc-element-size (mezzano.runtime::location-type-scale loc-type))
-                  (loc-element-bit-size (* loc-element-size 8)))
+                  (loc-element-bit-size (* loc-element-size 8))
+                  ;; Unboxed locations are stored as raw little-endian bits.
+                  ;; Keep this conversion here (rather than serializing the
+                  ;; value) since these slots are deliberately untagged.
+                  (raw-value
+                    (ecase loc-type
+                      ((#.+location-type-single-float+
+                        #.+location-type-double-float+
+                        #.+location-type-short-float+)
+                       (ecase loc-type
+                         (#.+location-type-single-float+
+                          (sys.int::%single-float-as-integer slot-value))
+                         (#.+location-type-double-float+
+                          (sys.int::%double-float-as-integer slot-value))
+                         (#.+location-type-short-float+
+                          (sys.int::%short-float-as-integer slot-value))))
+                      (otherwise slot-value))))
              (multiple-value-bind (slot-index slot-offset)
-                 (truncate (+ loc-offset (* index loc-element-size)) (/ 8 loc-element-size))
-               (setf (ldb (byte loc-element-bit-size (* slot-offset loc-element-bit-size))
-                          (object-slot image instance-value (/ slot-index loc-element-size)))
-                     (ldb (byte 0 loc-element-bit-size) slot-value))))))))
+                 ;; LOC-OFFSET is expressed in bytes from the object start;
+                 ;; OBJECT-SLOT addresses eight-byte words.
+                 (truncate (+ loc-offset (* index loc-element-size)) 8)
+               (setf (ldb (byte loc-element-bit-size (* slot-offset 8))
+                          (object-slot image instance-value slot-index))
+                     (ldb (byte loc-element-bit-size 0) raw-value))))))))
 
 (defun initialize-instance-slot (instance-value slot-value slot index image environment)
   (initialize-instance-slot-by-location
