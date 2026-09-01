@@ -177,9 +177,10 @@
                                     (length (ir:call-arguments inst)))))
         (when (and builtin
                    ;; Predicate result.
-                   ;; FIXME: This should work when the result consumed by
-                   ;; the branch is a predicate and other results are ignored.
-                   (eql (length (builtin-result-list builtin)) 1)
+                   ;; The branch consumes the primary result.  Additional
+                   ;; builtin results are not observable by a single-value
+                   ;; call and may therefore be ignored here.
+                   (plusp (length (builtin-result-list builtin)))
                    (keywordp (first (builtin-result-list builtin))))
           (when (not (apply (builtin-generator builtin)
                             backend-function inst
