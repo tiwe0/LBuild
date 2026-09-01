@@ -1770,8 +1770,9 @@ Remaining values describe the effective address: base index scale disp rip-relat
       (:gpr-64
        (modrm-two-classes :gpr-64 :gpr-16 src dst '(#x0F #xB7))))))
 
-;; This is actually just mov32, but supports 64-bit dst registers.
-;; FIXME: This is r/m r, not r r/m like the other movzx instructions.
+;; MOVZX32 lowers to a 32-bit register move.  The destination is kept in
+;; the r/m field so a 64-bit virtual register can receive the zero-extended
+;; result while the source remains a 32-bit register.
 (define-instruction movzx32 (dst src)
   (modrm-two-classes :gpr-32 :gpr-64 dst src #x89))
 
