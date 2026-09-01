@@ -211,7 +211,8 @@ does not visit unreachable blocks."
              (return))
            (remove-unreachable-basic-blocks backend-function)
            (incf total n)))
-      ;; TODO: Break critical edges.
+      ;; Critical edges are split by BREAK-CRITICAL-EDGES immediately after
+      ;; CFG simplification, before SSA construction.
       (check-cfg backend-function)
       total)))
 
