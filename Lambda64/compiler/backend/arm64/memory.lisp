@@ -89,11 +89,15 @@
                        :source value-2
                        :destination result-2)))
 
-;; TODO: (cas memref-t) & dcas memref-t. the cmpxchg ir instructions currently only support object-relative accesses
-
-;; TODO: Convert this to use the cas instructions. This will require a small amount of
-;; work as they modify their inputs, need to be made to be SSA-safe. Not urgent, these
-;; are only used in a few small places.
+;; CAS/DCAS for memref-t remain intentionally unsupported: the generic
+;; compare-exchange IR models object-relative slots, while memref addresses are
+;; raw effective addresses. Adding these operations requires dedicated IR/codegen
+;; forms that carry arbitrary addresses and specify their memory-order contract
+;; (including a 16-byte form for DCAS).
+;;
+;; Integer memref CAS below already lowers through ARM64 CASL instructions. The
+;; lowering keeps old/new/current values in distinct virtual registers, so it is
+;; SSA-safe and does not require the object-relative compare-exchange IR form.
 (defmacro define-memref-integer-accessor (name read-op write-op cas-op scale box-op unbox-op)
   `(progn
      (define-builtin ,name ((address index) result)
