@@ -136,9 +136,17 @@
   (let* ((reg (sup::fdt-get-property fdt-node "reg"))
          (address (sup::fdt-read-integer reg address-cells 0))
          (interrupts (sup::fdt-get-property fdt-node "interrupts"))
-         (irq (sup::fdt-read-integer interrupts 1 1)))
-    ;; FIXME: IRQ routing.
-    (virtio-mmio-register address (+ 32 irq))))
+         ;; GIC interrupt specifiers encode the type in cell 0 (0 = SPI,
+         ;; 1 = PPI) and the interrupt ID in cell 1.  Convert to the global
+         ;; IRQ namespace used by PLATFORM-IRQ instead of assuming every
+         ;; device interrupt is an SPI.
+         (irq-type (sup::fdt-read-u32 interrupts 0))
+         (irq-id (sup::fdt-read-u32 interrupts 1))
+         (irq-base (case irq-type (0 32) (1 16) (otherwise nil))))
+    (when (null irq-base)
+      (sup:debug-print-line "virtio-mmio: unsupported FDT IRQ type " irq-type)
+      (return-from virtio-mmio-fdt-register nil))
+    (virtio-mmio-register address (+ irq-base irq-id))))
 
 (defun virtio-legacy-mmio-transport-kick (dev vq-id)
   "Notify the device that new buffers have been added to VQ-ID."
