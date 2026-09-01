@@ -602,6 +602,10 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
 
 (defglobal *setf-fref-table*)
 (defglobal *cas-fref-table*)
+;; Serializes writers while preserving the fixed four-slot FREF ABI.  Readers
+;; execute concurrently without taking this lock; publication is ordered by
+;; the per-branch write barrier before the dispatch bytes are changed.
+(defglobal *function-reference-lock* :unlocked)
 
 #+x86-64
 (defun %fill-function-reference-code (fref)
@@ -737,35 +741,47 @@ then NIL will be returned."
   (declare (ignore fref entry-point))
   nil)
 
+(defun %synchronize-function-reference (fref)
+  "Complete architecture-specific instruction visibility for FREF.
+
+X86 has coherent instruction/data caches, so the publication fence in each
+setter branch is sufficient. ARM64's activation currently does not patch code,
+but synchronizing the code range keeps this protocol correct if activation is
+made patching in the future. Other CPUs observe the object slot through the
+normal coherent memory fabric."
+  #+arm64
+  (mezzano.supervisor::%arm64-sync-icache
+   (mezzano.runtime::%object-slot-address fref sys.int::+fref-code+)
+   16)
+  #-arm64
+  (declare (ignore fref)))
+
 (defun (setf function-reference-function) (value fref)
   "Update the function field of a function-reference.
 VALUE may be nil to make the fref unbound."
   (check-type value (or function null))
   (check-type fref function-reference)
-  ;; FIXME: FREF should be locked for the duration.
-  ;; The architecture-specific DMA barrier orders the target publication before
-  ;; dispatch-byte activation; cross-CPU synchronization remains unresolved.
-  ;; FIXME: Cross-CPU synchronization.
-  (cond
-    ((not value)
-     ;; Making it unbound.
-     (setf (%object-ref-t fref +fref-function+) fref)
-     (sys.int::dma-write-barrier)
-     (%activate-function-reference-full-path fref))
-    ((%object-of-type-p value +object-tag-function+)
-     ;; Plain function, use the fast path.
-     ;; Note: Liveness, reading the entry point needs to hold
-     ;; the function live for the duration. We return value
-     ;; so all is ok.
-     (setf (%object-ref-t fref +fref-function+) value)
-     (sys.int::dma-write-barrier)
-     (%activate-function-reference-fast-path
-      fref (%object-ref-unsigned-byte-64 value +function-entry-point+)))
-    (t
-     ;; Bound to an unusual function. Full path.
-     (setf (%object-ref-t fref +fref-function+) value)
-     (sys.int::dma-write-barrier)
-     (%activate-function-reference-full-path fref)))
+  ;; Writers are serialized on a supervisor spinlock.  Run on the wired stack
+  ;; because acquiring a spinlock requires interrupts to be disabled.
+  (mezzano.supervisor:safe-without-interrupts (fref value)
+    (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
+      (cond
+        ((not value)
+         (setf (%object-ref-t fref +fref-function+) fref)
+         (sys.int::dma-write-barrier)
+         (%activate-function-reference-full-path fref)
+         (%synchronize-function-reference fref))
+        ((%object-of-type-p value +object-tag-function+)
+         (setf (%object-ref-t fref +fref-function+) value)
+         (sys.int::dma-write-barrier)
+         (%activate-function-reference-fast-path
+          fref (%object-ref-unsigned-byte-64 value +function-entry-point+))
+         (%synchronize-function-reference fref))
+        (t
+         (setf (%object-ref-t fref +fref-function+) value)
+         (sys.int::dma-write-barrier)
+         (%activate-function-reference-full-path fref)
+         (%synchronize-function-reference fref)))))
   value)
 
 (defun trace-wrapper-p (object)

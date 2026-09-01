@@ -53,20 +53,21 @@ if end is None:
 form = source[start:end]
 if mutation:
     replacements = {
-        "lock": "FIXME: FREF should be locked for the duration",
-        "cpu": "FIXME: Cross-CPU synchronization.",
+        "lock": "with-symbol-spinlock (*function-reference-lock*)",
+        "cpu": "%synchronize-function-reference fref",
     }
     marker = replacements.get(mutation, "")
     if marker:
         form = form.replace(marker, "resolved publication boundary", 1)
 
-markers = (
-    "FIXME: FREF should be locked for the duration",
-    "FIXME: Cross-CPU synchronization.",
-)
-for marker in markers:
-    if marker not in form:
-        raise SystemExit(f"missing function-reference publication marker: {marker}")
+if "with-symbol-spinlock (*function-reference-lock*)" not in form:
+    raise SystemExit("function-reference setter must serialize writers")
+if "%synchronize-function-reference fref" not in form:
+    raise SystemExit("function-reference setter must synchronize instruction visibility")
+if "safe-without-interrupts" not in form:
+    raise SystemExit("function-reference setter must acquire lock with interrupts disabled")
+if form.count("%synchronize-function-reference fref") != 3:
+    raise SystemExit("function-reference setter must synchronize each publication branch")
 if form.count("sys.int::dma-write-barrier") != 3:
     raise SystemExit("function-reference setter must fence each publication branch")
 
