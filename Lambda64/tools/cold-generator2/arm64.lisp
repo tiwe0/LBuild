@@ -119,6 +119,10 @@
                                  'mezzano.supervisor::*arm64-exception-vector-base*))
           ex-vec-base))
   (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
+                  mezzano.supervisor::*bsp-cpu*
+                  mezzano.supervisor::*bsp-wired-stack*
+                  mezzano.supervisor::*n-up-cpus*
+                  mezzano.supervisor::*cpus*
                   ;; These two functions run before the normal Lisp roots are
                   ;; reachable: kboot copies %%PE-BOOTSTRAP into executable
                   ;; memory, and the bootloader entry invokes the data
@@ -138,20 +142,38 @@
                   sup::%serror-elx-handler
                   sup::%load-cpu-bits
                   sup::initialize-boot-cpu
+                  sup::arm64-cpu-self
+                  (setf sup::arm64-cpu-self)
+                  sup::arm64-cpu-state
+                  (setf sup::arm64-cpu-state)
+                  sup::arm64-cpu-idle-thread
+                  (setf sup::arm64-cpu-idle-thread)
+                  sup::arm64-cpu-wired-stack
+                  (setf sup::arm64-cpu-wired-stack)
+                  sup::arm64-cpu-sp-el1
+                  (setf sup::arm64-cpu-sp-el1)
+                  sys.int::memref-unsigned-byte-64
                   sys.int::bootloader-entry-point))
-    (let* ((symbol (env:translate-symbol environment name))
+    (let* ((symbol (if (consp name)
+                       name
+                       (env:translate-symbol environment name)))
            (fref (env:function-reference environment symbol)))
       ;; Only the exception-vector-base global needs its symbol cell before
       ;; POST-SERIALIZE updates the value.  Function roots should not pull in
       ;; every symbol/string reachable from the name; serialize their fref and
       ;; concrete function body directly.
-      (if (eql name 'mezzano.supervisor::*arm64-exception-vector-base*)
+      (if (member name '(mezzano.supervisor::*arm64-exception-vector-base*
+                         mezzano.supervisor::*bsp-cpu*
+                         mezzano.supervisor::*bsp-wired-stack*
+                         mezzano.supervisor::*n-up-cpus*
+                         mezzano.supervisor::*cpus*))
           (progn
             (ser:serialize-object symbol image environment)
-            ;; SYMBOL serialization deliberately avoids creating a missing
-            ;; global value cell.  This cell was created above when seeding
-            ;; the exception-vector base, so serialize it explicitly to make
-            ;; sure its initializer runs before FINALIZE-AREAS.
+            ;; SYMBOL serialization deliberately avoids creating missing
+            ;; global value cells.  These bootstrap globals are read before
+            ;; normal Lisp roots become reachable, so serialize each existing
+            ;; cell explicitly to make sure its initializer runs before
+            ;; FINALIZE-AREAS.
             (ser:serialize-object
              (env:symbol-global-value-cell environment symbol)
              image environment)))
@@ -162,7 +184,18 @@
           ;; instruction fetch cannot fault before Lisp installs VBAR_EL1.
           (when (member name '(sys.int::bootloader-entry-point
                                sup::initialize-boot-cpu
-                               sup::%load-cpu-bits))
+                               sup::%load-cpu-bits
+                               sup::arm64-cpu-self
+                               (setf sup::arm64-cpu-self)
+                               sup::arm64-cpu-state
+                               (setf sup::arm64-cpu-state)
+                               sup::arm64-cpu-idle-thread
+                               (setf sup::arm64-cpu-idle-thread)
+                               sup::arm64-cpu-wired-stack
+                               (setf sup::arm64-cpu-wired-stack)
+                               sup::arm64-cpu-sp-el1
+                               (setf sup::arm64-cpu-sp-el1)
+                               sys.int::memref-unsigned-byte-64))
             (setf (slot-value fn 'env::%area) :wired-function))
           (ser:serialize-object fn image environment)))
       (ser:serialize-object fref image environment)
