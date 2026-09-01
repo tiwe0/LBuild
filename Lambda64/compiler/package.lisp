@@ -902,6 +902,7 @@
            #:make-dx-closure-result
            #:make-dx-closure-function
            #:make-dx-closure-environment
+           #:make-dx-closure-environment-operands
 
            #:make-dx-typed-vector-instruction
            #:make-dx-typed-vector-result
