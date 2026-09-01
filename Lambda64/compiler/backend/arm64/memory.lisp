@@ -89,8 +89,8 @@
                        :source value-2
                        :destination result-2)))
 
-;; TODO: (cas memref-t) & dcas memref-t. The generic
-;; compare-exchange IR currently supports object-relative accesses only.
+;; TODO: dcas memref-t. The generic compare-exchange IR currently supports
+;; object-relative accesses only, and ARM64 has no 128-bit memref CAS lowering.
 ;;
 ;; CAS/DCAS for memref-t remain intentionally unsupported: the generic
 ;; compare-exchange IR models object-relative slots, while memref addresses are
@@ -101,6 +101,29 @@
 ;; Integer memref CAS below already lowers through ARM64 CASL instructions. The
 ;; lowering keeps old/new/current values in distinct virtual registers, so it is
 ;; SSA-safe and does not require the object-relative compare-exchange IR form.
+
+(define-builtin (sys.int::cas sys.int::%memref-t) ((old new address index) result)
+  (let ((address-unboxed (make-instance 'ir:virtual-register :kind :integer))
+        (generated-address (make-instance 'ir:virtual-register :kind :integer))
+        (current-value (make-instance 'ir:virtual-register :kind :integer)))
+    (emit (make-instance 'ir:unbox-fixnum-instruction
+                         :source address
+                         :destination address-unboxed))
+    (with-scaled-fixnum-index (scaled-index index 8)
+      (emit (make-instance 'arm64-instruction
+                           :opcode 'lap:add
+                           :operands (list generated-address address-unboxed scaled-index)
+                           :inputs (list address-unboxed scaled-index)
+                           :outputs (list generated-address))))
+    (emit (make-instance 'arm64-cas-mem-instruction
+                         :opcode 'lap:casal
+                         :address generated-address
+                         :old-value old
+                         :new-value new
+                         :current-value current-value))
+    (emit (make-instance 'ir:move-instruction
+                         :source current-value
+                         :destination result))))
 (defmacro define-memref-integer-accessor (name read-op write-op cas-op scale box-op unbox-op)
   `(progn
      (define-builtin ,name ((address index) result)
