@@ -16,6 +16,8 @@ assert '("supervisor/arm64/cpu.lisp" :arm64)' in cold
 assert 'TODO: Turn this into a direct named call.' in x86
 assert '(:object :r13 ,sys.int::+fref-code+)' in x86
 assert '(lap:call :rax)' in x86
+# Dynamic FREF code may be hot-swapped; a static named call would bypass slot 0 publication.
+assert 'sys.int::+fref-code+' in x86 and ':r13' in x86
 assert 'FIXME: Source locations for these are lost.' in classes
 assert 'Preserve source metadata for the cold CLOS bootstrap.' in cross_compile
 assert '(remf initargs :source-location)' not in cross_compile
