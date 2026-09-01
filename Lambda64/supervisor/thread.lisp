@@ -261,10 +261,11 @@ can be reprotected.")
   (run-queue-pop-front rq))
 
 (defun pop-run-queue ()
-  ;; FIXME, HACK! Virtio drivers seem to be broken when the run outside the first PE on A64
-  ;; This constrains supervisor threads to just that PE.
-  (or (and #+arm64 (eql (local-cpu-info) *bsp-cpu*)
-           (pop-run-queue-1 *supervisor-priority-run-queue*))
+  ;; Supervisor threads are not tied to the boot CPU.  Virtio IRQ delivery is
+  ;; serialized by the IRQ attachment and the global thread lock; wakeups are
+  ;; broadcast to all PEs, so a worker may safely run on whichever PE wins the
+  ;; run-queue lock.  Keeping this path CPU-neutral is required for SMP boot.
+  (or (pop-run-queue-1 *supervisor-priority-run-queue*)
       (pop-run-queue-1 *high-priority-run-queue*)
       (pop-run-queue-1 *normal-priority-run-queue*)
       (pop-run-queue-1 *low-priority-run-queue*)))
@@ -307,10 +308,8 @@ Interrupts must be off and the global thread lock must be held."
            ;; World is stopped, the only runnable threads are the world stopper
            ;; or any thread at :supervisor priority.
            ;; Supervisor priority threads first.
-           (cond ((and #+arm64 (eql (local-cpu-info) *bsp-cpu*)
-                       (pop-run-queue-1 *supervisor-priority-run-queue*)))
-                 ((and #+arm64 (eql (local-cpu-info) *bsp-cpu*)
-                       (eql (thread-state *world-stopper*) :runnable))
+           (cond ((pop-run-queue-1 *supervisor-priority-run-queue*))
+                 ((eql (thread-state *world-stopper*) :runnable)
                   ;; The world stopper is ready.
                   *world-stopper*)
                  (t ;; Switch to idle.
@@ -396,10 +395,11 @@ Interrupts must be off and the global thread lock must be held."
 (defun %%switch-to-thread-via-wired-stack (current-thread sp fp next-thread)
   ;; Save frame pointer.
   (setf (thread-state-rbp-value current-thread) fp)
-  ;; Save FPU state.
-  ;; FIXME: FPU state doesn't need to be completely saved for voluntary task switches.
-  ;; Only MXCSR & FCW or FPCR need to be preserved.
-  (save-fpu-state current-thread)
+  ;; Save FPU state for a voluntary switch.  This path uses the complete
+  ;; architectural save because the compiler does not yet guarantee that a
+  ;; yield has no live vector values.  Keep this separate from the interrupt
+  ;; path so a future lazy-FPU implementation can safely narrow it.
+  (save-fpu-state-voluntary current-thread)
   ;; Save stack pointer.
   (setf (thread-state-rsp-value current-thread) sp)
   ;; Only partial state was saved.
@@ -440,8 +440,12 @@ Interrupts must be off and the global thread lock must be held."
     (setf (thread-switch-time-start new-thread) now))
   ;; Switch threads.
   (set-current-thread new-thread)
-  ;; Restore FPU state.
-  (restore-fpu-state new-thread)
+  ;; Restore FPU state. Full-save and voluntary paths are separate ABI
+  ;; boundaries so voluntary switching can become lazy without weakening
+  ;; interrupt saves.
+  (if (thread-full-save-p new-thread)
+      (restore-fpu-state new-thread)
+      (restore-fpu-state-voluntary new-thread))
   ;; The global thread lock is dropped by the restore functions, not here.
   ;; We are still running on the current (old) thread's stack, so cannot
   ;; allow another CPU to switch on to it just yet.

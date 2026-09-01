@@ -27,6 +27,17 @@
 (defun restore-fpu-state (thread)
   (fxrstor (mezzano.runtime::%object-slot-address thread +thread-fxsave-area+)))
 
+
+;; Voluntary switches currently retain the complete save as a conservative
+;; ABI boundary: callers may still have live vector values across YIELD.
+;; Keeping a dedicated primitive makes the eventual lazy-FPU transition
+;; explicit and prevents accidentally weakening interrupt-state saves.
+(defun save-fpu-state-voluntary (thread)
+  (save-fpu-state thread))
+
+(defun restore-fpu-state-voluntary (thread)
+  (restore-fpu-state thread))
+
 (defun save-interrupted-state (thread interrupt-frame)
   ;; Copy the interrupt frame over to the save area.
   (sys.int::%copy-words (mezzano.runtime::%object-slot-address thread +thread-interrupt-save-area+)
