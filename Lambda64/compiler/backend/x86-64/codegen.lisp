@@ -897,9 +897,12 @@
 (defmethod emit-lap (backend-function (instruction ir:invoke-nlx-multiple-instruction) uses defs)
   (emit-invoke-nlx instruction))
 
-;; FIXME: Don't recompute contours for each save instruction.
+;; Dynamic contours are immutable for a backend function.  Compute them once
+;; during prepass and reuse the snapshot for every save-multiple instruction.
 (defmethod lap-prepass (backend-function (instruction ir:save-multiple-instruction) uses defs)
-  (let ((contours (ir::dynamic-contours backend-function)))
+  (let ((contours (or (gethash backend-function *prepass-data*)
+                      (setf (gethash backend-function *prepass-data*)
+                            (ir::dynamic-contours backend-function)))))
     ;; Allocate dx-root & stack pointer save slots
     (let ((dx-root (allocate-stack-slots 1))
           (saved-stack-pointer (allocate-stack-slots 1 :livep nil))
