@@ -24,6 +24,12 @@ assert '(remf initargs :source-location)' not in cross_compile
 assert "FIXME: This doesn't quite work with large bytes." in classes
 assert '(check-type size (integer 0 #x1FFF))' in environment
 assert '(check-type position (integer 0 #x1FFFFFFFFFFF))' in environment
+# Mirror the immediate BYTE packing contract to catch accidental field-width
+# regressions even when a full cold-image build is unavailable.
+size, position = 0x1FFF, 0x1FFFFFFFFFFF
+packed = (size << 6) | (position << 19)
+assert (packed >> 6) & 0x1FFF == size
+assert (packed >> 19) & 0x1FFFFFFFFFFF == position
 assert 'FIXME: Need to include an initfunction' not in clos
 assert ':initfunction (let ((slot slot))' in clos
 assert '(initfunction :initform nil :initarg :initfunction)' in classes
