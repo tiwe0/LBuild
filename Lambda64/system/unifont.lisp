@@ -27,7 +27,6 @@ Returns the character position in *UNIFONT-BMP-DATA* and the character pixel wid
         (* (length (char-name character)) 8))))
 
 (defun map-unifont-2d (c)
-  ;; TODO: Generate missing characters here.
   (let* ((code (char-code c))
          (row (ldb (byte 8 8) code))
          (cell (ldb (byte 8 0) code))
@@ -44,9 +43,13 @@ Returns the character position in *UNIFONT-BMP-DATA* and the character pixel wid
       (unless glyph
         (multiple-value-bind (glyph-offset width)
             (map-unifont c)
-          (when (not glyph-offset) (return-from map-unifont-2d nil))
-          (setf glyph (make-array (list 16 width)
-                                  :displaced-to *unifont-bmp-data*
-                                  :displaced-index-offset glyph-offset)
-                (svref cache-row cell) glyph)))
+          (setf glyph
+                (if glyph-offset
+                    (make-array (list 16 width)
+                                :displaced-to *unifont-bmp-data*
+                                :displaced-index-offset glyph-offset)
+                    ;; Keep callers renderable for code points absent from
+                    ;; the bundled Unifont table: use a blank 8-pixel cell.
+                    (make-array (list 16 8) :initial-element 0)))
+          (setf (svref cache-row cell) glyph))))
       glyph)))
