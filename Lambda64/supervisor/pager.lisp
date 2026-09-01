@@ -1254,7 +1254,11 @@ It will put the thread to sleep, while it waits for the page."
       ;; Return and let the thread redo the fault.
       (wake-thread thread)
       (return-from handle-fault-in-pager))
-    ;; TODO: Shouldn't panic at all, this should be dispatched to a debugger thread.
+    ;; Keep unhandled faults on the pager's panic path until a debugger-thread
+    ;; handoff protocol exists.  Dispatching here would require transferring
+    ;; the saved frame, VM lock ownership, and panic policy atomically; doing
+    ;; so without that contract could strand the faulting thread or deadlock
+    ;; the pager.
     (cond ((or (not (boundp '*panic-on-unhandled-paging-requests*))
                *panic-on-unhandled-paging-requests*)
            (let ((message (list "page fault on unmapped page " faulting-address " in thread " *pager-current-thread*)))
