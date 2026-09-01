@@ -264,6 +264,11 @@
       (detect-disk-partitions))
     (initialize-paging-system)
     (initialize-snapshot)
+    ;; The scheduler/pager bootstrap objects are now published, so device and
+    ;; time initialization may safely receive their interrupts.  Keep the
+    ;; original startup boundary here; leaving interrupts masked through
+    ;; VirtIO/video probing can strand those waiters and drop into idle.
+    (%enable-interrupts)
     ;; INITIALIZE-SYNC creates mutex-backed watcher pools.  On a cold boot,
     ;; doing that before the paging backend exists can exhaust wired space,
     ;; enter GC, and deadlock in a pager RPC.  Warm boots retain the original
@@ -281,9 +286,4 @@
                  *late-boot-hooks* '())
            (make-thread #'sys.int::initialize-lisp :name "Main thread"))
           (t (wake-thread *post-boot-worker-thread*)))
-    ;; Keep timer/device interrupts masked until the scheduler, pager, and
-    ;; initial runnable threads are fully published.  Enabling them earlier
-    ;; lets an ARM timer tick preempt this bootstrap thread while run queues
-    ;; are still being rebuilt, strand it, and leave the CPU in idle forever.
-    (%enable-interrupts)
     (finish-initial-thread)))
