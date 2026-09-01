@@ -174,8 +174,7 @@ If NAME does not name a struct accessor, then NIL is returned."
                         `',struct-name `',slot-name
                         ,@all-name-syms)))
                    (t
-                    ;; Fall back on a CAS loop.
-                    ;; TODO: Support directly on struct slots that have been declared fixnum.
+                    ;; Fall back on a CAS loop for places without a direct operation.
                     `(loop
                         for ,old-sym = ,read-form
                         for ,new-sym = ,(,(if rest 'list* 'list)

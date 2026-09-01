@@ -264,7 +264,19 @@
                             (0 'a64:str)
                             (1 'a64:ldr))))))
          (s (logbitp 12 word))
-         ;; FIXME: Address decode here is wrong, particularly around the shift count
+         ;; The register-offset shift is scaled by the transfer width.  For
+         ;; SIMD&FP Q loads/stores, the size field is augmented by four (16
+         ;; bytes), just as for the unsigned-immediate encoding below.
+         (scale (if (and simd&fp (logbitp 1 opc))
+                    (+ size 4)
+                    size))
+         (fp-type (and simd&fp
+                       (case scale
+                         (0 :b)
+                         (1 :h)
+                         (2 :s)
+                         (3 :d)
+                         (4 :q))))
          (address (list* (decode-gp64 (ldb +rn+ word) :sp t)
                          (if (logbitp 0 option)
                              (decode-gp64 (ldb +rm+ word))
@@ -276,17 +288,22 @@
                                    (6 :sxtw)
                                    (7 :sxtx))
                                  (if s
-                                     size
+                                     scale
                                      0))))))
     (when (not opcode)
       (return-from load/store-register-register-offset
         (values nil :load/store-register-register-offset)))
+    (when (and simd&fp (not fp-type))
+      (return-from load/store-register-register-offset
+        (values nil :load/store-register-register-offset-simd&fp-scale)))
     (make-instance 'arm64-instruction
                    :opcode opcode
-                   ;; FIXME: Register decode here is wrong
                    :operands (list (if simd&fp
-                                       (decode-fp (ldb +rt+ word) :q)
-                                       (decode-gp64 (ldb +rt+ word)))
+                                       (decode-fp (ldb +rt+ word) fp-type)
+                                       (if (or (eql size 3)
+                                               (eql opc 2))
+                                           (decode-gp64 (ldb +rt+ word))
+                                           (decode-gp32 (ldb +rt+ word))))
                                    address))))
 
 ;; Load/store register (unsigned immediate)

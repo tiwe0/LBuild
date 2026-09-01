@@ -394,42 +394,52 @@
 (define-virtio-transport-function device-status (device))
 (define-virtio-transport-function (setf device-status) (value device))
 
-;; Currently no lock required here, this is only modified at boot time
-;; during device detection.
+(sys.int::defglobal *virtio-registry-lock* :unlocked)
 (sys.int::defglobal *virtio-devices*)
 (sys.int::defglobal *virtio-late-probe-devices*)
 
+;; Device and driver registration can run after interrupts are enabled (the
+;; platform/FDT scan does so), while the lists themselves live in wired memory
+;; and are also touched by deferred probing.  A spinlock keeps the registry
+;; usable during early boot without depending on the scheduler-backed mutex.
+(defmacro with-virtio-registry-lock (&body body)
+  `(sup:safe-without-interrupts ()
+     (sup:with-symbol-spinlock (*virtio-registry-lock*)
+       ,@body)))
+
 (defun virtio-device-register (dev)
-  (sup::push-wired dev *virtio-devices*)
-  ;; Reset device.
-  (setf (virtio-device-status dev) +virtio-status-reset+)
-  ;; Acknowledge the device.
-  (setf (virtio-device-status dev) +virtio-status-acknowledge+)
-  (case (virtio-device-did dev)
-    (#.+virtio-dev-id-block+
-     (virtio-block-register dev)
-     (setf (virtio-device-claimed dev) :block))
-    (#.+virtio-dev-id-gpu+
-     (virtio-gpu-register dev)
-     (setf (virtio-device-claimed dev) :gpu))
-    (#.+virtio-dev-id-input+
-     (virtio-input-register dev)
-     (setf (virtio-device-claimed dev) :input))
-    (t
-     (sup::push-wired dev *virtio-late-probe-devices*))))
+  (with-virtio-registry-lock
+    (sup::push-wired dev *virtio-devices*)
+    ;; Reset device.
+    (setf (virtio-device-status dev) +virtio-status-reset+)
+    ;; Acknowledge the device.
+    (setf (virtio-device-status dev) +virtio-status-acknowledge+)
+    (case (virtio-device-did dev)
+      (#.+virtio-dev-id-block+
+       (virtio-block-register dev)
+       (setf (virtio-device-claimed dev) :block))
+      (#.+virtio-dev-id-gpu+
+       (virtio-gpu-register dev)
+       (setf (virtio-device-claimed dev) :gpu))
+      (#.+virtio-dev-id-input+
+       (virtio-input-register dev)
+       (setf (virtio-device-claimed dev) :input))
+      (t
+       (sup::push-wired dev *virtio-late-probe-devices*)))))
 
 ;; These devices must be probed late because their drivers may not be in wired memory.
 (defun virtio-late-probe ()
-  (dolist (dev *virtio-late-probe-devices*)
-    (dolist (drv *virtio-drivers*
-             (progn
-               (sup:debug-print-line "Unknown virtio device type " (virtio-device-did dev))
-               (setf (virtio-device-status dev) +virtio-status-failed+)))
-      (when (and (eql (virtio-device-did dev) (virtio-driver-dev-id drv))
-                 (sys.int::log-and-ignore-errors
-                  (funcall (virtio-driver-probe drv) dev)))
-        (setf (virtio-device-claimed dev) drv)
-        (return)))))
+  (with-virtio-registry-lock
+    (dolist (dev *virtio-late-probe-devices*)
+      (dolist (drv *virtio-drivers*
+               (progn
+                 (sup:debug-print-line "Unknown virtio device type " (virtio-device-did dev))
+                 (setf (virtio-device-status dev) +virtio-status-failed+)))
+        (when (and (eql (virtio-device-did dev) (virtio-driver-dev-id drv))
+                   (sys.int::log-and-ignore-errors
+                    (funcall (virtio-driver-probe drv) dev)))
+          (setf (virtio-device-claimed dev) drv)
+          (return))))))
 
 (define-virtio-transport-function device-feature (device bit))
 (define-virtio-transport-function driver-feature (device bit))
@@ -521,9 +531,6 @@
                              :completed))))
                   device))
 
-;; FIXME: Access to this needs to be protected.
-;; I'm not sure a mutex will cut it, it needs to be accessible
-;; during boot-time device probing.
 (sys.int::defglobal *virtio-drivers* '())
 
 (defstruct (virtio-driver
@@ -536,29 +543,31 @@
   `(register-virtio-driver ',name ',probe-function ,dev-id))
 
 (defun register-virtio-driver (name probe-function dev-id)
-  (dolist (drv *virtio-drivers*)
-    (when (eql (virtio-driver-name drv) name)
-      (when (not (and (eql (virtio-driver-probe drv) probe-function)
-                      (eql (virtio-driver-dev-id drv) dev-id)))
-        (error "Incompatible redefinition of virtio driver ~S." name))
-      ;; TODO: Maybe detach current driver and reprobe?
-      (return-from register-virtio-driver name)))
-  (let ((driver (make-virtio-driver
-                 :name name
-                 :probe probe-function
-                 :dev-id dev-id)))
-    (sup:debug-print-line "Registered new virtio driver " name " for device-id " dev-id)
-    (sup::push-wired driver *virtio-drivers*)
-    ;; Probe devices.
-    (dolist (dev *virtio-devices*)
-      (when (and (not (virtio-device-claimed dev))
-                 (eql (virtio-device-did dev) dev-id)
-                 (sys.int::log-and-ignore-errors
-                  (funcall probe-function dev)))
-        (setf (virtio-device-claimed dev) driver)))
-    name))
+  (with-virtio-registry-lock
+    (dolist (drv *virtio-drivers*)
+      (when (eql (virtio-driver-name drv) name)
+        (when (not (and (eql (virtio-driver-probe drv) probe-function)
+                        (eql (virtio-driver-dev-id drv) dev-id)))
+          (error "Incompatible redefinition of virtio driver ~S." name))
+        ;; TODO: Maybe detach current driver and reprobe?
+        (return-from register-virtio-driver name)))
+    (let ((driver (make-virtio-driver
+                   :name name
+                   :probe probe-function
+                   :dev-id dev-id)))
+      (sup:debug-print-line "Registered new virtio driver " name " for device-id " dev-id)
+      (sup::push-wired driver *virtio-drivers*)
+      ;; Probe devices.
+      (dolist (dev *virtio-devices*)
+        (when (and (not (virtio-device-claimed dev))
+                   (eql (virtio-device-did dev) dev-id)
+                   (sys.int::log-and-ignore-errors
+                    (funcall probe-function dev)))
+          (setf (virtio-device-claimed dev) driver)))
+      name)))
 
 (defun sup::initialize-virtio ()
+  (setf *virtio-registry-lock* :unlocked)
   (when (not (boundp '*virtio-drivers*))
     (setf *virtio-drivers* '()))
   ;; TODO: This should notify drivers that devices are gone.

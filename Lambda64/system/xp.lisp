@@ -98,15 +98,19 @@
 
 ;                       ---- DISPATCHING ----
 
-;; FIXME: This needs locking, not just the hash-tables but also for others.
 (defclass pprint-dispatch-table ()
   ((conses-with-cars :initarg :conses-with-cars :accessor conses-with-cars)
    (structures :initarg :structures :accessor structures)
-   (others :initarg :others :accessor others))
+   (others :initarg :others :accessor others)
+   ;; The OTHERS list and the per-entry priority counters are mutated together
+   ;; with the dispatch hash tables.  Keep one lock for the whole table so
+   ;; readers never observe a partially updated dispatch table.
+   (lock :initarg :lock :accessor pprint-dispatch-table-lock))
   (:default-initargs
    :conses-with-cars (make-hash-table :test #'eq :synchronized t)
    :structures (make-hash-table :test #'eq :synchronized t)
-   :others nil))
+   :others nil
+   :lock (mezzano.supervisor:make-mutex 'pprint-dispatch-table)))
 
 (defun make-pprint-dispatch (&rest args)
   (apply 'make-instance 'pprint-dispatch-table args))
@@ -133,22 +137,24 @@
 
 (defun copy-pprint-dispatch (&optional (table *print-pprint-dispatch*))
   (when (null table) (setf table *IPD*))
-  (let* ((new-conses-with-cars (make-hash-table
-                                :test #'eq
-                                :synchronized t))
-         (new-structures (make-hash-table
-                          :test #'eq
-                          :synchronized t)))
-    (maphash (lambda (key value)
-                 (setf (gethash key new-conses-with-cars) (copy-entry value)))
-             (conses-with-cars table))
-    (maphash (lambda (key value)
-                 (setf (gethash key new-structures) (copy-entry value)))
-             (structures table))
-    (make-pprint-dispatch
-      :conses-with-cars new-conses-with-cars
-      :structures new-structures
-      :others (copy-list (others table)))))
+  (mezzano.supervisor:without-footholds
+    (mezzano.supervisor:with-mutex ((pprint-dispatch-table-lock table))
+      (let* ((new-conses-with-cars (make-hash-table
+                                    :test #'eq
+                                    :synchronized t))
+             (new-structures (make-hash-table
+                              :test #'eq
+                              :synchronized t)))
+        (maphash (lambda (key value)
+                   (setf (gethash key new-conses-with-cars) (copy-entry value)))
+                 (conses-with-cars table))
+        (maphash (lambda (key value)
+                   (setf (gethash key new-structures) (copy-entry value)))
+                 (structures table))
+        (make-pprint-dispatch
+          :conses-with-cars new-conses-with-cars
+          :structures new-structures
+          :others (copy-list (others table)))))))
 
 (defun set-pprint-dispatch (type-specifier function
                             &optional (priority 0) (table *print-pprint-dispatch*))
@@ -157,19 +163,21 @@
   (set-pprint-dispatch+ type-specifier function priority table))
 
 (defun set-pprint-dispatch+ (type-specifier function priority table)
-  (let* ((category (specifier-category type-specifier))
-         (pred
-           (if (not (eq category 'other)) nil
-               (let ((pred (specifier-fn type-specifier)))
-                 (if (and (consp (caddr pred))
-                          (symbolp (caaddr pred))
-                          (equal (cdaddr pred) '(x)))
-                     (symbol-function (caaddr pred))
-                     (compile nil pred)))))
-         (entry (if function (make-entry :test pred
-                                         :fn function
-                                         :full-spec (list priority type-specifier)))))
-    (case category
+  (mezzano.supervisor:without-footholds
+    (mezzano.supervisor:with-mutex ((pprint-dispatch-table-lock table))
+      (let* ((category (specifier-category type-specifier))
+             (pred
+               (if (not (eq category 'other)) nil
+                   (let ((pred (specifier-fn type-specifier)))
+                     (if (and (consp (caddr pred))
+                              (symbolp (caaddr pred))
+                              (equal (cdaddr pred) '(x)))
+                         (symbol-function (caaddr pred))
+                         (compile nil pred)))))
+             (entry (if function (make-entry :test pred
+                                             :fn function
+                                             :full-spec (list priority type-specifier)))))
+        (case category
       (cons-with-car
         (cond ((null entry) (remhash (cadadr type-specifier) (conses-with-cars table)))
               (T (setf (test entry)
@@ -198,7 +206,7 @@
                   (rplacd l (cons entry (cdr l)))
                   (return nil)))
               (setf (others table) (cdr others)))
-           (adjust-counts table priority 1)))))
+             (adjust-counts table priority 1)))))))
   nil)
 
 (defun priority-> (x y)
@@ -226,16 +234,18 @@
 (defun get-printer (object table)
   (when (not (typep table 'pprint-dispatch-table))
     (return-from get-printer nil))
-  (let* ((entry (if (consp object)
-                    (gethash (car object) (conses-with-cars table))
-                    (gethash (type-of object) (structures table)))))
-    (if (not entry)
-        (setf entry (find object (others table) :test #'fits))
-        (do ((i (test entry) (1- i))
-             (l (others table) (cdr l)))
-            ((zerop i))
-          (when (fits object (car l)) (setf entry (car l)) (return nil))))
-    (when entry (fn entry))))
+  (mezzano.supervisor:without-footholds
+    (mezzano.supervisor:with-mutex ((pprint-dispatch-table-lock table))
+      (let* ((entry (if (consp object)
+                        (gethash (car object) (conses-with-cars table))
+                        (gethash (type-of object) (structures table)))))
+        (if (not entry)
+            (setf entry (find object (others table) :test #'fits))
+            (do ((i (test entry) (1- i))
+                 (l (others table) (cdr l)))
+                ((zerop i))
+              (when (fits object (car l)) (setf entry (car l)) (return nil))))
+        (when entry (fn entry))))))
 
 (defun fits (obj entry) (funcall (test entry) obj))
 
