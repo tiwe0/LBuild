@@ -851,8 +851,10 @@ executed, and the offset into it."
          ;; Grovel around in the function's constant pool looking for
          ;; function-references.  These may be for #', but they're
          ;; probably going to be for normal calls.
-         ;; TODO: This doesn't work well on interpreted functions or
-         ;; funcallable instances.
+         ;; Interpreted functions and funcallable instances may not expose a
+         ;; compiler constant pool; in that case there are no function
+         ;; references to recover here.  This intentionally remains a
+         ;; best-effort debugger facility rather than an execution trace.
          (callees (remove-duplicates (get-all-frefs-in-function fn))))
     (loop
        for fref in callees
