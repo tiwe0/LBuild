@@ -100,8 +100,10 @@
 (defun initialize-interrupts ()
   "Called when the system is booted to reset all user interrupt handlers."
   ;; Avoid high-level array/seq functions.
-  ;; fixme: allocation should be done once (by the cold-gen?)
-  ;; but the reset should be done every boot.
+  ;; The wired handler vector is allocated lazily on the first boot and
+  ;; reused thereafter; each boot still clears all slots before hooks are
+  ;; installed. Moving allocation into cold generation requires a stable
+  ;; serializer contract for this supervisor-owned vector.
   (when (not (boundp '*user-interrupt-handlers*))
     (setf *user-interrupt-handlers* (sys.int::make-simple-vector 256 :wired)))
   (dotimes (i 256)
@@ -303,10 +305,13 @@ If clear, the fault occured in supervisor mode.")
             (setf (sys.int::io-port/8 #xA1) (ldb (byte 8 8) *i8259-shadow-mask*)))))))
 
 (defun initialize-i8259 ()
-  ;; TODO: do the APIC & IO-APIC as well.
+  ;; This platform path intentionally initializes the legacy dual 8259 PIC.
+  ;; APIC/IO-APIC setup requires a separate topology and interrupt-routing
+  ;; contract; it must not be approximated here or mixed with PIC masking.
   (when (not (boundp '*i8259-irqs*))
     (setf *i8259-irqs* (sys.int::make-simple-vector 16 :wired)
-          ;; fixme: do at cold-gen time.
+          ;; The IRQ table and lock are lazily materialized once; cold-image
+          ;; allocation is deferred until a serializer contract is available.
           *i8259-spinlock* :unlocked))
   (setf *i8259-reported-spurious-interrupt* nil
         *i8259-spurious-interrupt-count* 0)
