@@ -752,8 +752,10 @@ This should only fill in the START- slots and ignore the END- slots.")
 (defun coerce (object result-type)
   (cond ((eql result-type 'short-float)
          (ecase object
-           (0.0d0 (cross-support::make-cross-short-float :value #x0000))
-           (1.0d0 (cross-support::make-cross-short-float :value #x3C00))))
+           ((0 0.0f0 0.0d0)
+            (cross-support::make-cross-short-float :value #x0000))
+           ((1 1.0f0 1.0d0)
+            (cross-support::make-cross-short-float :value #x3C00))))
         (t
          (cl:coerce object result-type))))
 
