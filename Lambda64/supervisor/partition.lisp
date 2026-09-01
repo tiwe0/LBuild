@@ -178,10 +178,7 @@
     (let ((size (1+ (- last-lba first-lba))))
       (debug-print-line "Detected partition " i " on disk " disk
                         ". Start: " first-lba " size: " size)
-      (register-disk (make-partition :disk disk
-                                     :offset first-lba
-                                     :id i
-                                     :type system-id)
+      (register-disk (%make-partition disk first-lba i system-id)
                      (disk-writable-p disk)
                      size
                      (disk-sector-size disk)
@@ -302,10 +299,7 @@
                        (not (eql size 0))
                        (not (eql part-type #xee)))
               (debug-print-line "Detected partition " i " on disk " disk ". Start: " start-lba " size: " size)
-              (register-disk (make-partition :disk disk
-                                             :offset start-lba
-                                             :id i
-                                             :type part-type)
+              (register-disk (%make-partition disk start-lba i part-type)
                              (disk-writable-p disk)
                              size
                              sector-size
@@ -335,10 +329,8 @@
                                    ". Type: " part-type
                                    " start: " (+ ebr-lba data-offset)
                                    " size: " size)
-                 (register-disk (make-partition :disk disk
-                                                :offset (+ ebr-lba data-offset)
-                                                :id part-num
-                                                :type part-type)
+                 (register-disk (%make-partition disk (+ ebr-lba data-offset)
+                                                 part-num part-type)
                                 (disk-writable-p disk)
                                 size
                                 sector-size
@@ -415,10 +407,7 @@
                    (debug-print-line "Root entry at " extent "/" length " flags: " flags)
                    (when (eql (logand flags #b11101111) #b00000000) ; Ignore the protection bit.
                      ;; Valid file.
-                     (register-disk (make-partition :disk disk
-                                                    :offset extent
-                                                    :id (incf n-entries)
-                                                    :type nil)
+                     (register-disk (%make-partition disk extent (incf n-entries) nil)
                                     nil
                                     (ceiling length 2048)
                                     2048

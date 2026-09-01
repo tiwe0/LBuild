@@ -37,7 +37,10 @@
   name)
 
 (defstruct (partition
-             (:area :wired))
+             (:area :wired)
+             ;; Partition discovery runs before the pager is online.  Avoid
+             ;; the temporary general-area keyword vector from MAKE-PARTITION.
+             (:constructor %make-partition (disk offset id type)))
   disk
   offset
   id

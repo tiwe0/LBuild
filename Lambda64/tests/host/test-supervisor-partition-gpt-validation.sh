@@ -64,7 +64,9 @@ cat >"$test_file" <<'LISP'
 (defun disk-write-fn (disk) (declare (ignore disk)) #'mock-write)
 (defun disk-flush-fn (disk) (declare (ignore disk)) #'mock-flush)
 
-(defstruct partition disk offset id type)
+(defstruct (partition
+            (:constructor %make-partition (disk offset id type)))
+  disk offset id type)
 
 (defun all-disks () *disks*)
 
