@@ -6,7 +6,17 @@
 ;;; >>>>>>
 
 (defun reboot ()
-  ;; FIXME: Need to sync disks and wait until snapshotting finishes.
+  ;; Flush each currently valid disk before handing control to the platform.
+  ;; A failed flush is reported but cannot be recovered synchronously here;
+  ;; continue to the platform reboot path after making a best effort.
+  (dolist (disk (all-disks))
+    (when (disk-valid disk)
+      (multiple-value-bind (successp reason) (disk-flush disk)
+        (unless successp
+          (debug-print-line "Disk flush failed during reboot: " reason)))))
+  ;; Do not tear down memory while a snapshot writer still owns its state.
+  (when (and (boundp '*snapshot-in-progress*) *snapshot-in-progress*)
+    (wait-for-snapshot-completion))
   (platform-reboot)
   (values))
 
