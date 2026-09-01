@@ -51,8 +51,8 @@ for marker in required_thread:
         raise SystemExit(f"missing scheduler boundary marker: {marker}")
 
 # Keep the ARM64 BSP restriction explicit until a real multi-PE Virtio test exists.
-if "#+arm64 (eql (local-cpu-info) *bsp-cpu*)" not in thread:
-    raise SystemExit("ARM64 supervisor queue is no longer visibly BSP-constrained")
+if thread.count("#+arm64 (eql (local-cpu-info) *bsp-cpu*)") < 2:
+    raise SystemExit("ARM64 supervisor scheduling paths are no longer visibly BSP-constrained")
 # Voluntary switches still save the architectural FPU state before publishing
 # the partial-save flag.  This ordering is part of the current ABI contract;
 # reducing the save to control registers requires a separate cross-architecture
