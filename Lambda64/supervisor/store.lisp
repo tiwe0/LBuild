@@ -419,7 +419,9 @@
           ;; Size and free bit (clear).
           (setf (sys.int::memref-unsigned-byte-64 current-page (1+ (* offset 2))) (ash n-blocks 1))
           (incf offset))))
-    ;; FIXME! Allocated blocks that weren't used have been leaked here.
+    ;; Return any over-allocated pages and store blocks after writing the used
+    ;; freelist blocks below.  The cleanup loop also handles the deliberately
+    ;; conservative extra block in ESTIMATED-COUNT.
     ;; USED-BLOCK-LIST now contains a list of freelist blocks in reverse order.
     ;; Write them to disk.
     (let ((last-block 0))
