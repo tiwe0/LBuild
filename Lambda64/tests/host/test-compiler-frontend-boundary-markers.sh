@@ -49,6 +49,12 @@ if "defmethod simplify-control-flow-1 ((form ast-call)" not in control or "sys.i
 types = (root / "compiler/type-check.lisp").read_text()
 if "multiple-value-call" not in types or "(let ((req-values" not in types:
     raise SystemExit("TF-WI-0068 multiple-value preservation contract missing")
+convert_ast = (root / "compiler/backend/convert-ast.lisp").read_text()
+instructions_ast = (root / "compiler/backend/instructions.lisp").read_text()
+if "make-instance 'save-multiple-instruction" not in convert_ast or "make-instance 'restore-multiple-instruction" not in convert_ast:
+    raise SystemExit("TF-WI-0068 save/restore lowering boundary missing")
+if "defclass save-multiple-instruction" not in instructions_ast or "defclass restore-multiple-instruction" not in instructions_ast:
+    raise SystemExit("TF-WI-0068 save/restore IR definitions missing")
 
 # TF-WI-0049 is implemented for exact 0/1 scalar promotion; reject a
 # regression that restores the old assertion-only implementation.
