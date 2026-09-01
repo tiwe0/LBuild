@@ -74,11 +74,11 @@
            ;; If the initial element is known and matches the zero initializer
            ;; for this array, we can skip setting and have make-dx-t-v zero
            ;; the vector for us.
-           ;; TODO: There's no way to tell the difference between no
-           ;; :initial-element and an :initial-element of zero.
-           ;; An unspecified :initial-element would mean that make-dx-t-v
-           ;; would not need to zero and that no further initialization needs
-           ;; to be done.
+           ;; MAKE-ARRAY expansion always supplies an explicit initial element
+           ;; (the specialized element zero when :INITIAL-ELEMENT is omitted),
+           ;; so this lowering deliberately treats that value as a requested
+           ;; zero-fill. Preserving an "unspecified" distinction requires an
+           ;; additional presence bit in the AST and is outside this pass.
            (if (and (typep (fifth (ast-arguments initform)) 'ast-quote)
                     (eql (ast-value (fifth (ast-arguments initform)))
                          (sys.int::specialized-array-definition-zero-element
@@ -101,9 +101,10 @@
                                            'nil)))
                            (fill-value ,(fifth (ast-arguments initform))))
                        ;; Fill array.
-                       ;; FIXME: There's no way to distinguish between an unspecified
-                       ;; fill value and a fill value of 0.
-                       ;; You get the fill whether you like it or not.
+                       ;; The lowered AST receives the normalized initial element
+                       ;; from MAKE-ARRAY, including the specialized zero when the
+                       ;; caller omitted :INITIAL-ELEMENT; all elements are therefore
+                       ;; initialized explicitly on this non-zero path.
                        (progn
                          ,@(loop
                               for i below (ast-value (first (ast-arguments initform)))
