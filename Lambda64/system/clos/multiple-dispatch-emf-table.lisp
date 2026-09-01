@@ -19,6 +19,23 @@
   top-level
   lock)
 
+(defun emf-relevant-reordering-table (generic-function)
+  "Return the argument precedence table restricted to dispatch arguments.
+
+The EMF cache must not create levels for required arguments whose methods all
+specialize on T.  Such arguments are still present in the generic function's
+lambda list, but they do not participate in dispatch (and therefore must not
+be consumed while walking the cache)."
+  (let* ((relevant (safe-generic-function-relevant-arguments generic-function))
+         (precedence (or (argument-reordering-table generic-function)
+                         (loop for i below (length relevant) collect i))))
+    (coerce (loop for index across (if (vectorp precedence)
+                                       precedence
+                                       (coerce precedence 'vector))
+                  when (eql (bit relevant index) 1)
+                  collect index)
+            'vector)))
+
 (defun make-emf-cache (generic-function)
   (let ((cache (%make-emf-cache
                 :lock (mezzano.supervisor:make-mutex `(emf-cache ,generic-function))
@@ -53,9 +70,17 @@
   (mezzano.supervisor:with-mutex ((emf-cache-lock cache))
     (let* ((gf (emf-cache-generic-function cache))
            (req-args (required-portion gf arguments))
-           (n-args (length req-args))
+           ;; Only relevant arguments have cache levels; irrelevant required
+           ;; arguments are intentionally skipped.
+           (n-args (emf-cache-argument-count cache))
            (level (emf-cache-top-level cache))
            (partial-specializers '()))
+      ;; A generic function with no relevant arguments has one EMF for every
+      ;; call.  Represent it directly at the root rather than attempting to
+      ;; index an empty cache path.
+      (when (zerop (emf-cache-argument-count cache))
+        (setf (emf-cache-top-level cache) value)
+        (return-from insert-into-emf-cache value))
       (dotimes (i (1- n-args))
         (let* ((arg (reordered-argument gf arguments i))
                (level-eql-specs (emf-cache-level-eql-specializers level))
@@ -122,8 +147,8 @@
 
 (defun clear-emf-cache (cache)
   (let* ((gf (emf-cache-generic-function cache))
-         (n-args (length (safe-generic-function-relevant-arguments gf)))
-         (reordering-table (argument-reordering-table gf)))
+         (reordering-table (emf-relevant-reordering-table gf))
+         (n-args (length reordering-table)))
     (mezzano.supervisor:with-mutex ((emf-cache-lock cache))
       (setf (emf-cache-argument-count cache) n-args
             (emf-cache-reordering-table cache) reordering-table)
