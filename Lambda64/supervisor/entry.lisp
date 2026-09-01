@@ -152,6 +152,11 @@
 
 (defun sys.int::bootloader-entry-point (boot-information-page)
   (let ((first-run-p nil))
+    ;; The bootloader does not guarantee that DAIF is masked on entry.  Keep
+    ;; the initial thread on its bootstrap stack while the scheduler, pager,
+    ;; and run queues are rebuilt; interrupts are enabled at the explicit
+    ;; post-snapshot boundary below.
+    (%disable-interrupts)
     (initialize-boot-cpu)
     (initialize-debug-log)
     (initialize-fdt boot-information-page)
@@ -225,8 +230,18 @@
     ;; latch before any disk worker can enter POP-DISK-REQUEST.
     (initialize-disk first-run-p)
     (initialize-pager first-run-p first-run-p first-run-p first-run-p)
-    ;; Publish synchronization objects before interrupts are enabled.  Normal
-    ;; allocations then have valid pseudo-atomic queues and VM/allocator locks.
+    ;;(debug-set-output-pseudostream #'debug-video-stream)
+    ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
+    (initialize-efi)
+    (initialize-virtio)
+    (initialize-platform)
+    (when (not (boot-option +boot-option-no-detect+))
+      (detect-disk-partitions))
+    (initialize-paging-system)
+    ;; The paging disk is now published, so general-area allocation can use
+    ;; the pager.  Publish queue/request and synchronization objects only
+    ;; after this point; allocating them earlier recursively entered PAGER-RPC
+    ;; with no paging backend and stranded the bootstrap thread in idle.
     (when (null *disk-request-queue-latch*)
       (setf *disk-request-queue-latch*
             (make-event :name "Disk request queue notifier")))
@@ -248,21 +263,23 @@
                                          (make-wait-queue :name '*pending-world-stoppers*))
             *pending-pseudo-atomics* (or *pending-pseudo-atomics*
                                          (make-wait-queue :name '*pending-pseudo-atomics*))))
-    ;;(debug-set-output-pseudostream #'debug-video-stream)
-    ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
-    (debug-print-line "Hello, Debug World!")
-    (initialize-time)
+    ;; ACPI diagnostics allocate debug buffers.  Run ACPI discovery only after
+    ;; the paging backend is ready so a missing/invalid RSDP cannot recurse
+    ;; into PAGER-RPC during cold bootstrap.
+    (initialize-acpi)
+    ;; Framebuffer mapping takes the VM lock and therefore requires the
+    ;; paging backend and its lock to exist first.
     (initialize-video)
+    ;; INITIALIZE-TIME creates the heartbeat wait queue and timer queue.  Both
+    ;; may require general-area allocation, so initialize them only after the
+    ;; paging backend and bootstrap synchronization objects are available.
+    (initialize-time)
+    ;; Debug output allocates a general-area buffer.  Keep this historical
+    ;; marker after the paging backend and its bootstrap objects are ready.
+    (debug-print-line "Hello, Debug World!")
     (when (boot-option +boot-option-video-console+)
       (debug-set-output-pseudostream #'debug-video-stream))
-    (initialize-efi)
-    (initialize-acpi)
-    (initialize-virtio)
-    (initialize-platform)
     (initialize-time-late)
-    (when (not (boot-option +boot-option-no-detect+))
-      (detect-disk-partitions))
-    (initialize-paging-system)
     (initialize-snapshot)
     ;; The scheduler/pager bootstrap objects are now published, so device and
     ;; time initialization may safely receive their interrupts.  Keep the

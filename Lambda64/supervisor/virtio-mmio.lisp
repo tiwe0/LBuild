@@ -114,22 +114,26 @@
   (virtio-legacy-mmio-device-mmio-irq device))
 
 (defun virtio-mmio-register (address irq)
-  (let* ((dev (make-virtio-legacy-mmio-device
-               :mmio address
-               :mmio-irq irq
-               :transport #'virtio-legacy-mmio-transport
-               :boot-id (sup:current-boot-id)))
-         (magic (virtio-mmio-magic dev))
-         (version (virtio-mmio-version dev))
-         (did (virtio-mmio-device-id dev))
-         (vid (virtio-mmio-vendor-id dev)))
-    (setf (virtio:virtio-device-did dev) did)
+  ;; Probe the fixed MMIO header before allocating a wired Lisp object.  QEMU
+  ;; exposes several reserved/legacy slots in the FDT; allocating each one
+  ;; first exhausts the cold wired area and falls into PAGER-RPC before the
+  ;; paging backend exists.
+  (let* ((magic (sup::physical-memref-unsigned-byte-32 address))
+         (version (sup::physical-memref-unsigned-byte-32 (+ address #x04)))
+         (did (sup::physical-memref-unsigned-byte-32 (+ address #x08))))
     (when (not (and (eql magic +virtio-mmio-magic-value+)
                     (eql version 1)
                     (not (eql did virtio:+virtio-dev-id-invalid+))))
       (return-from virtio-mmio-register nil))
-    (sup:debug-print-line "mmio virtio device at " address " did: " did " vid: " vid)
-    (virtio:virtio-device-register dev)))
+    (let* ((dev (make-virtio-legacy-mmio-device
+                 :mmio address
+                 :mmio-irq irq
+                 :transport #'virtio-legacy-mmio-transport
+                 :boot-id (sup:current-boot-id)))
+           (vid (virtio-mmio-vendor-id dev)))
+      (setf (virtio:virtio-device-did dev) did)
+      (sup:debug-print-line "mmio virtio device at " address " did: " did " vid: " vid)
+      (virtio:virtio-device-register dev))))
 
 (defun sup::virtio-mmio-fdt-register (fdt-node address-cells size-cells)
   (declare (ignore size-cells))

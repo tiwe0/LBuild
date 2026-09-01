@@ -217,7 +217,12 @@
   ;; The bootloader invokes diagnostics before *BOOT-ID* and the pager exist.
   ;; Formatting a line at that point can itself allocate transient Lisp
   ;; objects, which is unsafe while the dynamic areas are unavailable.
-  (unless (boundp '*boot-id*)
+  ;; BOOT-ID is published before device probing, so it is not by itself a
+  ;; sufficient readiness marker: wired buffers may still recurse through
+  ;; PAGER-RPC until the paging disk has been selected.
+  (unless (and (boundp '*boot-id*)
+               (boundp '*paging-disk*)
+               *paging-disk*)
     (return-from debug-print-line-1 nil))
   ;; Debug output is used during boot before the pager and dynamic areas are
   ;; initialized.  Keep the short-lived formatting buffer in wired memory so

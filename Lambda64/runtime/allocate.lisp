@@ -288,7 +288,14 @@
       (sys.int::%%assemble-value address sys.int::+tag-object+))))
 
 (defun %allocate-from-wired-area-1 (tag data words)
+  ;; During cold bootstrap the image may retain a bound allocator lock from a
+  ;; previous world, even though the pager/scheduler are not running yet.
+  ;; Taking that lock would enter pseudo-atomic coordination and can recurse
+  ;; into PAGER-RPC.  Until a paging disk is published, the bootstrap thread
+  ;; is the sole allocator, so use the direct wired freelist path.
   (when (or (not (boundp '*allocator-lock*))
+            (not (boundp 'mezzano.supervisor::*paging-disk*))
+            (null mezzano.supervisor::*paging-disk*)
             (eql mezzano.supervisor::*world-stopper*
                  (mezzano.supervisor:current-thread)))
     (return-from %allocate-from-wired-area-1

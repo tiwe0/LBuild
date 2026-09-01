@@ -910,9 +910,12 @@ the cold serializer without duplicating their definitions here."
         (cons-area-bump (length (area-data (image-cons-area image))))
         (wired-function-area-bump (length (area-data (image-wired-function-area image))))
         (function-area-bump (length (area-data (image-function-area image)))))
-    ;; Ensure a minium amount of free space in :wired.
+    ;; Ensure enough free space in :wired for cold-bootstrap device discovery.
+    ;; The pager cannot grow this area until the paging disk is selected, so
+    ;; the old 8 MiB reserve was exhausted by VirtIO/MMIO descriptors and
+    ;; their disk registrations before initialize-paging-system completed.
     ;; And :pinned as well, but that matters less.
-    (allocate (* 8 1024 1024) image :wired 0)
+    (allocate (* 64 1024 1024) image :wired 0)
     (allocate (* 1 1024 1024) image :pinned 0)
     ;; Even an image with no regular compiled functions needs one aligned
     ;; object-sized region for the function-area freelist entry written below.
