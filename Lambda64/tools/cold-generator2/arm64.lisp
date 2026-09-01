@@ -105,6 +105,19 @@
   (ser:serialize-object
    (env:cross-symbol-value environment 'mezzano.supervisor::*arm64-exception-vector*)
    image environment)
+  ;; Seed the cross-environment global before its value cell is drained.  The
+  ;; boot entry reads this value while installing VBAR_EL1, before the normal
+  ;; post-serialization patch pass can repair a late-bound cell.
+  (let* ((ex-vec (env:cross-symbol-value environment
+                                         'mezzano.supervisor::*arm64-exception-vector*))
+         (ex-vec-val (ser:serialize-object ex-vec image environment))
+         (ex-vec-addr (+ ex-vec-val (- sys.int::+tag-object+) 8))
+         (ex-vec-base (util:align-up ex-vec-addr +exception-vector-alignment+)))
+    (setf (env:symbol-global-value
+           environment
+           (env:translate-symbol environment
+                                 'mezzano.supervisor::*arm64-exception-vector-base*))
+          ex-vec-base))
   (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
                   ;; These two functions run before the normal Lisp roots are
                   ;; reachable: kboot copies %%PE-BOOTSTRAP into executable
@@ -122,7 +135,10 @@
                   sup::%synchronous-elx-handler
                   sup::%irq-elx-handler
                   sup::%fiq-elx-handler
-                  sup::%serror-elx-handler))
+                  sup::%serror-elx-handler
+                  sup::%load-cpu-bits
+                  sup::initialize-boot-cpu
+                  sys.int::bootloader-entry-point))
     (let* ((symbol (env:translate-symbol environment name))
            (fref (env:function-reference environment symbol)))
       ;; Only the exception-vector-base global needs its symbol cell before
@@ -131,8 +147,16 @@
       ;; concrete function body directly.
       (if (eql name 'mezzano.supervisor::*arm64-exception-vector-base*)
           (ser:serialize-object symbol image environment))
-      (ser:serialize-object fref image environment)
       (let ((fn (env:function-reference-function fref)))
         (when fn
-          (ser:serialize-object fn image environment)))))
-  nil)
+          ;; kboot eagerly loads only wired pages before jumping to the image
+          ;; entry.  Keep the first function body wired so its initial
+          ;; instruction fetch cannot fault before Lisp installs VBAR_EL1.
+          (when (member name '(sys.int::bootloader-entry-point
+                               sup::initialize-boot-cpu
+                               sup::%load-cpu-bits))
+            (setf (slot-value fn 'env::%area) :wired-function))
+          (ser:serialize-object fn image environment)))
+      (ser:serialize-object fref image environment)
+    )
+  nil))

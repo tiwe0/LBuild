@@ -117,7 +117,11 @@
   "Save areas to the file and update the block map"
   (flet ((save (area flags)
            (let ((store-position *store-bump*))
-             (incf *store-bump* (ser:area-size (ser:image-wired-area image)))
+             ;; Each area occupies its own contiguous image-file range.  Using
+             ;; the wired area's size for every range lets larger areas
+             ;; overlap subsequent data and corrupt object slots (notably
+             ;; symbol value cells) once area sizes diverge.
+             (incf *store-bump* (ser:area-size area))
              (file-position stream (+ image-offset store-position))
              (write-sequence (ser:area-data area) stream)
              (add-region-to-block-map
