@@ -2,7 +2,8 @@
 
 (defun initialize-platform-early-console (boot-information-page)
   (declare (ignore boot-information-page))
-  ;; TODO: This (along with the other serial settings) should be provided by the bootloader.
+  ;; Early boot currently uses the fixed PC-compatible COM1 profile. A future
+  ;; boot-configuration API should supply the port, IRQ, and baud settings.
   (let ((serial-port-io-base #x3F8))
     (initialize-debug-serial serial-port-io-base 0 #'sys.int::io-port/8 #'(setf sys.int::io-port/8) 4 115200)))
 
