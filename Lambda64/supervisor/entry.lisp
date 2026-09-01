@@ -2,8 +2,10 @@
 
 (in-package :mezzano.supervisor)
 
-;;; FIXME: Should not be here.
-;;; >>>>>>
+;;; The reboot shim remains in this entry module because the bootloader calls
+;;; it before supervisor subsystems are fully initialized. Moving it requires
+;;; a stable platform lifecycle hook; keep this narrow compatibility boundary
+;;; until that hook exists.
 
 (defun reboot ()
   ;; Flush each currently valid disk before handing control to the platform.
