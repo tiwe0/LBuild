@@ -167,6 +167,11 @@ the data. Free the page with FREE-PAGE when done."
   (when *paging-read-only*
     (debug-print-line "Running read-only."))
   (debug-print-line "BML4 at " *bml4*)
+  ;; STORE-REFILL-METADATA allocates its wired metadata page through
+  ;; PAGER-RPC.  Wake the pager before entering that routine; delaying the
+  ;; wake until after freelist construction deadlocks the bootstrap thread on
+  ;; its own request.
+  (wake-thread sys.int::*pager-thread*)
   (initialize-store-freelist (truncate (* (disk-n-sectors *paging-disk*) (disk-sector-size *paging-disk*)) #x1000)
                              (sys.int::memref-unsigned-byte-64 (+ header +image-header-freelist+)))
   (multiple-value-bind (free-blocks total-blocks)
@@ -180,8 +185,7 @@ the data. Free the page with FREE-PAGE when done."
             (t
              (setf *store-fudge-factor* (+ allocated-blocks 256))))))
   (debug-print-line "Set fudge factor to " *store-fudge-factor*)
-  (debug-print-line "Waking pager thread.")
-  (wake-thread sys.int::*pager-thread*))
+  (debug-print-line "Pager thread is available for requests."))
 
 (defun detect-paging-disk ()
   (debug-print-line "Looking for paging disk with UUID "
