@@ -15,7 +15,7 @@ for token in ('intentionally reset at first supervisor boot',
               "sys.int::*known-finalizers*"):
     assert token in text, token
 
-queues = text.index('(make-wait-queue :name \'*pending-world-stoppers*)')
+queues = text.index('(%make-wait-queue \'*pending-world-stoppers*)')
 first_irq_enable = text.index('(%enable-interrupts)')
 assert queues < first_irq_enable, 'pending queues must be published before early IRQ enable'
 PY

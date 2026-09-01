@@ -241,9 +241,9 @@
     (when (or (null *pending-world-stoppers*)
               (null *pending-pseudo-atomics*))
       (setf *pending-world-stoppers* (or *pending-world-stoppers*
-                                         (make-wait-queue :name '*pending-world-stoppers*))
+                                         (%make-wait-queue '*pending-world-stoppers*))
             *pending-pseudo-atomics* (or *pending-pseudo-atomics*
-                                        (make-wait-queue :name '*pending-pseudo-atomics*))))
+                                        (%make-wait-queue '*pending-pseudo-atomics*))))
     ;;(debug-set-output-pseudostream #'debug-video-stream)
     ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
     (initialize-efi)

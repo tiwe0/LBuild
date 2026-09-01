@@ -49,11 +49,18 @@
 
 ;;; Common structure for sleepable things.
 (defstruct (wait-queue
-             (:area :wired))
+             (:area :wired)
+             ;; Cold bootstrap needs a positional constructor: keyword
+             ;; dispatch allocates a temporary general-area argument vector.
+             (:constructor %make-wait-queue (name)))
   (name nil)
   (%lock (place-spinlock-initializer))
   (head nil)
   (tail nil))
+
+(defun make-wait-queue (&key name)
+  "Create a wired wait queue through the compatibility keyword interface."
+  (%make-wait-queue name))
 
 (define-doubly-linked-list-helpers wait-queue
     thread-queue-next thread-queue-prev
