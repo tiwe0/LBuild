@@ -234,7 +234,13 @@
     (initialize-platform)
     (when (not (boot-option +boot-option-no-detect+))
       (detect-disk-partitions))
-    (initialize-paging-system)
+    ;; On first boot VM-LOCK is only a bootstrap placeholder.  Holding it
+    ;; around INITIALIZE-PAGING-SYSTEM deadlocks when store-freelist setup
+    ;; issues PAGER-RPC and the pager thread needs the same lock.  Warm boots
+    ;; retain the normal lock-protected path.
+    (if first-run-p
+        (initialize-paging-system-1)
+        (initialize-paging-system))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
     ;; after this point; allocating them earlier recursively entered PAGER-RPC
