@@ -6,11 +6,11 @@ python3 - "$source" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
-assert 'TODO: dcas memref-t.' in text
 assert '(sys.int::cas sys.int::%memref-t)' in text
+assert '(sys.int::dcas sys.int::%memref-t)' in text
 for token in ('arm64-cas-mem-instruction', ':opcode \'lap:casal',
               ':old-value old', ':new-value new', ':current-value current-value',
-              'SSA-safe', 'raw effective addresses', '16-byte form for DCAS'):
+              'arm64-dcas-mem-instruction', 'CASL instructions'):
     assert token in text, token
 PY
 printf 'ARM64 memref CAS implementation/DCAS boundary checks passed\n'
