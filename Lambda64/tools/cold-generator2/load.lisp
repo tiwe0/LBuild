@@ -270,7 +270,7 @@
     (#.sys.int::+llf-byte+
      (let ((size (load-integer loader))
            (position (load-integer loader)))
-       (env:make-byte size position)))
+       (env:make-byte size position (loader-environment loader))))
     (#.sys.int::+llf-funcall-n+
      (let* ((n-args (stack-pop loader))
             (fn (stack-pop-lazy loader))

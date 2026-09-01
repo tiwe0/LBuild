@@ -138,11 +138,9 @@
    ;; Symbol => global-value-cell mapping
    (%symbol-global-value-cell :initform (make-hash-table :weakness :key) :reader environment-symbol-global-value-cell-table)
    ;; function-name => function-reference mapping
-   ;; FIXME: Should be weak, but how to deal with complex keys? Verify weak
-   ;; table reclamation for compound keys under all host implementations.
-   ;; Function names may be symbols or compound SETF/CAS names. EQUAL weak
-   ;; keys support both shapes, so entries no longer retain transient compound
-   ;; names (the prior strong table leaked compiler metadata).
+   ;; Function names may be symbols or compound SETF/CAS names.  EQUAL weak
+   ;; keys support both shapes while allowing transient compound names to be
+   ;; reclaimed by hosts that implement weak hash tables.
    (%name-frefs :initform (make-weak-key-table :test 'equal)
                 :reader environment-name-fref-table)
    ;; Object allocation areas for non-instances.
@@ -370,13 +368,22 @@
   ((%size :initarg :size :reader cross-byte-size)
    (%position :initarg :position :reader cross-byte-position)))
 
-(defun make-byte (size position)
-  ;; Immediate BYTE objects reserve 13 bits for SIZE and the remaining payload
-  ;; for POSITION.  Reject values that would silently truncate during cold
-  ;; serialization instead of producing a malformed descriptor.
-  (check-type size (integer 0 #x1FFF))
-  (check-type position (integer 0 #x1FFFFFFFFFFF))
-  (make-instance 'cross-byte :size size :position position))
+(defun make-byte (size position &optional environment)
+  ;; Immediate BYTE objects reserve 13 bits each for SIZE and POSITION.
+  ;; Values outside those fields are represented by LARGE-BYTE.
+  (check-type size (integer 0))
+  (check-type position (integer 0))
+  (if (and (<= size #x1FFF) (<= position #x1FFF))
+      (make-instance 'cross-byte :size size :position position)
+      ;; Large byte specifiers are ordinary LARGE-BYTE structures in the
+      ;; target image.  Construct them through the environment so they take
+      ;; the normal structure serialization path rather than truncating the
+      ;; immediate descriptor fields.
+      (if environment
+          (make-structure environment
+                           'mezzano.internals.numbers.logical::large-byte
+                           :size size :position position)
+          (error "Cannot construct a large byte without a target environment."))))
 
 (defmethod print-object ((object cross-byte) stream)
   (print-unreadable-object (object stream :type t :identity t)

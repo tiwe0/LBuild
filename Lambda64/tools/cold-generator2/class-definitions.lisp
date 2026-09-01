@@ -5,7 +5,8 @@
 ;;;;
 ;;;; It is read in the MEZZANO.CLOS package.
 
-;; FIXME: Source locations for these are lost.
+;; Source locations supplied by the reader/compiler are retained by the
+;; primordial class table and copied onto the resulting class objects.
 
 (defclass t () ()
   (:metaclass built-in-class))
@@ -163,7 +164,8 @@
 (defclass mezzano.runtime::symbol-value-cell (t) () (:metaclass built-in-class))
 (defclass sys.int::weak-pointer (t) () (:metaclass built-in-class))
 (defclass sys.int::weak-pointer-vector (t) () (:metaclass built-in-class))
-;; FIXME: This doesn't quite work with large bytes.
+;; BYTE values that do not fit the immediate descriptor are represented by
+;; LARGE-BYTE structures and follow the normal cold structure serializer.
 (defclass byte (t) () (:metaclass built-in-class))
 (defclass sys.int::instance-header (t) () (:metaclass built-in-class))
 (defclass sys.int::interrupt-frame (t) () (:metaclass built-in-class))
