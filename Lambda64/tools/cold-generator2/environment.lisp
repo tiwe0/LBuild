@@ -638,8 +638,18 @@
       ;; duplicates inherited slots and can produce a layout that disagrees
       ;; with the cold image layout.
       (let* ((parent (structure-definition-parent sdef))
-             (parent-class (and parent (structure-definition-native-class parent)))
-             (parent-slots (and parent (structure-definition-slots parent))))
+             (parent-class (and parent (structure-definition-native-class parent))))
+        ;; Structure definitions can be registered before their parents are
+        ;; materialized as host CLOS classes.  Build the parent first so the
+        ;; host instance layout contains all inherited slots.
+        (when (and parent (not parent-class))
+          (let* ((parent-name (structure-definition-name parent))
+                 (parent-package (cross-symbol-package environment parent-name))
+                 (host-parent-name (cl:intern (symbol-name parent-name)
+                                              parent-package)))
+            (make-structure environment host-parent-name))
+          (setf parent-class (structure-definition-native-class parent)))
+        (let ((parent-slots (and parent (structure-definition-slots parent))))
       (setf class (make-instance
                    'instance-class
                    :name (structure-definition-name sdef)
@@ -671,7 +681,7 @@
                                                                           (cl:make-array (structure-slot-definition-fixed-vector slot) :initial-element val)
                                                                           val))))
                                                   :initargs (list (cl:intern (symbol-name (structure-slot-definition-name slot)) :keyword)))))
-            (structure-definition-native-class sdef) class)))
+            (structure-definition-native-class sdef) class))))
     (apply #'make-instance class initargs)))
 
 (defun structure-slot-value (environment object slot-name)

@@ -122,7 +122,12 @@ Must not call SERIALIZE-OBJECT."))
 (defun drain-initialization-queue (image)
   "Initialize all allocated objects without recursive host calls."
   (let ((queue (image-initialization-queue image)))
-    (loop for index from 0 below (fill-pointer queue)
+    ;; Initializers may enqueue additional objects (for example, function
+    ;; references found in a function's constant pool).  A LOOP `below'
+    ;; limit is evaluated only once, which would leave those objects as
+    ;; allocated-but-zero image data.  Re-check the fill pointer each turn.
+    (loop for index from 0
+          while (< index (fill-pointer queue))
           for item = (aref queue index)
           do (destructuring-bind (object value environment) item
                (initialize-object object value image environment)))
@@ -560,6 +565,20 @@ the cold serializer without duplicating their definitions here."
              (setf existing (call-next-method)
                    (gethash key (image-dedup-table image)) existing))
            existing))))
+
+(defmethod allocate-object ((object ratio) image environment)
+  ;; A ratio is a two-slot heap object containing its normalized numerator
+  ;; and denominator.  Ratios are not immediate values, even when both
+  ;; components fit in fixnums.
+  (declare (ignore object))
+  (allocate 3 image :general sys.int::+tag-object+))
+
+(defmethod initialize-object ((object ratio) value image environment)
+  (initialize-object-header image value sys.int::+object-tag-ratio+ 0)
+  (setf (object-slot image value sys.int::+ratio-numerator+)
+        (serialize-object (cl:numerator object) image environment)
+        (object-slot image value sys.int::+ratio-denominator+)
+        (serialize-object (cl:denominator object) image environment)))
 
 (defmethod serialize-object ((object single-float) image environment)
   (logior (ash (sys.int::%single-float-as-integer object) 32)

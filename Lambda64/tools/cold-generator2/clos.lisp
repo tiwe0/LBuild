@@ -459,16 +459,13 @@
                                                :read-only (env:structure-slot-definition-read-only slot)
                                                :structure-slot-location (env:structure-slot-definition-location slot)
                                                :initform (env:structure-slot-definition-initform slot)
-                                               :initfunction (let ((slot slot))
-                                                                (lambda ()
-                                                                  (multiple-value-bind (value deferred)
-                                                                      (eval:eval-toplevel
-                                                                       (env:structure-slot-definition-initform slot)
-                                                                       environment)
-                                                                    (when deferred
-                                                                      (error "Unable to initialize structure slot ~S"
-                                                                             (env:structure-slot-definition-name slot)))
-                                                                    value)))
+                                               ;; Structure slot initfunctions are
+                                               ;; host-only bootstrap helpers.  The
+                                               ;; target structure MOP returns NIL
+                                               ;; for this slot, so do not place an
+                                               ;; unrepresentable host closure in
+                                               ;; the image object graph.
+                                               :initfunction nil
                                                :fixed-vector (env:structure-slot-definition-fixed-vector slot)
                                                :align (env:structure-slot-definition-align slot)
                                                :dcas-sibling (env:structure-slot-definition-dcas-sibling slot)
