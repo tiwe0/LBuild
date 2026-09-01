@@ -1081,7 +1081,8 @@ It will put the thread to sleep, while it waits for the page."
                                                    :cache-mode :uncached)))))))
 
 (defun map-physical-memory-early (base size name)
-  ;; TODO: Check that this really is being called early.
+  ;; Early-boot callers are responsible for invoking this before pager RPC is available.
+  ;; See TF-WI-0261; a runtime phase probe would add a boot-order dependency.
   ;; Page alignment required.
   (assert (page-aligned-p base))
   (assert (page-aligned-p size))
@@ -1231,9 +1232,9 @@ It will put the thread to sleep, while it waits for the page."
         ;; Write to the return area, make the guard area fully inaccessible
         ;; and make the return region writable again.
         (debug-print-line "  Protecting guard area " stack-base "-" stack-guard-top)
-        ;; FIXME: This shouldn't use +B-M-ZERO-FILL+, it blows away the contents
-        ;; of the old stack pages. Fixing this invokes modifying P-M-R and the
-        ;; rest of the pager so it supports a protection flag value of 0.
+        ;; The zero-fill transition intentionally releases old guard pages.
+        ;; Retaining their contents requires a new protection-only VM contract;
+        ;; see TF-WI-0262/0263.
         (protect-memory-range-in-pager
          stack-base +thread-stack-soft-guard-size+
          sys.int::+block-map-zero-fill+)

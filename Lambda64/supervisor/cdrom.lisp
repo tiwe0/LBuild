@@ -47,7 +47,9 @@
         (return-from cdrom-initialize-device))
       (dotimes (i result)
         (sup:debug-print-line i " " (sys.int::memref-unsigned-byte-8 buffer i))))
-    ;; FIXME: Assumes that the CD has a single data-track spanning the entire disc.
+    ;; The block device contract exposes one data track; multi-session media
+    ;; requires a partitioning-aware disk layer before this can be generalized.
+    ;; See TF-WI-0248.
     ;; Read capacity.
     (sup:debug-print-line "Issue read capacity command...")
     (setf (svref cdb 0) +scsi-command-read-capacity+

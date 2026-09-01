@@ -87,8 +87,8 @@ RETURN-FROM/GO must not be used to leave this form."
     `(let* (,@(mapcar #'list vars vals)
             (,new-sym :unlocked)
             (,old-sym ,read-form))
-       ;; FIXME: This should use the write form but that doesn't have the proper
-       ;; release semantics yet on arm64.
+       ;; Keep CAS until the ARM64 write form provides release semantics.
+       ;; See TF-WI-0259.
        ,cas-form
        (values))))
 
