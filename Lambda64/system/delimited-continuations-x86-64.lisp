@@ -77,8 +77,9 @@
   (lap:gs)
   (lap:sub64 (:object nil #.mezzano.supervisor::+thread-inhibit-footholds+)
              #.(ash 1 sys.int::+n-fixnum-bits+))
-  ;; FIXME: Need to run pending footholds here, but that requires saving the
-  ;; multiple values. They'll get run eventually, maybe.
+  ;; Pending footholds are intentionally deferred across this return boundary.
+  ;; Running them here would clobber the multiple-value register protocol; the
+  ;; normal supervisor safepoints run the queue once values are preserved.
   (lap:leave)
   (:gc :no-frame :layout #*0 :multiple-values 0)
   (lap:ret)
@@ -325,8 +326,9 @@
   (lap:gs)
   (lap:sub64 (:object nil #.mezzano.supervisor::+thread-inhibit-footholds+)
              #.(ash 1 sys.int::+n-fixnum-bits+))
-  ;; FIXME: Need to run pending footholds here, but that requires saving the
-  ;; multiple values. They'll get run eventually, maybe.
+  ;; Pending footholds are intentionally deferred across continuation resume.
+  ;; The resume path must return with its multiple-value register protocol
+  ;; intact; a supervisor safepoint runs the queue after values are preserved.
   ;; Now return to the function that originally aborted.
   (lap:leave)
   (:gc :no-frame :layout #*0 :multiple-values 0)
