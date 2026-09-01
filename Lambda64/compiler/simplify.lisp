@@ -579,9 +579,6 @@ Returns NIL if there is no THE form.")
   (and (consp type)
        (eql (first type) 'values)))
 
-;; FIXME: This isn't quite right, it produces a result type that is the
-;; the minimum and maximum of each input type. If the input types are
-;; disjoint then it should produced an AND type.
 (defun merge-real-type-values (value-1 value-2 op)
   (cond ((and (eql value-1 '*) (eql value-2 '*))
          '*)
@@ -632,9 +629,35 @@ Returns NIL if there is no THE form.")
              (if (consp type-1) (rest type-1) '())
            (destructuring-bind (&optional (min-2 '*) (max-2 '*))
                (if (consp type-2) (rest type-2) '())
-             (let ((new-min (merge-real-type-values min-1 min-2 #'>))
-                   (new-max (merge-real-type-values max-1 max-2 #'<)))
-               `(integer ,new-min ,new-max)))))
+             ;; Preserve disjoint ranges as an intersection rather than an
+             ;; invalid inverted integer range. ``(n)'' denotes an exclusive
+             ;; bound, so equal endpoints are disjoint when either is
+             ;; exclusive.
+             (labels ((bound-value (bound)
+                        (and (not (eql bound '*))
+                             (if (consp bound) (first bound) bound)))
+                      (bound-exclusive-p (bound)
+                        (consp bound))
+                      (ranges-disjoint-p ()
+                        (let ((lo-1 (bound-value min-1))
+                              (hi-1 (bound-value max-1))
+                              (lo-2 (bound-value min-2))
+                              (hi-2 (bound-value max-2)))
+                          (or (and hi-1 lo-2
+                                   (or (< hi-1 lo-2)
+                                       (and (= hi-1 lo-2)
+                                            (or (bound-exclusive-p max-1)
+                                                (bound-exclusive-p min-2)))))
+                              (and hi-2 lo-1
+                                   (or (< hi-2 lo-1)
+                                       (and (= hi-2 lo-1)
+                                            (or (bound-exclusive-p max-2)
+                                                (bound-exclusive-p min-1))))))))
+               (if (ranges-disjoint-p)
+                   `(and ,type-1 ,type-2)
+                   (let ((new-min (merge-real-type-values min-1 min-2 #'>))
+                         (new-max (merge-real-type-values max-1 max-2 #'<)))
+                     `(integer ,new-min ,new-max)))))))
         ;; Check if one type is an AND type that contains the other type.
         ((and (consp type-1)
               (eql (first type-1) 'and)
@@ -691,6 +714,10 @@ Returns NIL if there is no THE form.")
     (check2 '(integer * (0)) '(integer * 1) '(integer * (0)))
     (check2 '(integer 0 *) '(integer (-1) *) '(integer 0 *))
     (check2 '(integer * 0) '(integer * (1)) '(integer * 0))
+    (check2 '(integer 0 1) '(integer 3 4)
+            '(and (integer 0 1) (integer 3 4)))
+    (check2 '(integer 0 1) '(integer (1) 4)
+            '(and (integer 0 1) (integer (1) 4)))
     ))
 
 (defun merge-the-types (type-1 type-2)
