@@ -2,10 +2,19 @@
 
 (in-package :mezzano.supervisor)
 
-;; fixme: multiple-evaluation of PLACE.
 (defmacro push-wired (item place)
-  "Like PUSH, but the CONS is allocated in the wired area."
-  `(setf ,place (sys.int::cons-in-area ,item ,place :wired)))
+  "Like PUSH, but the CONS is allocated in the wired area.
+
+PLACE is expanded once, matching the evaluation guarantees of PUSH."
+  (multiple-value-bind (temps vals stores store-form access-form)
+      (get-setf-expansion place)
+    (let ((item-var (gensym "ITEM-"))
+          (new-var (gensym "NEW-")))
+      `(let* (,@(mapcar #'list temps vals)
+              (,item-var ,item)
+              (,new-var (sys.int::cons-in-area ,item-var ,access-form :wired)))
+         (let (,@(mapcar (lambda (store) `(,store ,new-var)) stores))
+           ,store-form)))))
 
 (defun string-length (string)
   "Return the length of STRING. For use when calling LENGTH is not safe."
