@@ -114,15 +114,21 @@
 ;; Make the optimized binary and generic entry points available from this
 ;; package as well as the internals package used by the compiler.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  ;; These names may already be interned by the package's CL use-list.  A
-  ;; regular IMPORT then signals NAME-CONFLICT during cross bootstrap; the
-  ;; internals entry points are the canonical definitions we want here.
-  (shadowing-import '(int::binary-logand int::generic-logand
-                     int::binary-logior int::generic-logior
-                     int::binary-logxor int::generic-logxor))
-  (export '(int::binary-logand int::generic-logand
+  ;; Remove stale symbols left by a prior compile/load cycle before importing
+  ;; the canonical internals entry points.  This keeps IMPORT deterministic
+  ;; during cross bootstrap without replacing the package's exported names.
+  (dolist (name '(binary-logand generic-logand
+                  binary-logior generic-logior
+                  binary-logxor generic-logxor))
+    (unintern name)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (import '(int::binary-logand int::generic-logand
             int::binary-logior int::generic-logior
-            int::binary-logxor int::generic-logxor)))
+            int::binary-logxor int::generic-logxor))
+  (export '(binary-logand generic-logand
+            binary-logior generic-logior
+            binary-logxor generic-logxor)))
 
 (macrolet ((def (name bignum-name)
              `(defun ,name (x y)
