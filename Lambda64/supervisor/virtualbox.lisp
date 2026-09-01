@@ -162,7 +162,8 @@
     (sup:debug-print-line "VirtualBox Guest Device detected at " device " using IRQ " irq)
     (sup:irq-attach (sup:platform-irq irq)
                     handler
-                    device)
+                    device
+                    nil)
     ;; Take the initial screen dimensions from the bootloader's framebuffer.
     (setf *vbox-screen-xres* (sup:boot-field sup:+boot-information-framebuffer-width+)
           *vbox-screen-yres* (sup:boot-field sup:+boot-information-framebuffer-height+))

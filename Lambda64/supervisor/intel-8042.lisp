@@ -357,7 +357,7 @@ INTERRUPT-FRAME and INTERRUPT-REQUEST-OBJECT are ignored."
       (sup:irq-attach (sup:platform-irq +interrupt-request-line-auxiliary+)
                       'handle-interrupt-request-auxiliary
                       'intel-8042-auxiliary
-                      :exclusive t)
+                      t)
       (sup:debug-print-line "8042 enable port auxiliary.")
       (run +command-configuration-byte-write+
            (logand (lognot +configuration-bit-clock-auxiliary+)
@@ -377,7 +377,7 @@ INTERRUPT-FRAME and INTERRUPT-REQUEST-OBJECT are ignored."
       (sup:irq-attach (sup:platform-irq +interrupt-request-line-keyboard+)
                       'handle-interrupt-request-keyboard
                       'intel-8042-keyboard
-                      :exclusive t)
+                      t)
       (sup:debug-print-line "8042 enable port keyboard.")
       (run +command-configuration-byte-write+
            (logand (lognot +configuration-bit-clock-keybaord+)

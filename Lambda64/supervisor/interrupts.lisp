@@ -224,14 +224,23 @@ RETURN-FROM/GO must not be used to leave this form."
 ;;; IRQs
 
 (defstruct (irq
-             (:area :wired))
+             (:area :wired)
+             ;; GIC creates the full IRQ table before paging is available.
+             ;; Use a positional constructor to avoid keyword argument
+             ;; vectors during that early pass.
+             (:constructor %make-irq (platform-number)))
   platform-number
   attachments
   (count 0)
   (lock (place-spinlock-initializer)))
 
 (defstruct (irq-attachment
-             (:area :wired))
+             (:area :wired)
+             ;; IRQ attachment creation occurs during platform bootstrap.
+             ;; Use a positional constructor so keyword argument packing does
+             ;; not allocate a temporary vector in the general area.
+             (:constructor %make-irq-attachment
+                 (irq device handler exclusive-p pending-eoi)))
   irq
   device
   handler
@@ -263,7 +272,15 @@ RETURN-FROM/GO must not be used to leave this form."
         ;; Mask the IRQ until all EOIs are delivered.
         (platform-mask-irq (irq-platform-number irq))))))
 
-(defun irq-attach (irq handler device &key exclusive)
+(defun irq-attach (irq handler device exclusive)
+  ;; Keep EXCLUSIVE positional: a &KEY lambda list allocates a temporary
+  ;; keyword-argument vector even for callers that omit the option, which is
+  ;; not safe during the pre-pager platform bootstrap.
+  ;; This path is used while platform IRQs are wired up, before paging is
+  ;; available.  SAFE-WITHOUT-INTERRUPTS captures IRQ/CONS in a closure; keep
+  ;; that closure in wired memory instead of allocating a general-area
+  ;; temporary during bootstrap.
+  (declare (mezzano.compiler::closure-allocation :wired))
   (cond (exclusive
          (when (not (endp (irq-attachments irq)))
            (debug-print-line "Cannot exclusively attach to IRQ " irq " - in use")
@@ -273,10 +290,7 @@ RETURN-FROM/GO must not be used to leave this form."
                     (irq-attachment-exclusive-p (first (irq-attachments irq))))
            (debug-print-line "Cannot attach to IRQ " irq " - in exclusive use")
            (return-from irq-attach nil))))
-  (let* ((attachment (make-irq-attachment :irq irq
-                                          :device device
-                                          :handler handler
-                                          :exclusive-p exclusive))
+  (let* ((attachment (%make-irq-attachment irq device handler exclusive nil))
          (cons (sys.int::cons-in-area attachment nil :wired)))
     (safe-without-interrupts (irq cons)
       (with-place-spinlock ((irq-lock irq))
@@ -335,7 +349,7 @@ RETURN-FROM/GO must not be used to leave this form."
                     :accepted))))))
     (setf (simple-irq-event simple-irq) event
           (simple-irq-function simple-irq) fn
-          (simple-irq-attachment simple-irq) (irq-attach irq fn simple-irq))
+          (simple-irq-attachment simple-irq) (irq-attach irq fn simple-irq nil))
     simple-irq))
 
 (defun simple-irq-attach (simple-irq)

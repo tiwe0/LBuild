@@ -77,7 +77,7 @@ HIGH-PRECISION-TIME-UNITS-TO-INTERNAL-TIME-UNITS."
   (irq-attach (platform-irq +pit-irq+)
               'pit-irq-handler
               'pit
-              :exclusive t)
+              t)
   (calibrate-tsc)
   (lapic-timer-calibrate))
 

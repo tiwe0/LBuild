@@ -67,21 +67,19 @@
   (* 32 (1+ (ldb (byte 5 0) (gic-dist-reg +gicd-typer+)))))
 
 (defun initialize-gic-irq-table ()
-  "Create software IRQ objects once the pager and dynamic allocator are live."
+  "Create software IRQ objects in wired memory for both early and late boot."
   (when (not (boundp '*gic-irqs*))
     (setf *gic-irqs* (sys.int::make-simple-vector 1024 :wired)))
   (dotimes (i 1024)
-    (setf (svref *gic-irqs* i) (make-irq :platform-number i))))
+    (setf (svref *gic-irqs* i) (%make-irq i))))
 
 (defun initialize-gic (distributor-address cpu-address)
   (setf *gic-distributor-base* distributor-address
         *gic-cpu-interface-base* cpu-address)
-  ;; The early platform pass runs before *BOOT-ID*, the pager, and dynamic
-  ;; allocation are initialized.  Defer construction of the IRQ structures
-  ;; until the post-boot worker; the hardware remains fully configured here.
-  (if (boundp '*boot-id*)
-      (initialize-gic-irq-table)
-      (add-deferred-boot-action #'initialize-gic-irq-table))
+  ;; The table and IRQ records are wired objects, so they can be created during
+  ;; the early pass.  VirtIO block discovery depends on PLATFORM-IRQ before
+  ;; paging is initialized.
+  (initialize-gic-irq-table)
   (configure-gic))
 
 (defun initialize-fdt-gic-400 (fdt-node address-cells size-cells)

@@ -29,10 +29,16 @@
 (defconstant +virtio-block-s-unsup+ 2)
 
 (defstruct (virtio-block
-             (:area :wired))
+  (:area :wired)
+  ;; Avoid the keyword-dispatch temporary vector during cold boot;
+  ;; the block driver is registered before paging is available.
+  (:constructor %make-virtio-block (virtio-device)))
   virtio-device
   irq-handler-function
-  (irq-latch (sup:make-event :name "Virtio-Block IRQ Notifier"))
+  ;; Initialized explicitly with the positional wired constructor in
+  ;; VIRTIO-BLOCK-REGISTER.  A keyword MAKE-EVENT here would allocate a
+  ;; general-area argument vector during the pre-pager bootstrap.
+  irq-latch
   request-phys
   request-virt
   (block-size 512))
@@ -152,7 +158,8 @@
   ;; Wired allocation required for the IRQ handler closure.
   (declare (mezzano.compiler::closure-allocation :wired))
   (sup:debug-print-line "Detected virtio block device " device)
-  (let* ((blk (make-virtio-block :virtio-device device))
+  (let* ((blk (%make-virtio-block device))
+         (irq-latch (sup::%make-event "Virtio-Block IRQ Notifier" nil))
          (irq-handler (lambda (interrupt-frame irq)
                         (declare (ignore interrupt-frame irq))
                         (virtio-block-irq-handler blk)))
@@ -161,6 +168,7 @@
                     (sup:panic "Unable to allocate memory for virtio block request")))
          (phys (* frame sup::+4k-page-size+))
          (virt (sup::convert-to-pmap-address phys)))
+    (setf (virtio-block-irq-latch blk) irq-latch)
     (sup:debug-print-line "Virtio-Block request data at " phys)
     (setf (virtio-block-request-phys blk) phys
           (virtio-block-request-virt blk) virt)

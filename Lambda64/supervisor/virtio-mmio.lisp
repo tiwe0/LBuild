@@ -12,9 +12,25 @@
 
 (defstruct (virtio-legacy-mmio-device
              (:include virtio:virtio-device)
-             (:area :wired))
+             (:area :wired)
+             ;; The keyword constructor allocates a temporary argument vector
+             ;; in the general area. MMIO discovery runs before the paging
+             ;; backend is published, so use a positional bootstrap constructor
+             ;; and fill inherited slots explicitly below. Included slots
+             ;; precede the MMIO fields in the positional argument order.
+             (:constructor %make-virtio-legacy-mmio-device
+                 (transport virtqueues did claimed boot-id mmio mmio-irq)))
   mmio
   mmio-irq)
+
+(defun %allocate-virtio-legacy-mmio-device (mmio mmio-irq)
+  "Allocate an MMIO device without relying on inherited constructor order."
+  (let ((dev (sys.int::%allocate-struct 'virtio-legacy-mmio-device)))
+    (setf (virtio::virtio-device-transport dev) #'virtio-legacy-mmio-transport
+          (virtio::virtio-device-boot-id dev) (sup:current-boot-id)
+          (virtio-legacy-mmio-device-mmio dev) mmio
+          (virtio-legacy-mmio-device-mmio-irq dev) mmio-irq)
+    dev))
 
 (defmacro define-virtio-mmio-register (name index)
   (let ((accessor (intern (format nil "VIRTIO-MMIO-~A" name)
@@ -61,8 +77,16 @@
 
 (defun (setf virtio-legacy-mmio-transport-driver-feature) (value device bit)
   (setf (virtio-mmio-guest-features-sel device) (truncate bit 32))
-  (setf (ldb (byte 1 (rem bit 32)) (virtio-mmio-guest-features device))
-        (if value 1 0))
+  ;; LDB/DPB may materialize a temporary general-area integer.  Feature
+  ;; negotiation runs before the paging backend is published, so that
+  ;; allocation immediately becomes an early page fault.  Keep the update
+  ;; within fixnum arithmetic and write the complete 32-bit register instead.
+  (let* ((mask (ash 1 (rem bit 32)))
+         (old (virtio-mmio-guest-features device))
+         (new (if value
+                  (logior old mask)
+                  (logand old (lognot mask)))))
+    (setf (virtio-mmio-guest-features device) new))
   value)
 
 (defun virtio-legacy-mmio-transport-device-specific-header/8 (device offset)
@@ -125,15 +149,11 @@
                     (eql version 1)
                     (not (eql did virtio:+virtio-dev-id-invalid+))))
       (return-from virtio-mmio-register nil))
-    (let* ((dev (make-virtio-legacy-mmio-device
-                 :mmio address
-                 :mmio-irq irq
-                 :transport #'virtio-legacy-mmio-transport
-                 :boot-id (sup:current-boot-id)))
-           (vid (virtio-mmio-vendor-id dev)))
-      (setf (virtio:virtio-device-did dev) did)
-      (sup:debug-print-line "mmio virtio device at " address " did: " did " vid: " vid)
-      (virtio:virtio-device-register dev))))
+    (let* ((dev (%allocate-virtio-legacy-mmio-device address irq)))
+      (let ((vid (virtio-mmio-vendor-id dev)))
+        (setf (virtio:virtio-device-did dev) did)
+        (sup:debug-print-line "mmio virtio device at " address " did: " did " vid: " vid)
+        (virtio:virtio-device-register dev)))))
 
 (defun sup::virtio-mmio-fdt-register (fdt-node address-cells size-cells)
   (declare (ignore size-cells))

@@ -401,17 +401,21 @@
 (sys.int::defglobal *virtio-registry-lock* :unlocked)
 (sys.int::defglobal *virtio-devices*)
 (sys.int::defglobal *virtio-late-probe-devices*)
+(sys.int::defglobal *virtio-bootstrap-p*)
 
 ;; Device and driver registration can run after interrupts are enabled (the
 ;; platform/FDT scan does so), while the lists themselves live in wired memory
 ;; and are also touched by deferred probing.  A spinlock keeps the registry
 ;; usable during early boot without depending on the scheduler-backed mutex.
 (defmacro with-virtio-registry-lock (&body body)
-  `(sup:safe-without-interrupts ()
-     (sup:with-symbol-spinlock (*virtio-registry-lock*)
-       ,@body)))
+  `(if (and (boundp '*virtio-bootstrap-p*) *virtio-bootstrap-p*)
+       (progn ,@body)
+       (sup:safe-without-interrupts ()
+         (sup:with-symbol-spinlock (*virtio-registry-lock*)
+           ,@body))))
 
 (defun virtio-device-register (dev)
+  (declare (mezzano.compiler::closure-allocation :wired))
   (with-virtio-registry-lock
     (sup::push-wired dev *virtio-devices*)
     ;; Reset device.
@@ -423,16 +427,30 @@
        (virtio-block-register dev)
        (setf (virtio-device-claimed dev) :block))
       (#.+virtio-dev-id-gpu+
-       (virtio-gpu-register dev)
-       (setf (virtio-device-claimed dev) :gpu))
+       ;; GPU setup attaches an IRQ and allocates command state that is not
+       ;; needed to discover the paging disk.  Defer it until the pager is
+       ;; live; otherwise the early FDT scan can dereference an incomplete IRQ
+       ;; structure and trap in STRUCT-SLOT.
+       (if (and (boundp '*virtio-bootstrap-p*) *virtio-bootstrap-p*)
+           (sup::push-wired dev *virtio-late-probe-devices*)
+           (progn
+             (virtio-gpu-register dev)
+             (setf (virtio-device-claimed dev) :gpu))))
       (#.+virtio-dev-id-input+
-       (virtio-input-register dev)
-       (setf (virtio-device-claimed dev) :input))
+       ;; Input FIFO construction uses keyword helpers and allocates a
+       ;; temporary general-area vector. Defer it until the pager is live on
+       ;; the first boot; the transport remains registered for late probing.
+       (if (and (boundp '*virtio-bootstrap-p*) *virtio-bootstrap-p*)
+           (sup::push-wired dev *virtio-late-probe-devices*)
+           (progn
+             (virtio-input-register dev)
+             (setf (virtio-device-claimed dev) :input))))
       (t
        (sup::push-wired dev *virtio-late-probe-devices*)))))
 
 ;; These devices must be probed late because their drivers may not be in wired memory.
 (defun virtio-late-probe ()
+  (setf *virtio-bootstrap-p* nil)
   (with-virtio-registry-lock
     (dolist (dev *virtio-late-probe-devices*)
       (dolist (drv *virtio-drivers*
@@ -533,7 +551,8 @@
                              (funcall handler interrupt-frame irq)
                              (virtio-ack-irq device status)
                              :completed))))
-                  device))
+                  device
+                  nil))
 
 (sys.int::defglobal *virtio-drivers* '())
 
@@ -547,6 +566,7 @@
   `(register-virtio-driver ',name ',probe-function ,dev-id))
 
 (defun register-virtio-driver (name probe-function dev-id)
+  (declare (mezzano.compiler::closure-allocation :wired))
   (with-virtio-registry-lock
     (dolist (drv *virtio-drivers*)
       (when (eql (virtio-driver-name drv) name)
@@ -574,6 +594,7 @@
 
 (defun sup::initialize-virtio ()
   (setf *virtio-registry-lock* :unlocked)
+  (setf *virtio-bootstrap-p* t)
   (when (not (boundp '*virtio-drivers*))
     (setf *virtio-drivers* '()))
   ;; Device objects from a previous boot are invalidated by the boot epoch;

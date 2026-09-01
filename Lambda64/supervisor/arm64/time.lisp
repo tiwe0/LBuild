@@ -34,7 +34,7 @@
     (irq-attach (platform-irq irq)
                 #'generic-timer-irq-handler
                 fdt-node
-                :exclusive t)
+                t)
     ;; Set countdown value.
     ;; ### why is this 0 and not *generic-timer-reset-value*?
     (setf (%cntv-tval-el0) 0)

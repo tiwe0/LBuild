@@ -1060,7 +1060,8 @@
                       (if (ahci-irq-handler ahci)
                           :completed
                           :rejected))
-                    ahci)
+                    ahci
+                    nil)
     ;; Make sure to enable PCI bus mastering for this device.
     (sup:debug-print-line "Config register: " (pci:pci-config/16 location pci:+pci-config-command+))
     (setf (pci:pci-bus-master-enabled location) t)

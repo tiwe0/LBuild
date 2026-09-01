@@ -989,7 +989,7 @@ This is used to implement the INTRQ_Wait state."
                       (ata-irq-handler controller)
                       :completed)
                     controller
-                    :exclusive t)
+                    t)
     ;; Probe drives.
     (ata-detect-drive controller :device-0)
     (ata-detect-drive controller :device-1)

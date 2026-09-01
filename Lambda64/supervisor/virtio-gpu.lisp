@@ -199,7 +199,10 @@
 must not be allocated by virgl.")
 
 (defstruct (virtio-gpu
-             (:area :wired))
+             (:area :wired)
+             ;; Positional constructor avoids a general-area keyword argument
+             ;; vector while the paging backend is still being discovered.
+             (:constructor %make-virtio-gpu (virtio-device)))
   virtio-device
   request-phys
   request-virt
@@ -545,7 +548,7 @@ must not be allocated by virgl.")
 (defun virtio::virtio-gpu-register (device)
   (declare (mezzano.compiler::closure-allocation :wired))
   (sup:debug-print-line "Detected virtio GPU device " device)
-  (let ((gpu (make-virtio-gpu :virtio-device device)))
+  (let ((gpu (%make-virtio-gpu device)))
     (setf (virtio-gpu-command-lock gpu)
           (sup:make-mutex gpu))
     (virtio:virtio-attach-irq device

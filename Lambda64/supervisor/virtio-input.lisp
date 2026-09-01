@@ -42,7 +42,10 @@
 (sys.int::defglobal *virtio-input-devices* '())
 
 (defstruct (virtio-input
-             (:area :wired))
+             (:area :wired)
+             ;; Positional constructor avoids allocating a keyword argument
+             ;; vector in the pre-pager bootstrap path.
+             (:constructor %make-virtio-input (virtio-device)))
   virtio-device
   irq-handler-function
   event-phys
@@ -105,7 +108,7 @@
   ;; Wired allocation required for the IRQ handler closure.
   (declare (mezzano.compiler::closure-allocation :wired))
   (sup:debug-print-line "Detected virtio input device " device)
-  (let* ((input (make-virtio-input :virtio-device device))
+  (let* ((input (%make-virtio-input device))
          (irq-handler (lambda (interrupt-frame irq)
                         (declare (ignore interrupt-frame irq))
                         (virtio-input-irq-handler input)
