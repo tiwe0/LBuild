@@ -28,7 +28,8 @@
 (sys.int::defglobal sys.int::*running-in-ci*)
 
 (defun running-in-ci-p ()
-  (boundp 'sys.int::*running-in-ci*))
+  (and (boundp 'sys.int::*running-in-ci*)
+       sys.int::*running-in-ci*))
 
 (sys.int::defglobal *boot-information-page*)
 
@@ -175,6 +176,10 @@
       ;; moving this reset would require extending the generated-image ABI.
       (setf (sys.int::symbol-global-value 'mezzano.runtime::*active-catch-handlers*) 'nil
             (sys.int::symbol-global-value '*pseudo-atomic*) nil
+            ;; The cold image may retain a bound CI marker even for normal
+            ;; builds.  Clear it before IPL checks RUNNING-IN-CI-P, otherwise
+            ;; the guest test runner exits through semihosting and resets QEMU.
+            (sys.int::symbol-global-value 'sys.int::*running-in-ci*) nil
             ;; Cold-image global cells are not guaranteed to retain their
             ;; DEFGLOBAL initializer across image serialization.  A stale
             ;; thread object here makes CALL-WITH-PSEUDO-ATOMIC believe the
