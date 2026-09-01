@@ -97,3 +97,28 @@
       ;; We're always running in EL1, so these are not used.
       (dotimes (i 8)
         (gen-invalid (+ #x400 (* i #x80)))))))
+
+(defmethod ser:pre-serialize-image-for-target (image environment (target (eql :arm64)))
+  ;; FINALIZE-AREAS freezes allocation and constructs freelists.  The ARM64
+  ;; post-serializer patches the exception vector and interrupt entry points,
+  ;; so make every object it will touch reachable before that freeze.
+  (ser:serialize-object
+   (env:cross-symbol-value environment 'mezzano.supervisor::*arm64-exception-vector*)
+   image environment)
+  (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
+                  sup::%el0-common
+                  sup::%synchronous-el0-handler
+                  sup::%irq-el0-handler
+                  sup::%fiq-el0-handler
+                  sup::%serror-el0-handler
+                  sup::%elx-common
+                  sup::%synchronous-elx-handler
+                  sup::%irq-elx-handler
+                  sup::%fiq-elx-handler
+                  sup::%serror-elx-handler))
+    (let* ((symbol (env:translate-symbol environment name))
+           (fref (env:function-reference environment symbol)))
+      (ser:serialize-object symbol image environment)
+      (ser:serialize-object fref image environment)
+      (ser:serialize-object (env:function-reference-function fref) image environment)))
+  nil)

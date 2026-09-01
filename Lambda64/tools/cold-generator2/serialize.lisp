@@ -23,6 +23,7 @@
            #:do-image-stacks
            #:write-map-file
            #:write-symbol-table
+           #:pre-serialize-image-for-target
            #:post-serialize-image-for-target
            ))
 
@@ -723,7 +724,7 @@ the cold serializer without duplicating their definitions here."
                   ;; Keep this conversion here (rather than serializing the
                   ;; value) since these slots are deliberately untagged.
                   (raw-value
-                    (ecase loc-type
+                    (case loc-type
                       ;; Keep these numeric tags local to the serializer.  The
                       ;; runtime constants are defined in a later ASDF
                       ;; component and are not available while this file is
@@ -736,7 +737,7 @@ the cold serializer without duplicating their definitions here."
                           (sys.int::%double-float-as-integer slot-value))
                          (11
                           (sys.int::%short-float-as-integer slot-value))))
-                      (otherwise slot-value))))
+                      (t slot-value))))
              (multiple-value-bind (slot-index slot-offset)
                  ;; LOC-OFFSET is expressed in bytes from the object start;
                  ;; OBJECT-SLOT addresses eight-byte words.
@@ -891,6 +892,12 @@ the cold serializer without duplicating their definitions here."
     ;; And :pinned as well, but that matters less.
     (allocate (* 8 1024 1024) image :wired 0)
     (allocate (* 1 1024 1024) image :pinned 0)
+    ;; Even an image with no regular compiled functions needs one aligned
+    ;; object-sized region for the function-area freelist entry written below.
+    ;; Without this seed allocation, an empty :function area has a zero-length
+    ;; byte vector and INIT-FREELIST attempts to write past its end.
+    (when (zerop (length (area-data (image-function-area image))))
+      (allocate 4 image :function 0))
     ;; No further allocation permitted beyond this point.
     (setf (slot-value image '%finalizedp) t)
     ;; Make sure all symbols that are about to be touched are present in-image.
@@ -1053,6 +1060,11 @@ the cold serializer without duplicating their definitions here."
                             +cold-generator-assumed-wired-function-area-size+))
    :function-area (make-area :function +function-area-base+)))
 
+(defgeneric pre-serialize-image-for-target (image environment target))
+(defmethod pre-serialize-image-for-target (image environment target)
+  (declare (ignore image environment target))
+  nil)
+
 (defgeneric post-serialize-image-for-target (image environment target))
 
 (defun serialize-image (environment)
@@ -1077,6 +1089,31 @@ the cold serializer without duplicating their definitions here."
                                  (symbol-name symbol)))))
       (dolist (symbol symbols)
         (serialize-object symbol image environment)))
+    ;; Target backends may have additional roots that their post-serializer
+    ;; patches in-place.  Allocate those objects before FINALIZE-AREAS marks
+    ;; the image immutable and builds freelists.
+    (pre-serialize-image-for-target image environment (env:environment-target environment))
+    ;; The initial thread is a root used by FINALIZE-AREAS to derive the
+    ;; initial stack pointer.  Serialize its stack explicitly before draining
+    ;; the queue so the stack base is guaranteed to be registered even when
+    ;; the thread is not reachable through the sorted symbol walk.
+    (let* ((initial-thread
+             (env:symbol-global-value
+              environment
+              (env:translate-symbol environment 'sys.int::*initial-thread*)))
+           (initial-stack
+             (env:structure-slot-value
+              environment initial-thread 'mezzano.supervisor::stack)))
+      (serialize-object initial-thread image environment)
+      (serialize-object initial-stack image environment))
+    ;; The image header is written after FINALIZE-AREAS and references these
+    ;; objects directly.  Pre-serialize them while allocation is still open.
+    (serialize-object
+     (env:function-reference
+      environment
+      (env:translate-symbol environment 'sys.int::bootloader-entry-point))
+     image environment)
+    (serialize-object nil image environment)
     (drain-initialization-queue image)
     ;; Tell the GC the area sizes.
     (finalize-areas image environment)
