@@ -143,12 +143,23 @@ associated memory eventually."
 
 (defun dma-buffer-cache-flush (dma-buffer &optional (start 0) end)
   "Ensure that CPU caches are coherent with system memory for this DMA buffer."
-  (declare (ignore start end)) ; flush the entire buffer for now.
-  (ecase (dma-buffer-cache-mode dma-buffer)
-    ((:write-back :write-through :write-combining)
-     ;; TODO: do this properly. Use CLFLUSH, etc.
-     (dma-write-barrier))
-    (:uncached))
+  (let ((end (or end (dma-buffer-length dma-buffer))))
+    (check-type start (integer 0))
+    (check-type end (integer 0))
+    (assert (<= start end (dma-buffer-length dma-buffer))
+            (start end)
+            "DMA cache flush range is outside the buffer.")
+    (ecase (dma-buffer-cache-mode dma-buffer)
+      ((:write-back :write-through :write-combining)
+       ;; ARM64 supplies a cache-line clean/invalidate primitive.  Other
+       ;; architectures currently expose only the ordering barrier; keep that
+       ;; fallback until an architecture-specific cache API is available.
+       (if (fboundp 'clean-and-invalidate-cache-range)
+           (funcall #'clean-and-invalidate-cache-range
+                    (+ (dma-buffer-virtual-address dma-buffer) start)
+                    (- end start))
+           (dma-write-barrier)))
+      (:uncached)))
   (values))
 
 (defun dma-buffer-physical-address (dma-buffer)
