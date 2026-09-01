@@ -1158,8 +1158,11 @@ Returns NIL if there is no output path."
     (sys.int::dma-write-barrier)
     (stream-go hda stream)))
 
-;; TODO: This should stream to anything that looks vaugely output-like, instead
-;; of a single pin.
+;; Playback currently targets the single pin selected by DEFAULT-OUTPUT-PIN.
+;; Routing to multiple output-like pins requires an explicit fan-out policy
+;; (including converter format, buffer ownership, and teardown semantics), so
+;; SOUND-CARD-RUN intentionally keeps the one-pin contract until that policy
+;; is specified and covered by hardware-level tests.
 (defmethod mezzano.driver.sound:sound-card-run ((hda hda) buffer-fill-callback)
   (handler-case
       (let* ((buffer (hda-dma-buffer-phys hda))
