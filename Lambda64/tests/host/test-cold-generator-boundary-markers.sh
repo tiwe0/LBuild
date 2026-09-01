@@ -13,6 +13,8 @@ environment = (root / 'tools/cold-generator2/environment.lisp').read_text()
 serialize = (root / 'tools/cold-generator2/serialize.lisp').read_text()
 assert '("supervisor/arm64/cpu.lisp" :arm64)' in cold
 assert 'TODO: Turn this into a direct named call.' in x86
+assert '(:object :r13 ,sys.int::+fref-code+)' in x86
+assert '(lap:call :rax)' in x86
 assert 'FIXME: Source locations for these are lost.' in classes
 assert "FIXME: This doesn't quite work with large bytes." in classes
 assert 'FIXME: Need to include an initfunction' in clos
