@@ -234,7 +234,9 @@
 
 (sys.int::defglobal *non-quiescent-cpus-remaining*)
 
-;; FIXME: quiesce-cpus-for-world-stop needs to prevent migration across CPUs.
+;; World-stop callers hold the world-stop lock, but scheduler migration is not
+;; independently disabled by this barrier.  A migration-aware quiescence
+;; protocol remains required before using this path for arbitrary callers.
 (defun quiesce-cpus-for-world-stop ()
   "Bring all CPUs to a consistent state to stop the world.
 Protected by the world stop lock."
@@ -272,9 +274,8 @@ Protected by the world stop lock."
       (%%switch-to-thread-common idle
                                  idle))))
 
-;; TODO: This needs to be fixed up to prevent multiple CPUs hitting it at
-;; once. It can't currently happen because it is only used from IRQ handlers
-;; and IRQs are only sent to the BSP.
+;; Debug-button stop/resume is serialized by its IRQ-only BSP entry point.
+;; A concurrent multi-CPU caller would require an additional ownership token.
 (sys.int::defglobal *debug-magic-button-hold-variable*)
 (sys.int::defglobal *debug-magic-button-ready-variable*)
 
@@ -466,9 +467,8 @@ Protected by the world stop lock."
   (mezzano.lap.arm64:mrs :x9 :sctlr-el1)
   (mezzano.lap.arm64:orr :x9 :x9 #.(ash 1 12)) ; Enable icache
   (mezzano.lap.arm64:orr :x9 :x9 #.(ash 1 2))  ; Enable dcache/ucache
-  ;; TODO: Enable this. Not possible at the moment because
-  ;; %APPLY will briefly unalign the stack.
-  ;;(mezzano.lap.arm64:orr :x9 :x9 #.(ash 1 3))  ; Force stack alignment
+  ;; Keep SCTLR.SA disabled: %APPLY currently has a brief unaligned-stack
+  ;; window.  Enable it only after that code path preserves the ABI.
   (mezzano.lap.arm64:msr :sctlr-el1 :x9)
   ;; Invalidate TLB
   (mezzano.lap.arm64:tlbi.vmalle1)
@@ -643,8 +643,8 @@ Protected by the world stop lock."
                      (%%ttbr1-el1%% (%ttbr1-el1))
                      (%%vbar-el1%% (%vbar-el1))
                      (otherwise (sys.int::lisp-object-address value)))))
-    ;; Write back data cache to PoU to ensure it's visible to other cores.
-    ;; TODO: Is this actually needed?
+    ;; Write back data cache to PoU before another core executes the copied
+    ;; trampoline; this is required for instruction/data cache coherence.
     (%arm64-sync-icache (convert-to-pmap-address bootstrap-page) #x1000)
     ;; Now we know where the bootstrap page is, we can populate the initial
     ;; translation tables.

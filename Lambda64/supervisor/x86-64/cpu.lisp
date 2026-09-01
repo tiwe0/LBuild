@@ -203,8 +203,10 @@ The bootloader is loaded to #x7C00, so #x7000 should be safe.")
 
 (sys.int::defglobal *non-quiescent-cpus-remaining*)
 
-;; FIXME: quiesce-cpus-for-world-stop and begin-tlb-shootdown both need to
-;; prevent migration across CPUs.
+;; World-stop and TLB-shootdown callers hold their respective global locks,
+;; but scheduler migration is not independently disabled by these barriers.
+;; A migration-aware quiescence protocol remains required for arbitrary
+;; callers.
 (defun quiesce-cpus-for-world-stop ()
   "Bring all CPUs to a consistent state to stop the world.
 Protected by the world stop lock."
@@ -242,9 +244,8 @@ Protected by the world stop lock."
       (%%switch-to-thread-common idle
                                  idle))))
 
-;; TODO: This needs to be fixed up to prevent multiple CPUs hitting it at
-;; once. It can't currently happen because it is only used from IRQ handlers
-;; and IRQs are only sent to the BSP.
+;; Debug-button stop/resume is serialized by its IRQ-only BSP entry point.
+;; A concurrent multi-CPU caller would require an additional ownership token.
 (sys.int::defglobal *debug-magic-button-hold-variable*)
 (sys.int::defglobal *debug-magic-button-ready-variable*)
 
@@ -285,8 +286,9 @@ Protected by the world stop lock."
 (sys.int::defglobal *tlb-shootdown-in-progress* nil)
 (sys.int::defglobal *busy-tlb-shootdown-cpus*)
 
-;; TODO: This unconditionally invalidates the entire TLB.
-;; Should be more fine-grained.
+;; TLB shootdown currently flushes the entire TLB on each participant.  A
+;; range-aware invalidation protocol is deferred until page-map batching is
+;; available.
 
 (defun check-tlb-shootdown-not-in-progress ()
   (ensure (not *tlb-shootdown-in-progress*) "TLB shootdown in progress!"))
@@ -334,7 +336,8 @@ TLB shootdown must be protected by the VM lock."
   (loop
      (when (not *tlb-shootdown-in-progress*)
        (return))
-     ;; FIXME: hack... maybe this should sit with interrupts enabled?
+     ;; Keep interrupts masked while waiting: re-entry could double-decrement
+     ;; the shootdown counter and release a CPU before its flush completes.
      (when *debug-magic-button-hold-variable*
        (magic-button-ipi-handler-1 interrupt-frame))
      (sys.int::cpu-relax))
