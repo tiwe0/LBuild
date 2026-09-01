@@ -695,6 +695,24 @@
         (free-qtd ehci qtd)
         t))))
 
+(defun handle-bulk-endpt (ehci xfer-info qtd)
+  (enter-function "handle-bulk-endpt")
+  (with-hcd-access (ehci)
+    (unwind-protect
+         (let ((status (logand (qtd-token qtd) +qtd-status-mask+)))
+           ;; Preserve the EHCI condition-code bits in STATUS. Consumers of
+           ;; TRANSFER-COMPLETE decode this mask to decide retry/error policy.
+           (let ((endpoint (xfer-info-endpoint xfer-info)))
+             (transfer-complete (ehci-endpoint-driver endpoint)
+                                (xfer-info-event-type xfer-info)
+                                (ehci-endpoint-num endpoint)
+                                (ehci-endpoint-device endpoint)
+                                status
+                                (- (xfer-info-buf-size xfer-info)
+                                   (ldb (byte 15 16) (qtd-token qtd)))
+                                (xfer-info-buf xfer-info))))
+      (free-qtd ehci qtd))))
+
 ;;======================================================================
 ;; set-device-address
 ;;======================================================================
