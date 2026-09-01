@@ -14,7 +14,8 @@ for token in ('#+(or)', 'dynamic-contours backend-function',
     assert token in source, token
 for token in ('successors` generic', 'ordinary fall-through continuation',
               'SSA-specific successor relation', 'nested NLX targets',
-              'normal continuation edge'):
+              'normal continuation edge', 'dynamic-contours` records',
+              'construct-ssa` invokes candidate discovery'):
     assert token in spec, token
 PY
 printf 'SSA NLX CFG boundary checks passed\n'
