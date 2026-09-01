@@ -25,11 +25,27 @@
                              (nthcdr (length arg-regs)
                                      (ir:call-arguments inst)))))
              (frob-outputs ()
-               ;; TODO: Insert debug variable updates where needed.
-               (ir:insert-after backend-function inst
-                                (make-instance 'ir:move-instruction
-                                               :destination (ir:call-result inst)
-                                               :source return-reg))
+               ;; The call result is rewritten to the ABI return register.
+               ;; Preserve debug locations for variables whose value was the
+               ;; pre-canonicalization result vreg.
+               (let* ((result (ir:call-result inst))
+                      (debug-values (gethash inst
+                                             (ir::build-debug-variable-value-map backend-function)))
+                      (move (ir:insert-after
+                             backend-function inst
+                             (make-instance 'ir:move-instruction
+                                            :destination result
+                                            :source return-reg)))
+                      (tail move))
+                 (dolist (entry debug-values)
+                   (when (eql (second entry) result)
+                     (setf tail
+                           (ir:insert-after
+                            backend-function tail
+                            (make-instance 'ir:debug-update-variable-instruction
+                                           :variable (first entry)
+                                           :value result
+                                           :representation (third entry)))))))
                (setf (ir:call-result inst) return-reg))
              (frob-function ()
                (ir:insert-before backend-function inst
