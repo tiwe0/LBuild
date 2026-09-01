@@ -853,13 +853,62 @@ VALUE may be nil to make the fref unbound."
          (gensym-1 thing *gensym-counter*)
        (incf *gensym-counter*)))))
 
-;;; TODO: Expand this so it knows about the compiler's constant folders.
+;;; Keep this list in sync with the compiler's *constant-fold-modes* only for
+;;; operations whose result is determined entirely by constant arguments.  This
+;;; is deliberately a whitelist: CONSTANTP must not execute arbitrary functions
+;;; (or compiler macros), and must respect lexical function bindings.
+(defparameter *constantp-foldable-functions*
+  '((not 1 1) (null 1 1) (1+ 1 1) (1- 1 1)
+    (ash 2 2) (+ 0 nil) (* 0 nil)
+    (logand 0 nil) (logeqv 0 nil) (logior 0 nil) (logxor 0 nil)
+    (lognot 1 1) (char-code 1 1) (schar 2 2)
+    (eq 2 2) (eql 2 2) (byte 2 2) (byte-size 1 1)
+    (byte-position 1 1) (fixnump 1 1) (numberp 1 1)
+    (complexp 1 1) (realp 1 1) (rationalp 1 1) (integerp 1 1)
+    (symbolp 1 1) (keywordp 1 1) (float 2 2) (expt 2 2)))
+
 (defun constantp (form &optional environment)
-  (declare (ignore environment))
-  (typecase form
-    (symbol (eql (symbol-mode form) :constant))
-    (cons (eql (first form) 'quote))
-    (t t)))
+  (labels ((constant-form-p (form env)
+             (typecase form
+               ;; Self-evaluating objects are constants by definition.
+               (cons
+                (cond ((eql (first form) 'quote) t)
+                      ((and (symbolp (first form))
+                            (let ((spec (assoc (first form)
+                                               *constantp-foldable-functions*)))
+                              (and spec
+                                   (or (null env)
+                                       (let ((binding
+                                               (ignore-errors
+                                                 (mezzano.compiler::lookup-function-in-environment
+                                                  (first form) env))))
+                                         ;; A local FLET/LABELS binding wins over
+                                         ;; the global function and is not known pure.
+                                         (or (null binding)
+                                             (typep binding
+                                                    'mezzano.compiler::top-level-function))))
+                                   (<= (second spec) (length (rest form)))
+                                   (or (null (third spec))
+                                       (<= (length (rest form)) (third spec)))
+                                   (every (lambda (arg) (constant-form-p arg env))
+                                          (rest form)))))
+                       t)
+                      (t nil)))
+               (symbol
+                (cond ((eql (symbol-mode form) :constant) t)
+                      ((or (eql form 'nil) (eql form 't) (keywordp form)) t)
+                      ;; SYMBOL-MACROLET bindings are visible through the
+                      ;; environment. Expand symbols only; do not macroexpand
+                      ;; arbitrary list forms or invoke compiler macros.
+                      (env
+                       (multiple-value-bind (expansion expanded-p)
+                           (ignore-errors (macroexpand-1 form env))
+                         (and expanded-p
+                              (not (eql expansion form))
+                              (constant-form-p expansion env))))
+                      (t nil)))
+               (t t))))
+    (constant-form-p form environment)))
 
 (defun get-structure-type (name &optional (errorp t))
   (cond ((typep name 'structure-class)
