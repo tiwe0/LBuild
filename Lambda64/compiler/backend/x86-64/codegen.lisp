@@ -1288,17 +1288,21 @@
 (defmethod emit-lap (backend-function (instruction unbox-sse-vector-instruction) uses defs)
   (emit `(lap:movdqa ,(ir:unbox-destination instruction) (:object ,(ir:unbox-source instruction) 1))))
 
-;; TODO: Do this without a temporary integer register.
+;; Build the boxed representation in the destination register.  The
+;; destination is an SSA output, so using it as the integer accumulator avoids
+;; a fixed RAX clobber while preserving register-allocation liveness.
 (defmethod emit-lap (backend-function (instruction ir:box-single-float-instruction) uses defs)
-  (cond ((eql (lap::reg-class (ir:box-source instruction)) :gpr-64)
-         (emit `(lap:mov64 :rax ,(ir:box-source instruction))))
-        (t
-         (emit `(lap:movd :eax ,(ir:box-source instruction)))))
-  (emit `(lap:shl64 :rax 32)
-        `(lap:lea64 ,(ir:box-destination instruction) (:rax ,(logior sys.int::+tag-immediate+
-                                                                     (dpb sys.int::+immediate-tag-single-float+
-                                                                          sys.int::+immediate-tag+
-                                                                          0))))))
+  (let ((destination (ir:box-destination instruction))
+        (source (ir:box-source instruction)))
+    (cond ((eql (lap::reg-class source) :gpr-64)
+           (emit `(lap:mov64 ,destination ,source)))
+          (t
+           (emit `(lap:movd ,(lap::convert-width destination 32) ,source))))
+    (emit `(lap:shl64 ,destination 32)
+          `(lap:lea64 ,destination (,destination ,(logior sys.int::+tag-immediate+
+                                                          (dpb sys.int::+immediate-tag-single-float+
+                                                               sys.int::+immediate-tag+
+                                                               0)))))))
 
 (defmethod emit-lap (backend-function (instruction ir:unbox-single-float-instruction) uses defs)
   (let ((tmp :rax))
