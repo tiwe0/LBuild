@@ -234,6 +234,10 @@
     (initialize-platform)
     (when (not (boot-option +boot-option-no-detect+))
       (detect-disk-partitions))
+    ;; Device probing may leave interrupts masked after its critical sections;
+    ;; re-enable them at the exact point where paging discovery can block on
+    ;; PAGER-RPC so the pager is guaranteed to be schedulable.
+    (%enable-interrupts)
     ;; On first boot VM-LOCK is only a bootstrap placeholder.  Holding it
     ;; around INITIALIZE-PAGING-SYSTEM deadlocks when store-freelist setup
     ;; issues PAGER-RPC and the pager thread needs the same lock.  Warm boots
