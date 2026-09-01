@@ -893,8 +893,9 @@ This is a one-shot timer and must be reset after firing."
 ;; This is a fixnum, timer cycles per second.
 (sys.int::defglobal *lapic-timer-calibration*)
 
-;; TODO: Be more clever when picking the divisor.
-;; Should dynamically adjust so a goldilocks calibration value is returned.
+;; Keep the fixed divide-by-16 setting used by LAPIC-SETUP.  Calibration runs
+;; after that configuration and averages several ticks; changing the divisor
+;; dynamically would require reprogramming every active CPU timer atomically.
 (defun lapic-timer-calibrate ()
   (let ((n (lapic-timer-calibrate-1)))
     (dotimes (i 5)
