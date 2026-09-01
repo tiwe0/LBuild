@@ -136,8 +136,9 @@
       (when (and type
                  (every (lambda (pred)
                           (let ((other-type (value-type (pred-value pred))))
-                            ;; Do a bit of finagling to get unsigned-byte-64s unboxed
-                            ;; FIXME: This was wrong, fixnum is not a subtype of unsigned-byte-64 (due to negative numbers)
+                            ;; Keep FIXNUM and UNSIGNED-BYTE-64 separate: FIXNUM may
+                            ;; contain negative values and is not a subtype of the
+                            ;; unsigned 64-bit range.
                             (cond ((eql type 'fixnum)
                                    (cond ((eql other-type 'fixnum)
                                           t)
