@@ -92,12 +92,14 @@
 
 (defun clean-and-invalidate-cache-range (base length)
   "Write back dirty cache lines and invalidate them."
-  ;; Make sure we align base/end to the cache-line boundary so we get everything.
-  (let ((start (logand base (1- +cache-line-size+)))
-        (end (logand (+ base length (1- +cache-line-size+))
-                     (lognot (1- +cache-line-size+)))))
-    ;; Clear & invalidate data cache back to the point of coherence
-    (loop for addr from start below end by +cache-line-size+
-          do (%dc.civac addr))
-    ;; Wait for completion
-    (%dsb.ish)))
+  ;; Align the beginning down and the end up to complete cache-line addresses.
+  ;; An empty range needs no maintenance operation.
+  (when (plusp length)
+    (let* ((line-mask (lognot (1- +cache-line-size+)))
+           (start (logand base line-mask))
+           (end (logand (+ base length (1- +cache-line-size+)) line-mask)))
+      ;; Clear & invalidate data cache back to the point of coherence
+      (loop for addr from start below end by +cache-line-size+
+            do (%dc.civac addr))
+      ;; Wait for completion and make writes visible to outer-shareable DMA.
+      (%dsb.osh))))
