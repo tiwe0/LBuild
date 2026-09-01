@@ -122,7 +122,14 @@
                                           :area (sys.int::structure-definition-area sdef)
                                           :instance-slots (sys.int::convert-structure-definition-instance-slots sdef)))
         (prev-layout (class-layout existing-class)))
-    ;; FIXME: If the parent class changes, call add-/remove-direct-subclass
+    (let* ((old-parent (first (class-direct-superclasses existing-class)))
+           (parent-definition (sys.int::structure-definition-parent sdef))
+           (new-parent (or (and parent-definition (%defstruct parent-definition))
+                           (find-class 'structure-object))))
+      (unless (eq old-parent new-parent)
+        (when old-parent
+          (safe-remove-direct-subclass old-parent existing-class))
+        (safe-add-direct-subclass new-parent existing-class)))
     (sys.int::populate-struct-class-from-structure-defintion existing-class sdef)
     (when (not (class-layouts-compatible-p prev-layout new-layout))
       ;; Make instances obsolete if the layout changes.
