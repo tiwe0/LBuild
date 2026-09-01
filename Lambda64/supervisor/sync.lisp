@@ -508,7 +508,10 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
             ;; Writer present, move to write-contested mode and hand
             ;; the lock over.
             (setf (rw-lock-state rw-lock) +rw-lock-mode-write-locked-contested+)
-            ;; TODO: Move to write-locked uncontested if this is the only writer/reader.
+            ;; Keep the contested mode while handing off.  Determining that
+            ;; this is the only waiter requires observing both wait queues and
+            ;; the reader count atomically; relaxing the mode here would race a
+            ;; concurrent acquirer and can violate writer preference.
             (wake-thread (pop-wait-queue (rw-lock-writer-wait-queue rw-lock)))
             ;; Woken one writer, stop here.
             (return nil)))
