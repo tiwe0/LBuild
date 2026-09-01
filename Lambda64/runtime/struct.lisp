@@ -289,7 +289,11 @@
                                                 has-standard-constructor))
          (layout-object (sys.int::make-layout
                          :class def
-                         ;; FIXME: We need a class hash for the struct definition.
+                         ;; Structure definitions exist before their CLOS class
+                         ;; receives a generated hash.  A name hash is stable
+                         ;; enough for layout probing; class identity still
+                         ;; disambiguates collisions in fast hash tables.
+                         :hash (sxhash name)
                          :obsolete nil
                          :heap-size size
                          ;; Layout must be pinned or wired.
