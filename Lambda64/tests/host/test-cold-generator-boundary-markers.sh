@@ -17,6 +17,7 @@ assert 'FIXME: Source locations for these are lost.' in classes
 assert "FIXME: This doesn't quite work with large bytes." in classes
 assert 'FIXME: Need to include an initfunction' in clos
 assert 'FIXME: Should be weak, but how to deal with complex keys?' in environment
+assert ':test' in environment and ':weakness :key' in environment
 assert 'TODO: Avoid recursing down lists. Customize SERIALIZE-OBJECT.' in serialize
 for ident in ('0436', '0437', '0440', '0441', '0443', '0448', '0454'):
     spec = (root.parent / 'docs/modernization/todo-fixme/specs' / f'TF-WI-{ident}.md').read_text()

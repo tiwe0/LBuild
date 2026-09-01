@@ -126,9 +126,13 @@
    ;; Symbol => global-value-cell mapping
    (%symbol-global-value-cell :initform (make-hash-table :weakness :key) :reader environment-symbol-global-value-cell-table)
    ;; function-name => function-reference mapping
-   ;; FIXME: Should be weak, but how to deal with complex keys?
-   ;; Maybe have separate hash tables for symbol/setf/cas names.
-   (%name-frefs :initform (make-hash-table :test 'equal) :reader environment-name-fref-table)
+   ;; FIXME: Should be weak, but how to deal with complex keys? Verify weak
+   ;; table reclamation for compound keys under all host implementations.
+   ;; Function names may be symbols or compound SETF/CAS names. EQUAL weak
+   ;; keys support both shapes, so entries no longer retain transient compound
+   ;; names (the prior strong table leaked compiler metadata).
+   (%name-frefs :initform (make-hash-table :test 'equal :weakness :key)
+                :reader environment-name-fref-table)
    ;; Object allocation areas for non-instances.
    (%object-area :initform (make-hash-table :weakness :key) :reader environment-object-area-table)
    ;; Array element-type tracker.
