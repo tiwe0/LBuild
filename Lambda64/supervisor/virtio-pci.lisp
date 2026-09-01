@@ -321,9 +321,12 @@
 
 (defun pci::virtio-pci-register (location)
   (cond ((<= #x1000 (pci:pci-config/16 location pci:+pci-config-deviceid+) #x103F)
-         ;; This is a legacy or transitional device
-         ;; TODO: Operate transitional devices in normal mode.
-         ;; TODO: Test the VIRTIO_F_VERSION_1 feature.
+         ;; This is a legacy or transitional device.  Transitional devices
+         ;; require negotiating VIRTIO_F_VERSION_1 before using the modern
+         ;; capability layout; this transport intentionally stays on the
+         ;; legacy BAR-0 contract until a full reset/feature-negotiation path
+         ;; is implemented.  Do not probe the feature bit here: doing so
+         ;; without switching transports would leave device state ambiguous.
          (let* ((legacy-header (pci:pci-bar location 0))
                 (dev (make-virtio-legacy-pci-device
                       :pci-device location
