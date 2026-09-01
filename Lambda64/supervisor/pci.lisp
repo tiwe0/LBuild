@@ -617,7 +617,10 @@ Returns NIL if the BAR has an unknown type."
     (dolist (drv *pci-drivers*)
       (when (eql (pci-driver-name drv) name)
         (when (not (eql (pci-driver-probe drv) probe-function))
-          ;; TODO: Detach current driver and reprobe?
+          ;; PCI drivers expose only a probe callback and claimed devices have
+          ;; no detach/reset lifecycle hook. Do not clear ownership and probe
+          ;; again here: a future implementation must add an explicit teardown
+          ;; contract before touching live device state.
           (error "Incompatible redefinition of virtio driver ~S." name))
         (%probe-pci-driver drv)
         (return-from register-pci-driver name)))
