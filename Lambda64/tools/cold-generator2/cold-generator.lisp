@@ -498,10 +498,17 @@
                      (env:translate-symbol environment 'sys.int::layout))))
   (configure-system-for-target environment (env:environment-target environment))
   (clos:configure-clos environment #'load-source-file)
-  (when (equal (uiop:getenv "CI") "true")
-    (format t ";; ** CI environment detected **~%")
-    (setf (env:cross-symbol-value environment 'sys.int::*running-in-ci*)
-          't))
+  ;; Publish an explicit profile value for every image.  Leaving the global
+  ;; untouched in non-CI builds allowed a stale T from an incremental image to
+  ;; leak into normal boots; resetting it in the supervisor broke genuine CI
+  ;; images before their guest test runner could start.
+  (if (equal (uiop:getenv "CI") "true")
+      (progn
+        (format t ";; ** CI environment detected **~%")
+        (setf (env:cross-symbol-value environment 'sys.int::*running-in-ci*)
+              't))
+      (setf (env:cross-symbol-value environment 'sys.int::*running-in-ci*)
+            nil))
   (values))
 
 (defun finalize-system (environment)

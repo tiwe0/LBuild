@@ -181,10 +181,6 @@
       ;; moving this reset would require extending the generated-image ABI.
       (setf (sys.int::symbol-global-value 'mezzano.runtime::*active-catch-handlers*) 'nil
             (sys.int::symbol-global-value '*pseudo-atomic*) nil
-            ;; The cold image may retain a bound CI marker even for normal
-            ;; builds.  Clear it before IPL checks RUNNING-IN-CI-P, otherwise
-            ;; the guest test runner exits through semihosting and resets QEMU.
-            (sys.int::symbol-global-value 'sys.int::*running-in-ci*) nil
             ;; Cold-image global cells are not guaranteed to retain their
             ;; DEFGLOBAL initializer across image serialization.  A stale
             ;; thread object here makes CALL-WITH-PSEUDO-ATOMIC believe the
@@ -214,6 +210,7 @@
             (sys.int::symbol-global-value 'mezzano.runtime::*maximum-allocation-attempts*) 5
             (sys.int::symbol-global-value 'mezzano.runtime::*maximum-young-generation-size*) #x20000000
             *big-wait-for-objects-lock* (place-spinlock-initializer)))
+    (debug-print-line "first-run=" first-run-p " boot-id-event=" (and (boundp '*boot-id*) (event-p *boot-id*)))
     (initialize-early-platform)
     (when (boundp '*boot-id*)
       (setf (event-state *boot-id*) t))
