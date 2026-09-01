@@ -1,7 +1,12 @@
 ;;;; Early FORMAT
 
 (defpackage :mezzano.format
-  (:use :cl))
+  (:use :cl)
+  ;; FORMAT and FORMATTER are implemented by this package rather than
+  ;; inherited from COMMON-LISP.  Declare the shadowing explicitly so host
+  ;; implementations do not report package-variance warnings when this file
+  ;; is loaded after the test harness package scaffold.
+  (:shadow #:format #:formatter))
 
 (in-package :mezzano.format)
 
