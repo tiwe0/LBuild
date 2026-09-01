@@ -464,7 +464,11 @@
        ;; Advance current.
        (setf (rtl8168-tx-current nic) (rem (1+ current) +rtl8168-n-tx-descriptors+)))))
 
-;; TODO: Get the remaining registers.
+;; Keep DUMP limited to the stable, read-only identity and multicast registers.
+;; Reading the remaining device registers is not a harmless diagnostic action:
+;; several are write-one-to-clear status fields, command windows, or DMA
+;; pointers whose reads can acknowledge events or race active I/O.  Add a
+;; register-specific decoder before exposing any of those fields here.
 (defun dump (nic)
   (describe nic)
   (format t " ID: ~2,'0X:~2,'0X:~2,'0X:~2,'0X:~2,'0X:~2,'0X~%"
