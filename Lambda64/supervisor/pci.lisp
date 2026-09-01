@@ -131,6 +131,17 @@
 
 (sys.int::defglobal *pci-config-lock*)
 
+;; PCI devices and drivers may be registered after interrupts are enabled
+;; (deferred probing and driver loading), while the registries themselves are
+;; wired lists needed during early boot.  Use a spinlock rather than a
+;; scheduler-backed mutex so the same path remains valid during probing.
+(sys.int::defglobal *pci-registry-lock* :unlocked)
+
+(defmacro with-pci-registry-lock (&body body)
+  `(sup:safe-without-interrupts ()
+     (sup:with-symbol-spinlock (*pci-registry-lock*)
+       ,@body)))
+
 (sys.int::defglobal *pci-devices*)
 (sys.int::defglobal *pci-late-probe-devices*)
 
@@ -388,13 +399,15 @@ Returns NIL if the BAR has an unknown type."
   value)
 
 (defun map-pci-devices (fn)
-  (dolist (device *pci-devices*)
-    (funcall fn device)))
+  (with-pci-registry-lock
+    (dolist (device *pci-devices*)
+      (funcall fn device))))
 
 (defun sup::initialize-pci ()
   (when (not (boundp '*pci-drivers*))
     (setf *pci-drivers* '()))
   (setf *pci-config-lock* :unlocked)
+  (setf *pci-registry-lock* :unlocked)
   (setf *pci-devices* '()
         *pci-late-probe-devices* '())
   (sup:add-deferred-boot-action 'pci-late-probe))
@@ -468,7 +481,8 @@ Returns NIL if the BAR has an unknown type."
           (unless (or (eql vendor-id #xFFFF) (eql vendor-id 0))
             (setf (pci-device-vendor-id device) vendor-id
                   (pci-device-device-id device) device-id)
-            (sup::push-wired device *pci-devices*)
+            (with-pci-registry-lock
+              (sup::push-wired device *pci-devices*))
             ;; Ensure memory associated with BARs is mapped.
             (do ((n-bars (case header-type
                            (#.+pci-standard-htype+ 6)
@@ -538,23 +552,23 @@ Returns NIL if the BAR has an unknown type."
                 (setf (pci-device-claimed device)
                       (virtualbox-graphics-register device)))
                (t
+                ;; MAP-PCI-DEVICES holds the registry lock while invoking this
+                ;; callback, so mutate the late-probe list directly here.
                 (sup::push-wired device *pci-late-probe-devices*))))))))
 
 ;; These devices must be probed late because their drivers may not be in wired memory.
 (defun pci-late-probe ()
-  (dolist (dev *pci-late-probe-devices*)
-    (dolist (drv *pci-drivers*
-             (sup::debug-print-line "PCI device " (pci-config/16 dev +pci-config-vendorid+) ":" (pci-config/16 dev +pci-config-deviceid+) " not supported."))
-      (when (and (not (pci-device-claimed dev))
-                 (pci-driver-compatible-p drv dev)
-                 (sys.int::log-and-ignore-errors
-                  (funcall (pci-driver-probe drv) dev)))
-        (setf (pci-device-claimed dev) drv)
-        (return)))))
+  (with-pci-registry-lock
+    (dolist (dev *pci-late-probe-devices*)
+      (dolist (drv *pci-drivers*
+               (sup::debug-print-line "PCI device " (pci-config/16 dev +pci-config-vendorid+) ":" (pci-config/16 dev +pci-config-deviceid+) " not supported."))
+        (when (and (not (pci-device-claimed dev))
+                   (pci-driver-compatible-p drv dev)
+                   (sys.int::log-and-ignore-errors
+                    (funcall (pci-driver-probe drv) dev)))
+          (setf (pci-device-claimed dev) drv)
+          (return))))))
 
-;; FIXME: Access to this needs to be protected.
-;; I'm not sure a mutex will cut it, it needs to be accessible
-;; during boot-time device probing.
 (sys.int::defglobal *pci-drivers* '())
 
 (defstruct (pci-driver
@@ -583,7 +597,7 @@ Returns NIL if the BAR has an unknown type."
                    (eql (pci-config/16 device +pci-config-deviceid+) did))
           (return t)))))
 
-(defun probe-pci-driver (driver)
+(defun %probe-pci-driver (driver)
   (dolist (dev *pci-devices*)
     (when (and (not (pci-device-claimed dev))
                (pci-driver-compatible-p driver dev)
@@ -591,26 +605,37 @@ Returns NIL if the BAR has an unknown type."
                 (funcall (pci-driver-probe driver) dev)))
       (setf (pci-device-claimed dev) driver))))
 
+(defun probe-pci-driver (driver)
+  (with-pci-registry-lock
+    (%probe-pci-driver driver)))
+
 (defmacro define-pci-driver (name probe-function pci-ids classes)
   `(register-pci-driver ',name ',probe-function ',pci-ids ',classes))
 
 (defun register-pci-driver (name probe-function pci-ids classes)
-  (dolist (drv *pci-drivers*)
-    (when (eql (pci-driver-name drv) name)
-      (when (not (eql (pci-driver-probe drv) probe-function))
-        ;; TODO: Detach current driver and reprobe?
-        (error "Incompatible redefinition of virtio driver ~S." name))
-      (probe-pci-driver drv)
-      (return-from register-pci-driver name)))
-  (let ((driver (make-pci-driver
-                 :name name
-                 :probe probe-function
-                 :pci-ids pci-ids
-                 :classes classes)))
-    (sup:debug-print-line "Registered new pci driver " name)
-    (sup::push-wired driver *pci-drivers*)
-    (probe-pci-driver driver)
-    name))
+  (with-pci-registry-lock
+    (dolist (drv *pci-drivers*)
+      (when (eql (pci-driver-name drv) name)
+        (when (not (eql (pci-driver-probe drv) probe-function))
+          ;; TODO: Detach current driver and reprobe?
+          (error "Incompatible redefinition of virtio driver ~S." name))
+        (%probe-pci-driver drv)
+        (return-from register-pci-driver name)))
+    (let ((driver (make-pci-driver
+                   :name name
+                   :probe probe-function
+                   :pci-ids pci-ids
+                   :classes classes)))
+      (sup:debug-print-line "Registered new pci driver " name)
+      (sup::push-wired driver *pci-drivers*)
+      ;; Probe devices.
+      (dolist (dev *pci-devices*)
+        (when (and (not (pci-device-claimed dev))
+                   (pci-driver-compatible-p driver dev)
+                   (sys.int::log-and-ignore-errors
+                    (funcall probe-function dev)))
+          (setf (pci-device-claimed dev) driver)))
+      name)))
 
 (declaim (special sys.int::*pci-ids*))
 

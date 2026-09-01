@@ -20,8 +20,13 @@
 ;; Must be a (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*))
 (sys.int::defglobal sys.int::*supervisor-log-buffer*)
 (sys.int::defglobal *supervisor-log-buffer-position*)
+;; Serialisation for the shared log ring.  This is deliberately separate from
+;; the serial/UART lock: the pseudostream is called after the ring update and
+;; takes that lock itself, so sharing it here would recurse.
+(sys.int::defglobal *supervisor-log-buffer-lock* :unlocked)
 
 (defun initialize-debug-log ()
+  (setf *supervisor-log-buffer-lock* :unlocked)
   (setf *debug-pseudostream* (lambda (&rest ignored) (declare (ignore ignored))))
   (cond ((boundp '*supervisor-log-buffer-position*)
          (debug-log-buffer-write-char #\Newline))
@@ -71,14 +76,18 @@
          (let ((,byte (logior #b10000000 (ldb (byte 6 0) ,code))))
            ,@body))))))
 
-;; FIXME: Needs to be done under lock.
-(defun debug-log-buffer-write-byte (byte)
+(defun debug-log-buffer-write-byte-1 (byte)
   (setf (sys.int::%object-ref-unsigned-byte-8 sys.int::*supervisor-log-buffer*
                                               *supervisor-log-buffer-position*)
         byte)
   (setf *supervisor-log-buffer-position* (rem (1+ *supervisor-log-buffer-position*)
                                               (sys.int::%object-header-data
                                                sys.int::*supervisor-log-buffer*))))
+
+(defun debug-log-buffer-write-byte (byte)
+  (safe-without-interrupts (byte)
+    (with-symbol-spinlock (*supervisor-log-buffer-lock*)
+      (debug-log-buffer-write-byte-1 byte))))
 
 (defun debug-log-buffer-write-char (char)
   (with-utf-8-bytes (char byte)
@@ -196,9 +205,12 @@
   (let ((buf-data (car buf)))
     (declare (type (simple-array (unsigned-byte 8) (*)) buf-data)
              (optimize speed (safety 0)))
-    ;; FIXME: Needs to be done under lock.
-    (dotimes (i (cdr buf))
-      (debug-log-buffer-write-byte (aref buf-data (the fixnum i)))))
+    ;; Keep a complete buffered record contiguous in the shared ring.
+    (safe-without-interrupts (buf)
+      (with-symbol-spinlock (*supervisor-log-buffer-lock*)
+        (dotimes (i (cdr buf))
+          (debug-log-buffer-write-byte-1
+           (aref buf-data (the fixnum i)))))))
   (call-debug-pseudostream :flush-buffer buf))
 
 (defun debug-print-line-1 (things)
