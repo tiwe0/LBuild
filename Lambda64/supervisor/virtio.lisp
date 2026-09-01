@@ -549,7 +549,9 @@
         (when (not (and (eql (virtio-driver-probe drv) probe-function)
                         (eql (virtio-driver-dev-id drv) dev-id)))
           (error "Incompatible redefinition of virtio driver ~S." name))
-        ;; TODO: Maybe detach current driver and reprobe?
+        ;; Driver records have no detach/reset callback. Keep an incompatible
+        ;; redefinition rejected rather than clearing claims and probing live
+        ;; transports; explicit teardown must precede any future reprobe.
         (return-from register-virtio-driver name)))
     (let ((driver (make-virtio-driver
                    :name name
