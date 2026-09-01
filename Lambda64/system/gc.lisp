@@ -2470,10 +2470,18 @@ No type information will be provided."
        for finalizer = (pop-finalizer)
        until (not finalizer)
        do
-         (funcall (%object-ref-t finalizer +weak-pointer-finalizer+))
-         ;; Leave the weak pointer completely empty.
-         ;; No references to any other object.
-         (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil))))
+         ;; A broken finalizer must not prevent subsequent finalizers from
+         ;; running.  Report the condition through the supervisor console and
+         ;; always clear the weak pointer, even when reporting itself fails.
+         (unwind-protect
+              (handler-case
+                  (funcall (%object-ref-t finalizer +weak-pointer-finalizer+))
+                (condition (condition)
+                  (mezzano.supervisor:debug-print-line
+                   "Finalizer error: " condition)))
+           ;; Leave the weak pointer completely empty: no references to any
+           ;; other object remain after this invocation.
+           (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil))))
 
 (defun fixup-tlabs ()
   (do ((thread mezzano.supervisor::*all-threads*
