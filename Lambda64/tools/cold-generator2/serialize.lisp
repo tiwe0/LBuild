@@ -438,21 +438,19 @@ Must not call SERIALIZE-OBJECT."))
 (defmethod initialize-object ((object string) value image environment)
   nil)
 
-;; FIXME: Need to take these from the specialized array definitions.
 (defun array-element-type-size (element-type)
-  (cond ((equal element-type 'bit)
-         (values 1 sys.int::+object-tag-array-bit+))
-        ((equal element-type '(unsigned-byte 8))
-         (values 8 sys.int::+object-tag-array-unsigned-byte-8+))
-        ((equal element-type '(unsigned-byte 16))
-         (values 16 sys.int::+object-tag-array-unsigned-byte-16+))
-        ((equal element-type '(unsigned-byte 32))
-         (values 32 sys.int::+object-tag-array-unsigned-byte-32+))
-        ((equal element-type '(unsigned-byte 64))
-         (values 64 sys.int::+object-tag-array-unsigned-byte-64+))
-        ((equal element-type 't)
-         (values 64 sys.int::+object-tag-array-t+))
-        (t (error "Unsupported array element-type ~S" element-type))))
+  "Return the storage width and object tag for a specialized array type.
+
+The authoritative table is initialized by SYSTEM/RUNTIME-ARRAY.LISP.  Keeping
+this lookup table-driven ensures newly supported array types are accepted by
+the cold serializer without duplicating their definitions here."
+  (let ((definition (find element-type sys.int::*array-info*
+                           :key #'sys.int::specialized-array-definition-type
+                           :test #'equal)))
+    (if definition
+        (values (sys.int::specialized-array-definition-element-size definition)
+                (sys.int::specialized-array-definition-tag definition))
+        (error "Unsupported array element-type ~S" element-type))))
 
 (defmethod allocate-object ((object array) image environment)
   (unless (eql (array-rank object) 1)
