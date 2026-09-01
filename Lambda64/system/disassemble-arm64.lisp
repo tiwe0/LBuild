@@ -136,11 +136,11 @@
                       base-address))
          (opcode (if non-temporal
                      (if (logbitp +l-bit+ word)
-                         :ldnp ; lap todo
-                         :stnp) ; lap todo
+                         :ldnp
+                         :stnp)
                      (if (logbitp +l-bit+ word)
                          (cond ((eql (ldb (byte 2 30) word) 1)
-                                :ldpws) ; lap todo
+                                :ldpws)
                                (t
                                 'a64:ldp))
                          'a64:stp)))
