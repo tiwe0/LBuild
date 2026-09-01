@@ -47,7 +47,10 @@
                        :source value
                        :destination result)))
 
-;; TODO: (cas memref-t) & dcas memref-t. the cmpxchg ir instructions currently only support object-relative accesses
+;; CAS for memref-t remains intentionally unsupported: the cmpxchg IR
+;; instruction models object-relative slots, while memref addresses are raw
+;; effective addresses. Adding this operation requires an IR/codegen form
+;; that preserves arbitrary address operands and its memory-order contract.
 
 (defmacro define-memref-integer-accessor (name read-op write-op reg scale box-op unbox-op)
   `(progn
