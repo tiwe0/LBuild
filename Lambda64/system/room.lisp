@@ -293,20 +293,40 @@ FN will be called with the world stopped, it must not allocate."
                                          :initial-element 0))
         (allocated-objects-sizes (make-array (ash 1 +object-type-size+)
                                              :initial-element 0))
-        ;; TODO: Should keep this sorted by address for binary searching, and
-        ;; need to expand it when needed. Not possible with-world-stopped.
+        ;; Keep this sorted by layout address.  The vector is deliberately
+        ;; allocated before WALK-AREA stops the world; ADD-CLASS only shifts
+        ;; existing entries and never grows it while allocation is forbidden.
         (allocated-classes (make-array 1000 :fill-pointer 0)))
-    (flet ((add-class (class)
-             (loop
-                for i below (length allocated-classes) by 2
-                when (eql (aref allocated-classes i) class)
-                do
-                  (incf (aref allocated-classes (1+ i)))
-                  (return)
-                finally
-                  ;; Not seen yet.
-                  (vector-push class allocated-classes)
-                  (vector-push 1 allocated-classes))))
+    (labels ((class-address (class)
+               (lisp-object-address class))
+             (add-class (class)
+               (let* ((address (class-address class))
+                      (length (length allocated-classes))
+                      (index (bsearch address allocated-classes
+                                      :stride 2 :key #'class-address)))
+                 (if index
+                     (incf (aref allocated-classes (1+ index)))
+                     (let ((insertion length)
+                           (low 0)
+                           (high (/ length 2)))
+                       ;; Find the lower bound for this address without
+                       ;; allocating a temporary sequence.
+                       (loop while (< low high)
+                             do (let ((middle (truncate (+ low high) 2)))
+                                  (if (< (class-address
+                                         (aref allocated-classes (* middle 2)))
+                                         address)
+                                      (setf low (1+ middle))
+                                      (setf high middle))))
+                       (setf insertion (* low 2))
+                       (when (> (+ length 2) (array-total-size allocated-classes))
+                         (error "Too many allocated classes for ROOM."))
+                       (setf (fill-pointer allocated-classes) (+ length 2))
+                       (replace allocated-classes allocated-classes
+                                :start1 (+ insertion 2)
+                                :start2 insertion :end2 length)
+                       (setf (aref allocated-classes insertion) class
+                             (aref allocated-classes (1+ insertion)) 1))))))
       (walk-area area
                  (lambda (object address size)
                    (declare (ignore address))

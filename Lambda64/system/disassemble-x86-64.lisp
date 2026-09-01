@@ -617,8 +617,7 @@
     (decode-w-v nil ; sys.lap-x86:movups
      nil ; sys.lap-x86:movupd
      sys.lap-x86:movsd sys.lap-x86:movss)
-    ;; FIXME: For MOVHLPS, if the R/M operand is memory then the instruction is actually MOVLPS.
-    (decode-v-w sys.lap-x86:movhlps nil nil nil)
+    (decode-movhlps) ; 12: MOVHLPS (register) or MOVLPS (memory)
     nil
     (decode-v-w sys.lap-x86:unpcklps sys.lap-x86:unpcklpd nil nil)
     (decode-v-w sys.lap-x86:unpckhps sys.lap-x86:unpckhpd nil nil)
@@ -1632,6 +1631,18 @@
                 (make-instruction opcode
                                   (decode-xmm reg (rex-r info))
                                   (decode-xmm-or-mem r/m (rex-b info))))))))
+
+(defun decode-movhlps (context info)
+  "Decode MOVHLPS, whose memory encoding is named MOVLPS by Intel."
+  (multiple-value-bind (reg r/m)
+      (disassemble-modr/m context info)
+    (make-instruction (if (integerp r/m)
+                          'sys.lap-x86:movhlps
+                          'sys.lap-x86::movlps)
+                      (decode-xmm reg (rex-r info))
+                      (if (integerp r/m)
+                          (decode-xmm r/m (rex-b info))
+                          r/m))))
 
 (defun decode-v-w-ib (context info opcode opcode-66 opcode-f2 opcode-f3)
   (multiple-value-bind (reg r/m)

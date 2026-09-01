@@ -562,16 +562,12 @@
   (setf (block-stack xp) (make-array +block-stack-min-size+))
   (setf (block-stack-ptr xp) 0)
   (setf (buffer xp) (make-array +buffer-min-size+ :element-type 'character))
-  ;; FIXME: If the output position can't be determined, then this will
-  ;; incorrectly assume that the stream is at the start of the line, which
-  ;; may be incorrect.
-  ;; Printing a backtrace on the cold string will demonstrate this, as the
-  ;; backtrace function calls fresh-line before the frame and does not print
-  ;; a trailing newline. As XP believes that the stream is at the start of the
-  ;; line every frame, newlines separating the frames never get printed and
-  ;; the frames end up bunched together on one line.
-  (setf (charpos xp) (cond ((output-position (base-stream xp)))
-                           (T 0)))
+  ;; An unknown stream position must not be treated as the start of a line.
+  ;; XP uses CHARPOS to decide whether FRESH-LINE needs to emit a newline;
+  ;; a conservative non-zero position preserves separators on streams that
+  ;; cannot report their current column.
+  (let ((position (output-position (base-stream xp))))
+    (setf (charpos xp) (if (integerp position) position 1)))
   (setf (section-start xp) 0)
   (setf (buffer-ptr xp) 0)
   (setf (buffer-offset xp) (charpos xp))

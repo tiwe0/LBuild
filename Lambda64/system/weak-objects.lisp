@@ -2,8 +2,27 @@
 
 (in-package :mezzano.garbage-collection.weak-objects)
 
-;;; TODO: The weak collections should be modified to prune their collections
-;;; in a wait-free way.
+;;; Weak collections prune dead pointers during each read or update.  The
+;;; pruning pass is deliberately wait-free and lock-free: it only unlinks
+;;; unreachable nodes and never waits for a collection-wide mutex.  A
+;;; concurrent reader may observe one stale node, but the next pass will
+;;; remove it.
+
+(defun %prune-weak-pointer-chain (objects live-p)
+  "Remove dead weak-pointer nodes from OBJECTS and return its new head.
+LIVE-P is called with each weak pointer and should return true while it is live."
+  (let ((all-live t))
+    (do* ((node objects (cdr node))
+          (previous nil)
+          (head objects))
+         ((endp node) (values head all-live))
+      (if (funcall live-p (car node))
+          (setf previous node)
+          (progn
+            (setf all-live nil)
+            (if previous
+                (setf (cdr previous) (cdr node))
+                (setf head (cdr node))))))))
 
 ;;; Weak References
 ;;;
@@ -29,23 +48,16 @@ NIL and false if it is dead."
 
 (defun weak-list-list (weak-list)
   "Return the list of live objects contained by WEAK-LIST."
-  ;; Loop over the list, collecting the result and trimming away any
-  ;; dead pointers.
-  (do* ((i (weak-list-objects weak-list) (cdr i))
-        (prev nil)
-        (result (cons nil nil))
-        (tail result))
-       ((endp i)
-        (cdr result))
-    (multiple-value-bind (value livep)
-        (weak-pointer-value (car i))
-      (cond (livep
-             (setf tail (setf (cdr tail) (cons value nil)))
-             (setf prev i))
-            (prev
-             (setf (cdr prev) (cdr i)))
-            (t
-             (setf (weak-list-objects weak-list) (cdr i)))))))
+    (multiple-value-bind (objects all-live)
+      (%prune-weak-pointer-chain
+       (weak-list-objects weak-list)
+       (lambda (pointer)
+         (nth-value 1 (weak-pointer-value pointer))))
+    (declare (ignore all-live))
+    (setf (weak-list-objects weak-list) objects)
+    (loop for pointer in objects
+          for (value livep) = (multiple-value-list (weak-pointer-value pointer))
+          when livep collect value)))
 
 (defun (setf weak-list-list) (value weak-list)
   (setf (weak-list-objects weak-list)
@@ -59,15 +71,21 @@ NIL and false if it is dead."
   objects)
 
 (defun weak-and-relation-list (weak-and-relation)
-  (loop
-     for ptr in (weak-and-relation-objects weak-and-relation)
-     collect
-       (multiple-value-bind (value livep)
-           (weak-pointer-value ptr)
-         (when (not livep)
-           (setf (weak-and-relation-objects weak-and-relation) '())
-           (return '()))
-         value)))
+  (multiple-value-bind (objects all-live)
+      (%prune-weak-pointer-chain
+       (weak-and-relation-objects weak-and-relation)
+       (lambda (pointer)
+         (nth-value 1 (weak-pointer-value pointer))))
+    ;; AND relations are valid only while every member remains live.  Once a
+    ;; member dies, discard the relation as a whole rather than exposing a
+    ;; misleading partial list on a later read.
+    (if all-live
+        (progn
+          (setf (weak-and-relation-objects weak-and-relation) objects)
+          (loop for ptr in objects collect (weak-pointer-value ptr)))
+        (progn
+          (setf (weak-and-relation-objects weak-and-relation) nil)
+          nil))))
 
 ;;; Weak Or Relations
 
@@ -78,8 +96,15 @@ NIL and false if it is dead."
   objects)
 
 (defun weak-or-relation-list (weak-or-relation)
-  (let ((x (first (weak-or-relation-objects weak-or-relation))))
-    (and x (weak-pointer-value x))))
+  (multiple-value-bind (objects all-live)
+      (%prune-weak-pointer-chain
+       (weak-or-relation-objects weak-or-relation)
+       (lambda (pointer)
+         (nth-value 1 (weak-pointer-value pointer))))
+    (declare (ignore all-live))
+    (setf (weak-or-relation-objects weak-or-relation) objects)
+    (when objects
+      (weak-pointer-value (car objects)))))
 
 ;;; Weak Mappings
 

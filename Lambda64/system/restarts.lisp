@@ -158,22 +158,33 @@
       (cond ((and (listp expanded-restartable-form)
                   (member (first expanded-restartable-form)
                           '(signal error cerror warn)))
-             (let ((condition (gensym "CONDITION")))
-               ;; TODO: Do this without the calls to FIND-RESTART.
-               ;; This'll require open-coding the RESTART-BIND.
+             (let ((condition (gensym "CONDITION"))
+                   (restart-variables (loop for binding in (reverse restart-bindings)
+                                            collect (gensym "RESTART"))))
+               ;; Construct and bind the restart objects directly.  The previous
+               ;; expansion nested another RESTART-CASE and looked each object up
+               ;; with FIND-RESTART; keeping the objects in lexical bindings avoids
+               ;; that traversal while preserving their condition association.
                `(let ((,condition (coerce-to-condition ',(ecase (first expanded-restartable-form)
                                                            ((signal) 'simple-condition)
                                                            ((error cerror) 'simple-error)
                                                            ((warn) 'simple-warning))
                                                        ,(second expanded-restartable-form)
                                                        (list ,@(cddr expanded-restartable-form)))))
-                  (restart-case
-                      (with-condition-restarts ,condition
-                          (list ,@(loop
-                                     for clause in clauses
-                                     collect `(find-restart ',(first clause))))
-                        (,(first expanded-restartable-form) ,condition))
-                    ,@clauses))))
+                  (let ,(loop for variable in restart-variables
+                              for binding in (reverse restart-bindings)
+                              collect `(,variable
+                                        (make-restart ',(first binding) ,@(rest binding))))
+                    (block ,block-name
+                      (let ((,arguments nil))
+                        (tagbody
+                           (%restart-bind (list ,@restart-variables)
+                             (lambda ()
+                               (return-from ,block-name
+                                 (with-condition-restarts ,condition
+                                     (list ,@restart-variables)
+                                   (,(first expanded-restartable-form) ,condition)))))
+                           ,@(reverse restart-bodies))))))))
             (t
              `(block ,block-name
                 (let ((,arguments nil))
