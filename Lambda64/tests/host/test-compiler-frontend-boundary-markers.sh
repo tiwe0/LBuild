@@ -9,7 +9,6 @@ root = Path(sys.argv[1])
 checks = {
     "0042": ("compiler/compiler.lisp", 'TODO: cannot compile functions defined outside the null lexical environment.'),
     "0054": ("compiler/keyword-arguments.lisp", "TODO: If &REST or &COUNT are special"),
-    "0063": ("compiler/simplify-control-flow.lisp", "TODO: This is where no-return functions can be handled."),
     "0068": ("compiler/type-check.lisp", "TODO: Make this more efficient. Save values a la M-V-P1"),
 }
 for ident, (rel, marker) in checks.items():
@@ -45,8 +44,8 @@ keywords = (root / "compiler/keyword-arguments.lisp").read_text()
 if '"COUNT"' not in keywords or '"REST"' not in keywords or ":dynamic-extent t" not in keywords:
     raise SystemExit("TF-WI-0054 synthesized REST/COUNT contract missing")
 control = (root / "compiler/simplify-control-flow.lisp").read_text()
-if "defmethod simplify-control-flow-1 ((form ast-call)" not in control or "(values form nil)" not in control:
-    raise SystemExit("TF-WI-0063 call control-flow conservative contract missing")
+if "defmethod simplify-control-flow-1 ((form ast-call)" not in control or "sys.int::%%unreachable" not in control:
+    raise SystemExit("TF-WI-0063 no-return primitive contract missing")
 types = (root / "compiler/type-check.lisp").read_text()
 if "multiple-value-call" not in types or "(let ((req-values" not in types:
     raise SystemExit("TF-WI-0068 multiple-value preservation contract missing")
@@ -55,5 +54,7 @@ if "multiple-value-call" not in types or "(let ((req-values" not in types:
 # regression that restores the old assertion-only implementation.
 if "TODO: Promote as appropriate." in cross or "assert (cross-support::cross-short-float-p realpart)" in cross:
     raise SystemExit("TF-WI-0049 stale assertion marker unexpectedly restored")
+if "TODO: This is where no-return functions can be handled." in control:
+    raise SystemExit("TF-WI-0063 stale no-return marker unexpectedly restored")
 print("compiler frontend TODO/FIXME boundary contracts passed")
 PY

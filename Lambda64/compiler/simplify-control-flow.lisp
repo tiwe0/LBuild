@@ -333,8 +333,13 @@
                                  form))
                         t)))))
     (setf (arguments form) (reverse new-arguments)))
-  ;; TODO: This is where no-return functions can be handled.
-  (values form nil))
+  ;; Only compiler-proven no-return primitives may terminate a call here.
+  ;; Ordinary calls remain conservatively reachable because their effects and
+  ;; return behavior are not represented in AST metadata.
+  (if (and (eql (name form) 'sys.int::%%unreachable)
+           (endp (arguments form)))
+      (values form t)
+      (values form nil)))
 
 (defmethod simplify-control-flow-1 ((form ast-jump-table) ti/tb-mapping permitted-hoist-tagbodys renames leaving-tagbody)
   (multiple-value-bind (new-form control-terminates)
