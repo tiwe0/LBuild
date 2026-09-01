@@ -1278,18 +1278,23 @@
     (emit-object-load (ir:unbox-destination instruction) (ir:unbox-source instruction) :slot 0)
     (emit out)))
 
-;; TODO: Do this without a temporary integer register.
 (defmethod emit-lap (backend-function (instruction ir:box-single-float-instruction) uses defs)
-  (ecase (lap::register-class (ir:box-source instruction))
-    (:gpr-64
-     (emit `(lap:orr :x9 :xzr ,(ir:box-source instruction))))
-    (:fp-32
-     (emit `(lap:fmov :w9 ,(lap::convert-width (ir:box-source instruction) 32)))))
-  (emit `(lap:add :x9 :xzr :x9 :lsl 32)
-        `(lap:add ,(ir:box-destination instruction) :x9 ,(logior sys.int::+tag-immediate+
-                                                                 (dpb sys.int::+immediate-tag-single-float+
-                                                                      sys.int::+immediate-tag+
-                                                                      0)))))
+  (let ((destination (ir:box-destination instruction))
+        (tag (logior sys.int::+tag-immediate+
+                     (dpb sys.int::+immediate-tag-single-float+
+                          sys.int::+immediate-tag+
+                          0))))
+    ;; The destination is dead until this instruction completes, so use it as
+    ;; the integer scratch register. GPR sources can be shifted directly;
+    ;; FP sources are moved to the destination's W view first.
+    (ecase (lap::register-class (ir:box-source instruction))
+      (:gpr-64
+       (emit `(lap:add ,destination :xzr ,(ir:box-source instruction) :lsl 32)))
+      (:fp-32
+       (emit `(lap:fmov ,(lap::convert-width destination 32)
+                        ,(lap::convert-width (ir:box-source instruction) 32)))
+       (emit `(lap:add ,destination :xzr ,destination :lsl 32))))
+    (emit `(lap:add ,destination ,destination ,tag))))
 
 (defmethod emit-lap (backend-function (instruction ir:unbox-single-float-instruction) uses defs)
   (ecase (lap::register-class (ir:unbox-destination instruction))
