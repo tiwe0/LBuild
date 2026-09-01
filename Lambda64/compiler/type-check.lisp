@@ -182,9 +182,15 @@ Descends into inner AND/OR/NOT types."
   ;;    Bind the value to a variable and test it.
   ;; 4) Single/effect value context with a multiple-value type or
   ;;    multiple/tail value context. Save values, inspect them.
-  ;; TODO: What does &ALLOW-OTHER-KEYS mean?
-  (multiple-value-bind (required-typespecs optional-typespecs rest-typespec)
+  ;; &ALLOW-OTHER-KEYS is a function-type lambda-list marker.  It is accepted
+  ;; by PARSE-VALUES-TYPE for reader/type-system compatibility, but has no
+  ;; bearing on value-count or value-type checking here (there are no keyword
+  ;; arguments in a VALUES type).  Keep the parsed bit explicit so a future
+  ;; function-type checker cannot accidentally conflate the two policies.
+  (multiple-value-bind (required-typespecs optional-typespecs rest-typespec
+                        allow-other-keys)
       (parse-values-type (ast-the-type form))
+    (declare (ignore allow-other-keys))
     (setf (value form)
           (cond ((or (not (eql (optimize-quality form 'safety) 3))
                      ;; (VALUES T...)
