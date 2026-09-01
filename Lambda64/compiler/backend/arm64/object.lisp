@@ -240,7 +240,8 @@
                                 :outputs (list))))
          (emit (make-instance 'ir:move-instruction
                               :source value
-                              :destination result))))
+                              :destination result))))))
+
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8  lap:ldrb  lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16 lap:ldrh  lap:strh  2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
 (define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32 lap:ldrw  lap:strw  4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)

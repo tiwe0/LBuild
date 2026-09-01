@@ -63,7 +63,7 @@ required by the implementation's reverse pass."
       ;; Number reachable blocks once, then use the dense numbering below.
       (multiple-value-bind (numbering vertices parents count)
           (number-basic-blocks entry-basic-block bb-succs)
-        (setf dfnum numbering vertex vertices parent parents n* count)))
+        (setf dfnum numbering vertex vertices parent parents n* count))
       (loop for i from (1- n*) downto 1 do
            (let* ((n (aref vertex i))
                   (p (gethash n parent))
