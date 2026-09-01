@@ -1104,7 +1104,7 @@ multiple threads."
     fifo))
 
 (defun irq-fifo-push (value fifo)
-  "Push a byte onto FIFO. Returns true if there was space and value was pushed successfully.
+  "Push VALUE onto FIFO. Returns true if there was space and value was pushed successfully.
 If the fifo is full, then FIFO-PUSH will return false.
 Safe to use from an interrupt handler."
   (check-type fifo irq-fifo)
@@ -1122,7 +1122,7 @@ Safe to use from an interrupt handler."
           t)))))
 
 (defun irq-fifo-pop (fifo &optional (wait-p t))
-  "Pop a byte from FIFO.
+  "Pop a value from FIFO.
 Returns two values. The first value is the value popped from the FIFO.
 The second value is true if a value was popped, false otherwise.
 It is only possible for the second value to be false when wait-p is false."
