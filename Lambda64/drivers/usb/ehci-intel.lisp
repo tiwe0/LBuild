@@ -641,56 +641,60 @@
 
 (defmethod bulk-enqueue-buf ((ehci ehci-intel) device endpt-num buf num-bytes)
   (enter-function "bulk-enqueue-buf")
-  (when (> num-bytes (length buf))
-    (error "Invalid arguments num-bytes (~D) > length of buffer (~D)"
-           num-bytes (length buf)))
+  (with-hcd-access (ehci)
+    (when (> num-bytes (length buf))
+      (error "Invalid arguments num-bytes (~D) > length of buffer (~D)"
+             num-bytes (length buf)))
 
-  (let* ((endpoint (aref (usb-device-endpoints device) endpt-num))
-         (qh (ehci-endpoint-qh endpoint))
-         (msg-qtd (alloc-qtd ehci
-                             :event-type (ehci-endpoint-event-type endpoint)
-                             :endpoint endpoint
-                             :buf-size num-bytes
-                             :buf buf)))
-    (encode-qtd msg-qtd
-                  1         ;; data toggle
-                  num-bytes ;; num-bytes
-                  1         ;; ioc
-                  0         ;; c_page
-                  3         ;; cerr
-                  (ehci-endpoint-pid endpoint)
-                  buf)
-
-    (sup:with-mutex ((usbd-lock ehci))
-      (push msg-qtd (pending-qtds ehci)))
-
-    (sys.int::dma-write-barrier)
-    (setf (qh-next-qtd qh) (array->phys-addr msg-qtd))
-    (values)))
+    (let* ((endpoint (aref (usb-device-endpoints device) endpt-num))
+           (qh (ehci-endpoint-qh endpoint))
+           (msg-qtd (alloc-qtd ehci
+                               :event-type (ehci-endpoint-event-type endpoint)
+                               :endpoint endpoint
+                               :buf-size num-bytes
+                               :buf buf)))
+      (encode-qtd msg-qtd 1 num-bytes 1 0 3
+                  (ehci-endpoint-pid endpoint) buf)
+      (sup:with-mutex ((usbd-lock ehci))
+        (push msg-qtd (pending-qtds ehci)))
+      (sys.int::dma-write-barrier)
+      (setf (qh-next-qtd qh) (array->phys-addr msg-qtd))
+      (values))))
 
 (defmethod bulk-dequeue-buf ((ehci ehci-intel) device endpt-num buf)
   (enter-function "bulk-dequeue-buf")
-  (let* ((buf-phys-addr (array->phys-addr buf))
-         (endpoint (aref (usb-device-endpoints device) endpt-num))
-         (qh (ehci-endpoint-qh endpoint)))
-    (when (not (logbitp 0 (qh-next-qtd qh)))
-      ;; TODO stop this queue - see spec on how to remove qtd
-      (loop
-         for prev-qtd = NIL then qtd
-         for qtd = (ehci-addr->array ehci (qh-next-qtd qh)) then
-           (ehci-addr->array ehci (aref qtd 0))
-         when (= (aref qtd 3) buf-phys-addr) do
-         ;; remove qtd for list
-           (if prev-qtd
-               (setf (aref prev-qtd  0) (aref qtd 0))
-               (setf (qh-next-qtd qh) (aref qtd 0)))
-           (sup:with-mutex ((usbd-lock ehci))
-             (setf (pending-qtds ehci) (delete qtd (pending-qtds ehci))))
-           (free-qtd ehci qtd)
-           (return T)
-         when (not (logbit 0(aref qtd 0))) do
-         ;; qtd not found
-           (return nil)))))
+  (with-hcd-access (ehci)
+    (let* ((buf-phys-addr (array->phys-addr buf))
+           (endpoint (aref (usb-device-endpoints device) endpt-num))
+           (qh (ehci-endpoint-qh endpoint))
+           (prev-qtd nil)
+           (qtd nil)
+           (found nil))
+      ;; Walk the controller-visible chain first.  A qTD is halted before the
+      ;; async doorbell is rung, so the controller cannot fetch it while we
+      ;; unlink and reclaim its storage.
+      (loop for address = (qh-next-qtd qh) then (aref qtd 0)
+            while (not (logbitp 0 address))
+            do (setf qtd (ehci-addr->array ehci address))
+               (when (= (aref qtd 3) buf-phys-addr)
+                 (setf found t)
+                 (setf (aref qtd 2)
+                       (logior (logandc2 (aref qtd 2) #x80) #x40))
+                 (sys.int::dma-write-barrier)
+                 (return))
+            do (setf prev-qtd qtd))
+      (when found
+        ;; The doorbell acknowledges that the async schedule has observed the
+        ;; halt.  Only then is it legal to unlink and free the qTD.
+        (wait-for-async-doorbell ehci)
+        (if prev-qtd
+            (setf (aref prev-qtd 0) (aref qtd 0))
+            (setf (qh-next-qtd qh) (aref qtd 0)))
+        (sys.int::dma-write-barrier)
+        (sup:with-mutex ((usbd-lock ehci))
+          (setf (pending-qtds ehci) (delete qtd (pending-qtds ehci))))
+        (free-qtd ehci qtd)
+        t))))
 
 ;; TODO move this routine to usd-defs.lisp, delete here and in ohci.lisp
 (defun transfer-complete (driver event-type endpt-num device status length buf)
@@ -1124,15 +1128,19 @@
 ;;======================================================================
 
 (defun init-periodic-frame-list (ehci)
-  (setf (pci:pci-io-region/32 (op-regs ehci) +ehci-op-frame-list+)
-        (logand (pfl-phys-addr ehci) #xFFFFFFFF))
-
-  ;; TODO - create real periodic frame table
-
-  ;; Setup periodic frame list with no entries enabled (T (bit 0) = 1)
-  (let ((pfl-table (pfl-table ehci)))
-    (dotimes (i 1024)
-      (setf (aref pfl-table i) #x00000001))))
+  ;; EHCI requires a 4-KiB aligned 1024-entry table.  Until interrupt
+  ;; endpoint scheduling is implemented every entry is a terminated link.
+  ;; Keep this contract explicit rather than exposing uninitialised DMA data.
+  (with-hcd-access (ehci)
+    (let ((table (pfl-table ehci)))
+      (unless (and (= (length table) 1024)
+                   (zerop (logand (pfl-phys-addr ehci) #xfff)))
+        (error "Invalid EHCI periodic frame list allocation"))
+      (dotimes (i 1024)
+        (setf (aref table i) #x00000001))
+      (sys.int::dma-write-barrier)
+      (setf (pci:pci-io-region/32 (op-regs ehci) +ehci-op-frame-list+)
+            (logand (pfl-phys-addr ehci) #xFFFFFFFF)))))
 
 ;;======================================================================
 ;; EHCI Init code
