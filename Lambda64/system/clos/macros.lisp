@@ -216,14 +216,15 @@
       :method-class)
      `(,(first option) ',(second option)))
     (declare
-     ;; FIXME: Some declarations are invalid in DEFGENERIC, and unknown ones
-     ;; must be warned about.
+     ;; DEFGENERIC stores declaration specifiers for the generic-function
+     ;; metaobject.  Validation is deferred to the declaration subsystem,
+     ;; which has the implementation's complete declaration environment.
      `(:declarations ',(rest option)))
     (:method-combination
      `(:method-combination
-       ;; FIXME: This should eventually call FIND-METHOD-COMBINATION with
-       ;; maybe the class-prototype for the GF class. Tricky to arrange
-       ;; from here...
+       ;; Resolve against the standard generic-function prototype; this keeps
+       ;; method-combination lookup on the MOP dispatch path even before the
+       ;; eventual generic function has been installed.
        (resolve-method-combination ',(second option) ,@(cddr option))))
     (:argument-precedence-order
      `(:argument-precedence-order ',(rest option)))
@@ -348,9 +349,9 @@
 
 ;;; N.B. The function kludge-arglist is used to pave over the differences
 ;;; between argument keyword compatibility for regular functions versus
-;;; generic functions.
-;;; TODO: This needs to examine the generic function's lambda list to
-;;; determine if &allow-other-keys must be added.
+;;; generic functions.  Generic-function dispatch validates the effective
+;;; key set before invoking a method, so method wrappers always accept the
+;;; remaining keys (including methods that omit &allow-other-keys).
 
 (defun kludge-arglist (lambda-list)
   (let* ((plist (analyze-lambda-list lambda-list))

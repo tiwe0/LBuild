@@ -66,7 +66,9 @@
     (cond ((endp (slot-definition-initargs slot))
            nil)
           ((endp (rest (slot-definition-initargs slot)))
-           ;; TODO: It would be nice to use the &KEY machinery for this.
+           ;; A single initarg can use GETF directly.  GETF intentionally
+           ;; returns the first occurrence, matching the initarg protocol's
+           ;; left-to-right duplicate-key semantics.
            (let ((not-found (gensym "NOT-FOUND"))
                  (initarg-value (gensym "INITARG-VALUE")))
              `(let ((,initarg-value (getf ,initargs-sym ',(first (slot-definition-initargs slot)) ',not-found)))

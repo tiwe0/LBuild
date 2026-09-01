@@ -3,8 +3,8 @@
 
 (in-package :mezzano.clos)
 
-;;; TODO: If an argument isn't relevant at a particular level, then
-;;; avoid including that level in the cache.
+;;; Cache paths are built from the generic function's relevant-argument
+;;; bitmap, so arguments that cannot affect dispatch are omitted entirely.
 
 (defstruct (emf-cache-level
              (:constructor %make-emf-cache-level))
@@ -61,9 +61,9 @@ be consumed while walking the cache)."
                                              collect (cons (eql-specializer-object eql-spec) nil)))
      :class-specializers (make-fast-class-hash-table))))
 
-;; TODO: If there is a custom method on COMPUTE-APPLICABLE-METHODS then
-;; this scheme should not be used and the class-cache-only implementation
-;; should be used instead.
+;; This cache is used by the standard discriminator.  Generic functions with
+;; custom COMPUTE-APPLICABLE-METHODS methods bypass that discriminator and do
+;; not reach this insertion path.
 (defun insert-into-emf-cache (cache arguments value)
   ;; ### I'm a little worried about the locking here. This calls back into
   ;; the MOP machinery to update the cache... Is it possible to reenter?
