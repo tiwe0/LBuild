@@ -28,6 +28,16 @@ if mutate:
         thread = thread.replace("FIXME: FPU state", "resolved: FPU state", 1)
     elif sys.argv[2] == "lock-order":
         thread = thread.replace("FIXME: This should be done", "resolved: This should be done", 1)
+        # Also exercise the dangerous ordering change while retaining the
+        # marker, so the structural check cannot be bypassed by a comment-only
+        # mutation.
+        cleanup_start = thread.index("(defun thread-final-cleanup")
+        cleanup_end = thread.find("(defun thread-join", cleanup_start)
+        cleanup = thread[cleanup_start:cleanup_end]
+        event_form = "(setf (event-state (thread-join-event self)) (or return-values :no-values))"
+        lock_form = "(acquire-global-thread-lock)"
+        cleanup = cleanup.replace(event_form, "__LOCK_ORDER_EVENT__", 1).replace(lock_form, event_form, 1).replace("__LOCK_ORDER_EVENT__", lock_form, 1)
+        thread = thread[:cleanup_start] + cleanup + thread[cleanup_end:]
     elif sys.argv[2] == "fref":
         runtime = runtime.replace("FIXME: FREF should be locked for the duration", "resolved fref publication", 1)
 
