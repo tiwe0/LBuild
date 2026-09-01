@@ -247,6 +247,13 @@
                                       (loader-environment loader)
                                       (loader-allocation-area loader))))
        list))
+    (#.sys.int::+llf-ratio+
+     ;; Ratios are serialized as their integer numerator/denominator pair.
+     ;; Keep this path in the cold loader in sync with system/load.lisp;
+     ;; format and compiler bootstrap data contain rational constants.
+     (let ((numerator (load-integer loader))
+           (denominator (load-integer loader)))
+       (/ numerator denominator)))
     (#.sys.int::+llf-integer-vector+
      (let* ((len (load-integer loader))
             (vec (env:make-array (loader-environment loader) len :area (loader-allocation-area loader))))
