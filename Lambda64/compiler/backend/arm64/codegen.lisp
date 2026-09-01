@@ -48,8 +48,41 @@
 
 (defvar *target*)
 
-;; TODO: Sort the layout so stack slots for values are all together and trim
-;; the gc layout bitvector. #*111 instead of #*0010101
+;; Compact allocator-produced pointer slots before backend-private slots are
+;; allocated.  This keeps the GC layout dense without changing slot widths.
+
+(defun compact-stack-layout (stack-layout spill-locations &optional (start 0))
+  "Group pointer spill slots before raw slots while preserving slot widths.
+Returns the compacted layout and updates SPILL-LOCATIONS in place."
+  (let ((groups '()) (index start))
+    (loop while (< index (length stack-layout)) do
+      (let* ((kind (aref stack-layout index))
+             (width (if (member kind '(:sse :advsimd)) 2 1)))
+        (push (list index width (eql kind :value)) groups)
+        (incf index width)))
+    (setf groups (nreverse groups))
+    (let* ((ordered (stable-sort (copy-list groups) #'> :key (lambda (g) (if (third g) 1 0))))
+           (mapping (make-hash-table :test #'eql))
+           (result (make-array (+ start (reduce #'+ ordered :key #'second))
+                               :adjustable t
+                               :fill-pointer (+ start (reduce #'+ ordered :key #'second)))))
+      (dotimes (i start)
+        (setf (aref result i) (aref stack-layout i)))
+      (let ((destination start))
+        (dolist (group ordered)
+          (destructuring-bind (source width pointerp) group
+            (declare (ignore pointerp))
+            (dotimes (offset width)
+              (setf (aref result (+ destination offset))
+                    (aref stack-layout (+ source offset)))
+              (setf (gethash (+ source offset) mapping) (+ destination offset)))
+            (incf destination width)))
+      (maphash (lambda (vreg slot)
+                 (when (>= slot start)
+                   (setf (gethash vreg spill-locations) (gethash slot mapping))))
+               spill-locations)
+      result)))
+
 (defun compute-stack-layout (backend-function spill-locations stack-layout)
   (when (ir:argument-setup-rest (ir:first-instruction backend-function))
     ;; Reserve slot 0 for the saved argument count. Required for &rest list generation.
@@ -60,6 +93,13 @@
       (replace tmp stack-layout :start1 1)
       (setf (aref tmp 0) :raw)
       (setf stack-layout tmp)))
+  ;; Compact allocator-produced slots before prepass allocates backend-private
+  ;; slots.  Slot zero (the &REST count) stays fixed; spill locations are
+  ;; remapped by COMPACT-STACK-LAYOUT so GC/debug offsets remain coherent.
+  (setf stack-layout (compact-stack-layout stack-layout spill-locations
+                                           (if (ir:argument-setup-rest (ir:first-instruction backend-function))
+                                               1
+                                               0)))
   (let ((environment-slot nil))
     (when (c:lambda-information-environment-layout
            (ir::ast backend-function))
