@@ -273,9 +273,9 @@ This function allocates. The :AREA argument determines where the list is allocat
                                                 :32-bit-only 32-bit
                                                 :type :transient-dma-buffer)))
            (when (not frame)
-             ;; TODO: Should this call into the pager to try to convince it
-             ;; to free up some memory? The physical allocator currently has
-             ;; no pager-reclaim hook, so preserve its non-blocking failure.
+             ;; Allocation failure is deliberately non-blocking.  The physical
+             ;; allocator currently has no pager-reclaim hook; attempting an
+             ;; ad-hoc page-in/reclaim here would violate the pager ABI.
              (when errorp
                (error 'dma-buffer-allocation-error
                       :length length
