@@ -6,9 +6,25 @@
 
 (sys.int::defglobal *rtc-adjust*)
 
+;; The generated SETF accessors for system registers are represented by a
+;; function-reference cell.  That cell is not guaranteed to be published
+;; while the cold image is still bootstrapping, so timer setup must use direct
+;; LAP entry points instead of (SETF (%CNTV-...)).
+(sys.int::define-lap-function %write-cntv-tval-el0 ((value))
+  (:gc :no-frame :layout #*)
+  (mezzano.lap.arm64:add :x9 :xzr :x0 :asr #.sys.int::+n-fixnum-bits+)
+  (mezzano.lap.arm64:msr :cntv-tval-el0 :x9)
+  (mezzano.lap.arm64:ret))
+
+(sys.int::define-lap-function %write-cntv-ctl-el0 ((value))
+  (:gc :no-frame :layout #*)
+  (mezzano.lap.arm64:add :x9 :xzr :x0 :asr #.sys.int::+n-fixnum-bits+)
+  (mezzano.lap.arm64:msr :cntv-ctl-el0 :x9)
+  (mezzano.lap.arm64:ret))
+
 (defun generic-timer-irq-handler (interrupt-frame irq)
   (declare (ignore irq))
-  (setf (%cntv-tval-el0) *generic-timer-reset-value*)
+  (%write-cntv-tval-el0 *generic-timer-reset-value*)
   (%isb)
   (beat-heartbeat *run-time-advance*)
   (profile-sample interrupt-frame)
@@ -37,10 +53,10 @@
                 t)
     ;; Set countdown value.
     ;; ### why is this 0 and not *generic-timer-reset-value*?
-    (setf (%cntv-tval-el0) 0)
+    (%write-cntv-tval-el0 0)
     (%isb)
     ;; Enable the timer.
-    (setf (%cntv-ctl-el0) 1)
+    (%write-cntv-ctl-el0 1)
     (%isb)))
 
 (sys.int::defglobal *pl031-rtc-base*)
