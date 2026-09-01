@@ -37,6 +37,8 @@ for ident, (rel, legacy_marker) in resolved.items():
 compiler = (root / "compiler/compiler.lisp").read_text()
 if "(when env" not in compiler or "(error \"TODO: cannot compile functions defined outside" not in compiler:
     raise SystemExit("TF-WI-0042 lexical-environment rejection contract missing")
+if "(pass1-lambda lambda env)" not in compiler or "(defun compile-lambda (lambda &optional env" not in compiler:
+    raise SystemExit("TF-WI-0042 explicit project-environment API contract missing")
 cross = (root / "compiler/cross-compile.lisp").read_text()
 if "(defun complex (realpart imagpart)" not in cross or "Cannot promote" not in cross:
     raise SystemExit("TF-WI-0049 mixed short-float promotion implementation missing")
