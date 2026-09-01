@@ -411,7 +411,7 @@
   (mezzano.lap.arm64:add :x9 :x9 #.(ash 1 sys.int::+n-fixnum-bits+))
   (mezzano.lap.arm64:str :x9 (:object-location :x10 #.mezzano.supervisor::+arm64-cpu-general-allocation-count+))
   ;; Check *ENABLE-ALLOCATION-PROFILING*
-  ;; FIXME: This only tests the global value.
+  ;; Allocation profiling is process-global (DEFGLOBAL), so read its global cell.
   (mezzano.lap.arm64:ldr :x6 (:symbol-global-cell *enable-allocation-profiling*))
   (mezzano.lap.arm64:ldr :x4 (:object :x6 #.sys.int::+symbol-value-cell-value+))
   (mezzano.lap.arm64:subs :xzr :x4 :x26)
@@ -647,7 +647,7 @@
   (mezzano.lap.arm64:add :x9 :x9 #.(ash 16 sys.int::+n-fixnum-bits+))
   (mezzano.lap.arm64:str :x9 (:object :x28 #.mezzano.supervisor::+thread-bytes-consed+))
   ;; Check *ENABLE-ALLOCATION-PROFILING*
-  ;; FIXME: This only tests the global value.
+  ;; Allocation profiling is process-global (DEFGLOBAL), so read its global cell.
   #| Logging every cons tends to explode the profile buffer & exhaust memory.
   (mezzano.lap.arm64:ldr :x6 (:symbol-global-cell *enable-allocation-profiling*))
   (mezzano.lap.arm64:ldr :x6 (:object :x6 #.sys.int::+symbol-value-cell-value+))
