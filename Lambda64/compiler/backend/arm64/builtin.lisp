@@ -116,8 +116,12 @@
   inverse jump-instruction cmov-instruction)
 
 (defparameter *predicate-instructions-1*
+  ;; :Z/:NZ are the zero-flag spellings used by shared CAS/DCAS builtin
+  ;; definitions; on AArch64 they are aliases for equality/inequality.
   '((:eq  :ne lap:b.eq lap:csel.eq)
     (:ne  :eq lap:b.ne lap:csel.ne)
+    (:z   :nz lap:b.eq lap:csel.eq)
+    (:nz  :z  lap:b.ne lap:csel.ne)
     (:cs  :cc lap:b.cs lap:csel.cs)
     (:cc  :cs lap:b.cc lap:csel.cc)
     (:mi  :pl lap:b.mi lap:csel.mi)
