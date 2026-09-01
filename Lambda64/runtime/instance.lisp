@@ -149,11 +149,11 @@
   (sys.int::%dcas-object instance offset old-1 old-2 new-1 new-2))
 
 (defun instance-dcas (instance loc-1 loc-2 old-1 old-2 new-1 new-2)
-  ;; TODO: Eventually combinations of same-width locations could be supported.
-  ;; T and UB64, or UB32 and SINGLE-FLOAT, etc
+  ;; DCAS currently accepts only tagged T slots: the backend exchanges two
+  ;; full machine words, while unboxed slots use raw-width encodings that
+  ;; cannot be passed through the tagged calling convention safely.
   (when (not (eql (location-type loc-1) (location-type loc-2)))
     (error "DCAS is not supported on locations of disparate types"))
-  ;; TODO: Support DCAS on unboxed slots at all.
   (when (not (eql (location-type loc-1) +location-type-t+))
     (error "DCAS is only supported on locations of type T"))
   ;; The compiler has some trouble compiling this function because of the

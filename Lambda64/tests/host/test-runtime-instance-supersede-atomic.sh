@@ -16,6 +16,8 @@ if sys.argv[2]:
     form=form.replace('(sys.int::cas\n                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', '(setf (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', 1)
 if 'TODO' in form or 'FIXME' in form:
     raise SystemExit('supersede-instance retains TODO/FIXME')
+if 'tagged T slots' not in s:
+    raise SystemExit('DCAS capability rationale missing')
 for anchor in (
     '(loop',
     '(sys.int::cas\n                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)',
