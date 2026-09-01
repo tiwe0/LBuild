@@ -252,10 +252,15 @@
                      (error "get-descriptor returned too few bytes ~D"
                             num-bytes))
 
-                   (setf (usb-device-desc-size device)
-                         (aref buf +dd-length+)
-                         (usb-device-max-packet device)
-                         (aref buf +dd-max-packet-size+))))
+                   ;; DMA-backed buffers must be observed while the HCD access
+                   ;; lease is held.  Copy the two fields needed below while
+                   ;; guarded; subsequent enumeration work uses ordinary Lisp
+                   ;; values and does not retain the controller lease.
+                   (with-hcd-access (usbd)
+                     (setf (usb-device-desc-size device)
+                           (aref buf +dd-length+)
+                           (usb-device-max-packet device)
+                           (aref buf +dd-max-packet-size+)))))
 
                (reset-port usbd port-num)
                (setf (usb-device-address device) (alloc-device-address usbd))
@@ -446,10 +451,17 @@
          (push driver (usb-device-drivers device)))))
 
 (defun probe-usb-driver (usbd device device-desc)
-  (let* ((vendor-id (sys.int::ub16ref/le device-desc +dd-vendor-id-low+))
-         (product-id (sys.int::ub16ref/le device-desc +dd-product-id-low+))
-         (class (aref device-desc +dd-device-class+))
-         (subclass (aref device-desc +dd-device-sub-class+))
+  (let* ((descriptor-fields
+           (with-hcd-access (usbd)
+             (vector (sys.int::ub16ref/le device-desc +dd-vendor-id-low+)
+                     (sys.int::ub16ref/le device-desc +dd-product-id-low+)
+                     (aref device-desc +dd-device-class+)
+                     (aref device-desc +dd-device-sub-class+)
+                     (aref device-desc +dd-num-configurations+))))
+         (vendor-id (aref descriptor-fields 0))
+         (product-id (aref descriptor-fields 1))
+         (class (aref descriptor-fields 2))
+         (subclass (aref descriptor-fields 3))
          (driver (find-usb-driver vendor-id product-id class subclass)))
 
     (setf (slot-value device 'vendor-id) vendor-id
@@ -469,7 +481,7 @@
     ;; Either there was no driver, or the device specific driver didn't
     ;; accept the device. Try the class drivers for each configuartion.
     (loop
-       for config-idx upto (1- (aref device-desc +dd-num-configurations+))
+       for config-idx upto (1- (aref descriptor-fields 4))
        for config = (get-configuration usbd device config-idx)
        do
          (when config
@@ -502,18 +514,21 @@
     ;; Get first configuration descriptor - need full descriptor length
     (%get-configuration usbd device idx 9 buf)
 
-    (let ((length (aref buf 2)))
+    (let ((length (with-hcd-access (usbd) (aref buf 2))))
       (with-buffers ((buf-pool usbd) (config-buf /8 length))
         ;; Get full descriptor
         (when (%get-configuration usbd device idx length config-buf)
           (with-trace-level (3)
             (print-descriptor mezzano.internals::*cold-stream* config-buf))
 
-          ;; split configuration descriptor into separate descriptors
-          (do* ((offset 0 (+ offset (aref config-buf offset)))
+          ;; split configuration descriptor into separate descriptors.  Copy
+          ;; DMA memory under the HCD lease before parsing it.
+          (let ((config-bytes (with-hcd-access (usbd)
+                                (copy-seq config-buf))))
+            (do* ((offset 0 (+ offset (aref config-bytes offset)))
                 (result nil))
                ((>= offset length) (nreverse result))
-            (let ((size (aref config-buf offset)))
+            (let ((size (aref config-bytes offset)))
               (when (= size 0)
                 (sup:debug-print-line "Probe failed because "
                                       "of an invalid descriptor with size = 0.")
@@ -522,8 +537,8 @@
                        for idx from 0 to (1- size)
                        with desc = (make-array size)
                        do (setf (aref desc idx)
-                                (aref config-buf (+ offset idx)))
-                       finally (return desc)) result))))))))
+                                (aref config-bytes (+ offset idx)))
+                       finally (return desc)) result)))))))))
 
 ;;======================================================================
 ;;
