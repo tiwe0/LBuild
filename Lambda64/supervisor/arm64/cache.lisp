@@ -92,6 +92,11 @@
   (%dsb.oshst)
   (%isb))
 
+(defun sys.int::dma-read-barrier ()
+  "Wait for outer-shareable device writes before reading a DMA ring."
+  (%dsb.osh)
+  (%isb))
+
 (defun clean-and-invalidate-cache-range (base length)
   "Write back dirty cache lines and invalidate them."
   ;; Align the beginning down and the end up to complete cache-line addresses.

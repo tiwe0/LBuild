@@ -369,6 +369,10 @@
                                         (1+ (virtio-ring-avail-idx vq)))))
 
 (defun virtio-pop-used-ring (vq)
+  ;; A device may have raised its IRQ before its used-ring writes are visible
+  ;; to this PE.  Pair the producer's DMA ordering with an outer-shareable
+  ;; read barrier before consuming the index/entry.
+  (sys.int::dma-read-barrier)
   (cond ((eql (virtio-ring-used-idx vq)
               (virtqueue-last-seen-used vq))
          nil)
