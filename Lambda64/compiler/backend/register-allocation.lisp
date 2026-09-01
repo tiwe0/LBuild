@@ -1139,34 +1139,55 @@ Returns the interference graph and the set of spilled virtual registers."
         (slot-classes (make-array 8 :adjustable t :fill-pointer 0 :initial-element '()))
         (locations (make-hash-table))
         (id-to-vreg-table (allocator-id-to-vreg-table allocator)))
-    (loop
-       for vreg-id across spilled-vregs
-       for vreg = (aref id-to-vreg-table vreg-id)
-       do
-         (dotimes (i (length slots)
-                   (progn
-                     ;; SSE/ADVSIMD slots are 2 wide and must begin at an
-                     ;; even slot index (16-byte stack alignment).
-                     (when (member (ir:virtual-register-kind vreg) '(:sse :advsimd))
-                       (when (oddp (length slots))
-                         (vector-push-extend nil slots)
-                         (vector-push-extend :pad slot-classes))
-                       (vector-push-extend (list vreg-id) slots)
-                       (vector-push-extend :pad slot-classes))
-                     (setf (gethash vreg locations) (length slots))
-                     (vector-push-extend (list vreg-id) slots)
-                     (vector-push-extend (ir:virtual-register-kind vreg) slot-classes)))
-           (when (and (eql (aref slot-classes i) (ir:virtual-register-kind vreg))
-                      (or (not (member (ir:virtual-register-kind vreg)
-                                       '(:sse :advsimd)))
-                          (evenp i))
-                      (not (dolist (entry (aref slots i) nil)
-                             (when (vreg-set-contains (svref interference-graph entry) vreg-id)
-                               (return t)))))
-             ;; Does not interfere with any register in this slot.
-             (push vreg-id (aref slots i))
-             (setf (gethash vreg locations) i)
-             (return))))
+    (labels ((wide-kind-p (kind)
+               (member kind '(:sse :advsimd)))
+             (slot-interferes-p (slot-index vreg-id)
+               (dolist (entry (aref slots slot-index) nil)
+                 (when (vreg-set-contains (svref interference-graph entry) vreg-id)
+                   (return t))))
+             (wide-slot-available-p (slot-index kind vreg-id)
+               (and (evenp slot-index)
+                    (< (1+ slot-index) (length slots))
+                    (eql (aref slot-classes slot-index) kind)
+                    ;; The second lane is a layout marker, not an
+                    ;; independently allocatable slot.
+                    (eql (aref slot-classes (1+ slot-index)) :pad)
+                    (not (slot-interferes-p slot-index vreg-id))))
+             (slot-available-p (slot-index kind vreg-id)
+               (and (eql (aref slot-classes slot-index) kind)
+                    (not (slot-interferes-p slot-index vreg-id)))))
+      (loop
+         for vreg-id across spilled-vregs
+         for vreg = (aref id-to-vreg-table vreg-id)
+         for kind = (ir:virtual-register-kind vreg)
+         for wide = (wide-kind-p kind)
+         do
+           (let ((assigned nil))
+             ;; Reuse an existing compatible slot when the vreg does not
+             ;; interfere with any value already assigned to it.
+             (dotimes (i (length slots))
+               (when (if wide
+                         (wide-slot-available-p i kind vreg-id)
+                         (slot-available-p i kind vreg-id))
+                 (push vreg-id (aref slots i))
+                 (setf (gethash vreg locations) i
+                       assigned t)
+                 (return)))
+             (unless assigned
+               ;; SSE/ADVSIMD values occupy two words and must begin at an
+               ;; even slot index (16-byte stack alignment).  Keep the type
+               ;; marker on the first lane and :PAD on the continuation lane;
+               ;; the stack-layout compactor relies on this representation.
+               (when (and wide (oddp (length slots)))
+                 (vector-push-extend nil slots)
+                 (vector-push-extend :pad slot-classes))
+               (let ((slot-index (length slots)))
+                 (setf (gethash vreg locations) slot-index)
+                 (vector-push-extend (list vreg-id) slots)
+                 (vector-push-extend kind slot-classes)
+                 (when wide
+                   (vector-push-extend nil slots)
+                   (vector-push-extend :pad slot-classes)))))))
     (values locations slot-classes)))
 
 (defun allocate-registers (backend-function arch &key ordering)
