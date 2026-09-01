@@ -10,9 +10,33 @@
 
 (defvar *use-simple-dominator-algorithm* nil)
 
-;; TODO: This numbers basic blocks, switch most hash tables over to using
-;; fixed length arrays and pass around block numbers instead of the blocks
-;; themselves.
+(defun number-basic-blocks (entry-basic-block bb-succs)
+  "Assign a dense DFS number to each block reachable from ENTRY.
+
+The Lengauer-Tarjan implementation uses the block objects as hash keys for
+its auxiliary maps, but keeping the numbering in one place makes the DFS
+ordering explicit and provides a stable, dense vertex vector for the array
+based portions of the algorithm.  The entry block is numbered zero, as
+required by the implementation's reverse pass."
+  (let ((dfnum (make-hash-table :test 'eq))
+        (vertex (make-array 0 :adjustable t :fill-pointer 0))
+        (parent (make-hash-table :test 'eq))
+        (dfs-stack (make-array 100 :fill-pointer 0 :adjustable t)))
+    (vector-push-extend nil dfs-stack)
+    (vector-push-extend entry-basic-block dfs-stack)
+    (loop until (zerop (length dfs-stack)) do
+      (let ((n (vector-pop dfs-stack))
+            (p (vector-pop dfs-stack)))
+        (unless (gethash n dfnum)
+          (setf (gethash n dfnum) (fill-pointer vertex)
+                (gethash n parent) p)
+          (vector-push-extend n vertex)
+          ;; Reverse to preserve the historical recursive DFS order.
+          (dolist (w (reverse (gethash n bb-succs)))
+            (vector-push-extend n dfs-stack)
+            (vector-push-extend w dfs-stack)))))
+    (values dfnum vertex parent (fill-pointer vertex))))
+
 (defun lengauer-tarjan-dominators (entry-basic-block bb-preds bb-succs)
   (let ((n* 0)
         (bucket (make-hash-table :test 'eq))
@@ -36,24 +60,10 @@
              (link (p n)
                (setf (gethash n ancestor) p
                      (gethash n best) n)))
-      ;; Non-recursive depth-first search over the blocks to number them.
-      (let ((dfs-stack (make-array 100 :fill-pointer 0 :adjustable t)))
-        (vector-push-extend nil dfs-stack)
-        (vector-push-extend entry-basic-block dfs-stack)
-        (loop
-           (when (eql (length dfs-stack) 0) (return))
-           (let* ((n (vector-pop dfs-stack))
-                  (p (vector-pop dfs-stack)))
-             (when (eql (gethash n dfnum 0) 0)
-               (setf (gethash n dfnum) n*)
-               (vector-push-extend n vertex)
-               (setf (gethash n parent) p)
-               (incf n*)
-               ;; This is reversed to maintain the same traversal order as
-               ;; the original recursive implementation.
-               (dolist (w (reverse (gethash n bb-succs)))
-                 (vector-push-extend n dfs-stack)
-                 (vector-push-extend w dfs-stack))))))
+      ;; Number reachable blocks once, then use the dense numbering below.
+      (multiple-value-bind (numbering vertices parents count)
+          (number-basic-blocks entry-basic-block bb-succs)
+        (setf dfnum numbering vertex vertices parent parents n* count)))
       (loop for i from (1- n*) downto 1 do
            (let* ((n (aref vertex i))
                   (p (gethash n parent))
