@@ -501,24 +501,30 @@
        (:gpr-64
         (emit `(lap:fmov ,(ir:move-destination instruction) ,(lap::convert-width (ir:move-source instruction) 32))))))))
 
+(defmethod lap-prepass (backend-function (instruction ir:swap-instruction) uses defs)
+  ;; A swap must not transiently destroy either value.  Reserve a non-GC
+  ;; stack slot for the old left-hand value; the swap itself has no safepoint,
+  ;; and marking this slot raw avoids exposing a duplicate root to the GC.
+  (setf (gethash instruction *prepass-data*)
+        (allocate-stack-slots 1 :livep nil)))
+
 (defmethod emit-lap (backend-function (instruction ir:swap-instruction) uses defs)
+  (let ((temporary-slot (gethash instruction *prepass-data*)))
+    (assert temporary-slot () "Missing prepass slot for ARM64 register swap.")
   (let ((lhs (ir:swap-lhs instruction))
         (rhs (ir:swap-rhs instruction)))
     (when (not (eql lhs rhs))
       (assert (eql (lap::register-class lhs) (lap::register-class rhs)))
       (ecase (lap::register-class rhs)
-        ;; FIXME: This is wildly wrong and will cause the GC to lose live values.
-        ;; Use a temporary or spill to the stack instead.
-        ;; FIXME: Fuckin' stop doing this!!!
         (:gpr-64
-         (emit `(lap:eor ,lhs ,lhs ,rhs)
-               `(lap:eor ,rhs ,rhs ,lhs)
-               `(lap:eor ,lhs ,lhs ,rhs)))
+         (emit-stack-store lhs temporary-slot)
+         (emit `(lap:orr ,lhs :xzr ,rhs))
+         (emit-stack-load rhs temporary-slot))
         #+(or)
         (:fp-128
          (emit `(lap:eor.16b ,lhs ,lhs ,rhs)
                `(lap:eor.16b ,rhs ,rhs ,lhs)
-               `(lap:eor.16b ,lhs ,lhs ,rhs)))))))
+               `(lap:eor.16b ,lhs ,lhs ,rhs))))))))
 
 (defmethod emit-lap (backend-function (instruction ir:spill-instruction) uses defs)
   (ecase (ir:virtual-register-kind (ir:spill-destination instruction))
