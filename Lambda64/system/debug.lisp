@@ -57,15 +57,6 @@ Returns NIL if the function captures no variables."
   (let ((return-address (1- (memref-signed-byte-64 (second frame) 1))))
     (multiple-value-bind (fn offset)
         (return-address-to-function return-address)
-      ;; HACK, replace RAISE-INVALID-ARGUMENT-ERROR with the real caller.
-      (when (eql fn #'raise-invalid-argument-error)
-        (loop
-           for (name location repr . plist) in (local-variables-at-offset fn offset)
-           when (eql name 'function)
-           do
-             (setf fn (read-frame-slot frame location repr)
-                   offset 0)
-             (return)))
       (values fn offset))))
 
 (defun decode-debug-register (reg)

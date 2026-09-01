@@ -168,6 +168,21 @@ Returns NIL if there is no THE form.")
                  (if-else form) (simp-form (if-else form)))
            form))))
 
+(defun pure-function-arity-p (name argument-count)
+  "Return true when NAME is called with a supported number of arguments."
+  (case name
+    ((consp sys.int::fixnump copy-list byte-size byte-position
+      mezzano.internals::%object-header-data length)
+     (= argument-count 1))
+    ((cons byte sys.int::binary-+ sys.int::binary--)
+     (= argument-count 2))
+    ((list)
+     t)
+    ((list*)
+     (plusp argument-count))
+    (otherwise
+     nil)))
+
 (defun pure-p (form)
   (let ((unwrapped (unwrap-the form)))
     (or (lambda-information-p unwrapped)
@@ -176,11 +191,12 @@ Returns NIL if there is no THE form.")
         (and (lexical-variable-p unwrapped)
              (localp unwrapped)
              (eql (lexical-variable-write-count unwrapped) 0))
-        ;; FIXME: This needs to check the number of arguments.
         (and (typep unwrapped 'ast-call)
              (or (member (ast-name unwrapped) *pure-functions* :test #'equal)
                  (and (match-optimize-settings unwrapped '((= safety 0)))
                       (member (ast-name unwrapped) *pure-functions-at-low-safety* :test #'equal)))
+             (pure-function-arity-p (ast-name unwrapped)
+                                    (length (ast-arguments unwrapped)))
              (every #'pure-p (ast-arguments unwrapped))))))
 
 (defmethod simp-form ((form ast-let))

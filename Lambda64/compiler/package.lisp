@@ -678,6 +678,10 @@
            #:make-dma-buffer
            #:release-dma-buffer
            #:dma-buffer-expired
+           #:dma-buffer-allocation-error
+           #:dma-buffer-allocation-error-length
+           #:dma-buffer-allocation-error-contiguous-p
+           #:dma-buffer-allocation-error-32-bit-only-p
            #:dma-buffer-name
            #:dma-buffer-length
            #:dma-buffer-expired-p

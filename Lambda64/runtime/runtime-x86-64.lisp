@@ -115,9 +115,10 @@
   bad-arguments
   (:gc :frame :incoming-arguments :rcx)
   (sys.lap-x86:lea64 :rbx (:rip (+ (- ENTRY-POINT 16) #.sys.int::+tag-object+)))
+  (:gc :frame :incoming-arguments :rcx)
+  (sys.lap-x86:call (:named-call sys.int::raise-invalid-argument-error))
   (sys.lap-x86:leave)
-  (:gc :no-frame :layout #*0 :incoming-arguments :rcx)
-  (sys.lap-x86:jmp (:named-call sys.int::raise-invalid-argument-error)))
+  (sys.lap-x86:ret))
 
 (sys.int::define-lap-function sys.int::values-simple-vector ((simple-vector))
   "Returns the elements of SIMPLE-VECTOR as multiple values."
@@ -210,8 +211,9 @@
   bad-arguments
   (:gc :frame :incoming-arguments :rcx)
   (sys.lap-x86:lea64 :rbx (:rip (+ (- ENTRY-POINT 16) #.sys.int::+tag-object+)))
-  (:gc :no-frame :layout #*0 :incoming-arguments :rcx)
-  (sys.lap-x86:jmp (:named-call sys.int::raise-invalid-argument-error)))
+  (sys.lap-x86:call (:named-call sys.int::raise-invalid-argument-error))
+  (sys.lap-x86:leave)
+  (sys.lap-x86:ret))
 
 ;; (defun eql (x y)
 ;;   (or (eq x y)
@@ -301,7 +303,8 @@
   BAD-ARGUMENTS
   (:gc :no-frame :layout #*0 :incoming-arguments :rcx)
   (sys.lap-x86:lea64 :rbx (:rip (+ (- ENTRY-POINT 16) #.sys.int::+tag-object+)))
-  (sys.lap-x86:jmp (:named-call sys.int::raise-invalid-argument-error)))
+  (sys.lap-x86:call (:named-call sys.int::raise-invalid-argument-error))
+  (sys.lap-x86:ret))
 
 ;;; Support function for APPLY.
 ;;; Takes a function & a list of arguments.

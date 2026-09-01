@@ -20,6 +20,16 @@
                                                      :uncached)))
 
 (defconstant +dma-buffer-guard-size+ #x200000)
+
+(define-condition dma-buffer-allocation-error (error storage-condition)
+  ((length :initarg :length :reader dma-buffer-allocation-error-length)
+   (contiguous :initarg :contiguous :reader dma-buffer-allocation-error-contiguous-p)
+   (32-bit-only :initarg :32-bit-only :reader dma-buffer-allocation-error-32-bit-only-p))
+  (:report (lambda (condition stream)
+             (format stream "Unable to allocate DMA buffer of length ~D~@[ (contiguous)~]~@[ (32-bit-only)~]."
+                     (dma-buffer-allocation-error-length condition)
+                     (dma-buffer-allocation-error-contiguous-p condition)
+                     (dma-buffer-allocation-error-32-bit-only-p condition)))))
 (sys.int::defglobal *dma-buffer-virtual-address-bump*)
 
 (defun make-dma-buffer (length &key name persistent contiguous 32-bit (cache-mode :write-back) (errorp t))
@@ -252,11 +262,14 @@ This function allocates. The :AREA argument determines where the list is allocat
                                                 :32-bit-only 32-bit
                                                 :type :transient-dma-buffer)))
            (when (not frame)
-             ;; FIXME: What kind of error to signal here?
              ;; TODO: Should this call into the pager to try to convince it
-             ;; to free up some memory?
+             ;; to free up some memory? The physical allocator currently has
+             ;; no pager-reclaim hook, so preserve its non-blocking failure.
              (when errorp
-               (error "Unable to allocate dma buffer of length ~D" length))
+               (error 'dma-buffer-allocation-error
+                      :length length
+                      :contiguous contiguous
+                      :32-bit-only 32-bit))
              (return-from alloc-sg-vec nil))
            (setf (svref sg-vec 0) (ash frame 12)
                  (svref sg-vec 1) length)
@@ -298,7 +311,10 @@ This function allocates. The :AREA argument determines where the list is allocat
                         (when (eql attempt 1)
                           ;; Can't get any smaller than this.
                           (when errorp
-                            (error "Unable to allocate dma buffer of length ~D" length))
+                            (error 'dma-buffer-allocation-error
+                                   :length length
+                                   :contiguous contiguous
+                                   :32-bit-only 32-bit))
                           (return-from alloc-sg-vec nil))
                         (setf attempt (ceiling attempt 2)))
                      (decf n-frames-remaining attempt)

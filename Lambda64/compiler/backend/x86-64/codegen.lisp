@@ -186,11 +186,12 @@
                ;; object and put that in RBX.
                (when (not (c:lambda-information-environment-arg (ir::ast backend-function)))
                  (emit `(lap:lea64 :rbx (:rip (+ (- entry-point 16) ,sys.int::+tag-object+)))))
-               ;; Tail call through to RAISE-INVALID-ARGUMENT-ERROR, leaving
-               ;; the arguments in place.
-               (emit `(lap:leave)
-                     `(:gc :no-frame :incoming-arguments :rcx :layout #*0)
-                     `(lap:jmp (:named-call sys.int::raise-invalid-argument-error))
+               ;; Keep this frame while entering RAISE-INVALID-ARGUMENT-ERROR.
+               ;; A tail call would hide the wronged function from backtraces.
+               (emit `(:gc :frame :incoming-arguments :rcx)
+                     `(lap:call (:named-call sys.int::raise-invalid-argument-error))
+                     `(lap:leave)
+                     `(lap:ret)
                      args-ok)
                (emit-gc-info :incoming-arguments :rcx)))
         (cond ((ir:argument-setup-rest instruction)

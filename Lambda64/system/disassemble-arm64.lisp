@@ -228,8 +228,12 @@
                                               (decode-fp (ldb +rt+ word) 1))
                                              ((and (eql size 0) (logbitp 1 opc))
                                               (decode-fp (ldb +rt+ word) 2)))
-                                       ;; FIXME: Register decode here is wrong
-                                       (decode-gp64 (ldb +rt+ word)))
+                                       ;; Byte, halfword, and word loads/stores use Wt,
+                                       ;; except opc=2 sign-extending forms whose destination is Xt.
+                                       (if (or (eql size 3)
+                                               (eql opc 2))
+                                           (decode-gp64 (ldb +rt+ word))
+                                           (decode-gp32 (ldb +rt+ word))))
                                    address))))
 
 ;; Load/store register (register offset)
