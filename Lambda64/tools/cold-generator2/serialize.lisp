@@ -79,6 +79,11 @@
    (%stack-bump :initform 0 :accessor image-stack-bump)
    (%stack-total :initform 0 :accessor image-stack-total)
    (%stack-bases :initform (make-hash-table) :reader image-stack-bases)
+   ;; Newly allocated objects are initialized by an explicit work queue.  This
+   ;; avoids exhausting the host stack on long cons chains while preserving
+   ;; sharing because allocation is registered before enqueueing.
+   (%initialization-queue :initform (make-array 64 :adjustable t :fill-pointer 0)
+                          :reader image-initialization-queue)
    (%finalizedp :initform nil :reader image-finalized-p)
    (%initial-stack-pointer :reader image-initial-stack-pointer)))
 
@@ -109,8 +114,18 @@ Must not call SERIALIZE-OBJECT."))
       (return-from serialize-object existing)))
   (let ((value (allocate-object object image environment)))
     (setf (gethash object (image-object-values image)) value)
-    (initialize-object object value image environment)
+    (vector-push-extend (list object value environment)
+                        (image-initialization-queue image))
     value))
+
+(defun drain-initialization-queue (image)
+  "Initialize all allocated objects without recursive host calls."
+  (let ((queue (image-initialization-queue image)))
+    (loop for index from 0 below (fill-pointer queue)
+          for item = (aref queue index)
+          do (destructuring-bind (object value environment) item
+               (initialize-object object value image environment)))
+    (setf (fill-pointer queue) 0)))
 
 (defun allocate (n-words image area-name tag)
   (when (image-finalized-p image)
@@ -390,7 +405,6 @@ Must not call SERIALIZE-OBJECT."))
                            (object-slot image object-value (+ 1 word)))
                       (ldb (byte 8 (* byte 8)) value)))))))))
 
-;; TODO: Avoid recursing down lists. Customize SERIALIZE-OBJECT.
 (defmethod allocate-object ((object cons) image environment)
   (let ((area (env:object-area environment object)))
     (ecase area
@@ -1052,6 +1066,7 @@ the cold serializer without duplicating their definitions here."
     ;; file together.
     (env:do-all-environment-symbols (symbol environment)
       (serialize-object symbol image environment))
+    (drain-initialization-queue image)
     ;; Tell the GC the area sizes.
     (finalize-areas image environment)
     (post-serialize-image-for-target image environment (env:environment-target environment))
