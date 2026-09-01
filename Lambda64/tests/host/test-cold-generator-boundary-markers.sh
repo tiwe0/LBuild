@@ -37,7 +37,10 @@ packed = (size << 6) | (position << 19)
 assert (packed >> 6) & 0x1FFF == size
 assert (packed >> 19) & 0x1FFFFFFFFFFF == position
 assert 'FIXME: Need to include an initfunction' not in clos
-assert ':initfunction (let ((slot slot))' in clos
+# Structure-slot initfunctions are host-only helpers and must not be serialized
+# into the target image as closures.
+assert 'Structure slot initfunctions are' in clos
+assert ':initfunction nil' in clos
 assert '(initfunction :initform nil :initarg :initfunction)' in classes
 assert 'defun host-make-standard-environment' in environment
 assert 'defun cross-intern' in environment
