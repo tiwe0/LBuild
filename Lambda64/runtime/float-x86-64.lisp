@@ -89,7 +89,8 @@
     (:positive-infinity +mxcsr-rounding-mode-positive-infinity+)
     (:zero +mxcsr-rounding-mode-zero+)))
 
-;; TODO: Figure out the operation and operands.
+;; MXCSR is sampled by the trap handler; ARG is the backend trap payload and
+;; is intentionally ignored because the exception class lives in MXCSR flags.
 (defun mezzano.runtime::%raise-simd-exception (arg)
   (declare (ignore arg))
   (let ((mxcsr (%mxcsr)))

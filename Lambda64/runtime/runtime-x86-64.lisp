@@ -805,7 +805,8 @@ the GC must be deferred during FILL-WORDS."
   ;; Check for overflow.
   ;; Shift bits from INTEGER into :RSI and check if it stops matching the
   ;; extended sign.
-  ;; TODO: This could be cleverer, do the shift and construct the bignum.
+  ;; Overflow takes the canonical slow path, which allocates and normalizes
+  ;; any bignum result instead of duplicating allocator/GC invariants here.
   (sys.lap-x86:shld64 :rsi :rax :cl) ; High bits
   (sys.lap-x86:cmp64 :rsi :rdx)
   (sys.lap-x86:jne DO-BIG-SHIFT) ; overflow occured.

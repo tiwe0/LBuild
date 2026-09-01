@@ -341,7 +341,8 @@
   (mezzano.lap.arm64:asr :x11 :x11 :x12)
   ;; Compare with sign bits, if both the same then we're good.
   (mezzano.lap.arm64:subs :xzr :x9 :x11)
-  ;; TODO: Could be a bit clever and construct the bignum result directly here.
+  ;; Overflow takes the canonical slow path, which allocates and normalizes
+  ;; any bignum result instead of duplicating allocator/GC invariants here.
   (mezzano.lap.arm64:b.ne DO-BIG-SHIFT)
   ;; Finally do the shift.
   (mezzano.lap.arm64:lsl :x0 :x0 :x10)

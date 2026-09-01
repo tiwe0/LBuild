@@ -296,8 +296,9 @@
                    ;; This makes it more positive.
                    ,(if swap-args nil t)))))))))
 
-;; TODO: These should directly create a bignum, blat the value directly in,
-;; and then canonicalize the result.
+;; The portable path decodes the IEEE significand and delegates integer
+;; normalization to ASH.  A direct bignum write is an optional optimization;
+;; preserving this path keeps all integer canonicalization in one place.
 (defun %%truncate-short-float-to-integer (short-float)
   (let* ((bits (sys.int::%short-float-as-integer short-float))
          (sig (logior (ldb (byte 11 0) bits)
