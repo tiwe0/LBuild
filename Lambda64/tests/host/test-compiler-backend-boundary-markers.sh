@@ -16,9 +16,9 @@ checks={
  '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
 }
 for ident,(rel,marker) in checks.items():
- src=(root/'Lambda64'/rel).read_text()
+ src=(root/rel).read_text()
  if marker not in src: raise SystemExit(f'TF-WI-{ident} marker unexpectedly missing')
- spec=(root/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
+ spec=(root.parent/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
  for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
   if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
 print('compiler backend TODO/FIXME boundary contracts passed')
