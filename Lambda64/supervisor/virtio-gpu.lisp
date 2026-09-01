@@ -594,7 +594,10 @@ must not be allocated by virgl.")
         (when (not successp)
           (sup:debug-print-line "virtio-gpu: Unable to create framebuffer resource: " error)
           (return-from virtio::virtio-gpu-register nil)))
-      ;; TODO: Support discontigious framebuffer.
+      ;; RESOURCE_ATTACH_BACKING carries an array of entries, but this path
+      ;; emits exactly one entry and video-set-framebuffer requires one
+      ;; contiguous physical base. Keep the DMA allocation contiguous until
+      ;; variable-entry payloads and scatter/gather scanout plumbing exist.
       (let* ((framebuffer-size (* width height 4))
              (framebuffer-dma-buffer (sup:make-dma-buffer framebuffer-size
                                                           :name gpu
