@@ -345,7 +345,9 @@ thread states & call-stacks."
            (dotimes (i (or repeat 1))
              (funcall function)))
       (setf mezzano.runtime::*enable-allocation-profiling* nil))
-    ;; TODO: Unify format with normal profiling.
+    ;; Allocation profiles intentionally use a compact nested triple vector
+    ;; (function, bytes, children), consumed by GENERATE-ALLOCATION-FLAME-GRAPH.
+    ;; Normal sampling profiles use PROFILE-DATA and have different semantics.
     raw-buffer))
 
 (defun save-profile (path profile &key (verbosity :report) order-by)
