@@ -16,8 +16,6 @@ checks={
  '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
  '0009':('compiler/backend/arm64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0010':('compiler/backend/arm64/codegen.lisp','FIXME: Support more than 2047 arguments (subs immediate limit).'),
- '0011':('compiler/backend/arm64/codegen.lisp','FIXME: This is wildly wrong and will cause the GC to lose live values.'),
- '0012':('compiler/backend/arm64/codegen.lisp',"FIXME: Fuckin' stop doing this!!!"),
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
  '0014':('compiler/backend/arm64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
  '0032':('compiler/backend/x86-64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
@@ -25,6 +23,20 @@ checks={
 for ident,(rel,marker) in checks.items():
  src=(root/rel).read_text()
  if marker not in src: raise SystemExit(f'TF-WI-{ident} marker unexpectedly missing')
+ spec=(root.parent/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
+ for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
+  if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
+
+# TF-WI-0011/0012 are resolved by the GC-safe stack-slot swap lowering.
+# Keep their active specs available for cold-image follow-up, but reject a
+# regression that restores either unsafe marker into the implementation.
+resolved={
+ '0011':('compiler/backend/arm64/codegen.lisp','FIXME: This is wildly wrong and will cause the GC to lose live values.'),
+ '0012':('compiler/backend/arm64/codegen.lisp',"FIXME: Fuckin' stop doing this!!!"),
+}
+for ident,(rel,legacy_marker) in resolved.items():
+ src=(root/rel).read_text()
+ if legacy_marker in src: raise SystemExit(f'TF-WI-{ident} unsafe marker unexpectedly restored')
  spec=(root.parent/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
  for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
   if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
