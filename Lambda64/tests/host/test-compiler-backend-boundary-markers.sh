@@ -14,8 +14,6 @@ checks={
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
  '0032':('compiler/backend/x86-64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0033':('compiler/backend/x86-64/codegen.lisp','FIXME: Emit jump table as trailer.'),
- '0040':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
- '0041':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
 }
 for ident,(rel,marker) in checks.items():
  src=(root/rel).read_text()
@@ -53,6 +51,8 @@ resolved={
  '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
  '0034':('compiler/backend/x86-64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
  '0035':('compiler/backend/x86-64/codegen.lisp','TODO: Do this without a temporary integer register.'),
+ '0040':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
+ '0041':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
  '0014':('compiler/backend/arm64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
 }
 for ident,(rel,legacy_marker) in resolved.items():

@@ -451,17 +451,29 @@
     (:sse
      (emit `(lap:movdqu ,(ir:fill-destination instruction) ,(effective-address (ir:fill-source instruction)))))))
 
+(defun byte-register-operand (operand)
+  ;; Byte-width object predicates use virtual integer registers.  Once RA has
+  ;; assigned a physical register, select its architectural low-byte alias.
+  (if (and (symbolp operand)
+           (eql (lap::reg-class operand) :gpr-64))
+      (lap::convert-width operand 8)
+      operand))
+
 (defmethod emit-lap (backend-function (instruction x86-instruction) uses defs)
   (when (x86-instruction-prefix instruction)
     (emit (x86-instruction-prefix instruction)))
-  (let ((real-operands (loop
+  (let* ((opcode (x86-instruction-opcode instruction))
+         (byte-opcode-p (member opcode '(lap:mov8 lap:sub8 lap:and8 lap:cmp8)))
+         (real-operands (loop
                           for op in (x86-instruction-operands instruction)
                           collect (cond ((and (consp op) (eql (first op) :literal/128))
                                          (fetch-literal/128 (second op)))
                                         ((and (consp op) (eql (first op) :literal))
                                          (fetch-literal (second op)))
+                                        (byte-opcode-p
+                                         (byte-register-operand op))
                                         (t op)))))
-    (emit (list* (x86-instruction-opcode instruction) real-operands))))
+    (emit (list* opcode real-operands))))
 
 (defmethod emit-lap (backend-function (instruction x86-cmpxchg-instruction) uses defs)
   (emit `(lap:mov64 :rax ,(x86-cmpxchg-old instruction)))

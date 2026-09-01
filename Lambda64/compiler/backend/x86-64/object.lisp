@@ -46,48 +46,48 @@
                                                             (:constant last-tag (typep last-tag '(unsigned-byte 6))))
                                                            :be
                                                            :has-wrapper nil)
-  ;; TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.
-  (emit (make-instance 'x86-instruction
-                       :opcode 'lap:mov8
-                       :operands (list :al `(:object ,object -1))
-                       :inputs (list object)
-                       :outputs (list :rax)))
+  (let ((temp (make-instance 'ir:virtual-register :kind :integer)))
+    (emit (make-instance 'x86-instruction
+                         :opcode 'lap:mov8
+                         :operands (list temp `(:object ,object -1))
+                         :inputs (list object)
+                         :outputs (list temp)))
   (when (not (eql first-tag 0))
     (emit (make-instance 'x86-instruction
                          :opcode 'lap:sub8
-                         :operands (list :al (ash first-tag
-                                                  sys.int::+object-type-shift+))
-                         :inputs (list :rax)
-                         :outputs (list :rax))))
+                         :operands (list temp (ash first-tag
+                                                     sys.int::+object-type-shift+))
+                         :inputs (list temp)
+                         :outputs (list temp))))
   (emit (make-instance 'x86-instruction
                        :opcode 'lap:cmp8
-                       :operands (list :al (ash (- last-tag first-tag)
-                                                sys.int::+object-type-shift+))
-                       :inputs (list :rax)
-                       :outputs '())))
+                       :operands (list temp (ash (- last-tag first-tag)
+                                                  sys.int::+object-type-shift+))
+                       :inputs (list temp)
+                       :outputs '())))))
 
 (define-builtin sys.int::%instance-or-funcallable-instance-p ((object) :e)
-  ;; TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.
-  (emit (make-instance 'x86-instruction
-                       :opcode 'lap:mov8
-                       :operands (list :al `(:object ,object -1))
-                       :inputs (list object)
-                       :outputs (list :rax)))
+  (let ((temp (make-instance 'ir:virtual-register :kind :integer)))
+    (emit (make-instance 'x86-instruction
+                         :opcode 'lap:mov8
+                         :operands (list temp `(:object ,object -1))
+                         :inputs (list object)
+                         :outputs (list temp)))
   (emit (make-instance 'x86-instruction
                        :opcode 'lap:and8
-                       :operands (list :al (ash (logxor (1- (ash 1 sys.int::+object-type-size+))
+                       :operands (list temp (ash (logxor (1- (ash 1 sys.int::+object-type-size+))
                                                         sys.int::+object-tag-instance+
                                                         sys.int::+object-tag-funcallable-instance+)
                                                 sys.int::+object-type-shift+))
-                       :inputs (list :rax)
-                       :outputs (list :rax)))
+                       :inputs (list temp)
+                       :outputs (list temp)))
   (emit (make-instance 'x86-instruction
                        :opcode 'lap:cmp8
-                       :operands (list :al (ash (logand sys.int::+object-tag-instance+
+                       :operands (list temp (ash (logand sys.int::+object-tag-instance+
                                                         sys.int::+object-tag-funcallable-instance+)
                                                 sys.int::+object-type-shift+))
-                       :inputs (list :rax)
-                       :outputs '())))
+                       :inputs (list temp)
+                       :outputs '())))))
 
 (define-builtin sys.int::%object-tag ((object) result)
   (emit (make-instance 'x86-instruction
