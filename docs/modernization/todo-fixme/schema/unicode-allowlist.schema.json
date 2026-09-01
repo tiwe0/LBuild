@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "file-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "path": {
+      "const": "Lambda64/tools/UnicodeData.txt"
+    },
+    "record-count": {
+      "const": 29
+    },
+    "records": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "codepoint": {
+            "pattern": "^[0-9A-F]{4,6}$",
+            "type": "string"
+          },
+          "full-record": {
+            "type": "string"
+          },
+          "record-sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "codepoint",
+          "full-record",
+          "record-sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "path",
+    "file-sha256",
+    "record-count",
+    "records"
+  ],
+  "schema-version": 1,
+  "title": "Unicode data false-positive allowlist",
+  "type": "object"
+}

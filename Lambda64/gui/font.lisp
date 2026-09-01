@@ -140,8 +140,13 @@
 (defgeneric character-to-glyph (font character))
 
 (defmethod character-to-glyph ((font font) character)
-  ;; TODO: char-bits
+  ;; Keyboard modifiers are input state, not glyph identity. Keep the cache
+  ;; indexed by the base Unicode character and do not pass modifier-bearing
+  ;; characters to the Unifont fallback, which requires zero character bits.
   (let* ((code (char-code character))
+         (character (if (zerop (sys.int::char-bits character))
+                        character
+                        (code-char code)))
          (plane (ash code -16))
          (cell (logand code #xFFFF))
          (main-cache (glyph-cache font))

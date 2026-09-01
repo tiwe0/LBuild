@@ -198,17 +198,48 @@
                       ,setter))))))
     `(progn ,(frob pairs) nil)))
 
-;; FIXME...
-(defmacro rotatef (&rest places)
+(defmacro rotatef (&environment env &rest places)
   (when places
-    (let ((results '()))
-      (dolist (x places)
-        (push x results)
-        (push x results))
-      (push (first places) results)
-      (setf results (nreverse results))
-      (setf (first results) 'psetf)
-      `(progn ,results 'nil))))
+    (labels ((entry-vars (entry) (first entry))
+             (entry-vals (entry) (second entry))
+             (entry-stores (entry) (third entry))
+             (entry-setter (entry) (fourth entry))
+             (entry-getter (entry) (fifth entry))
+             (entry-old-values (entry) (sixth entry)))
+      (let* ((entries
+               (loop
+                  for place in places
+                  collect
+                  (multiple-value-bind (vars vals stores setter getter)
+                      (get-setf-expansion place env)
+                    (list vars vals stores setter getter
+                          (loop for store in stores
+                                collect (gensym (format nil "OLD-~A" store)))))))
+             (store-bindings
+               (loop
+                  for entry in entries
+                  for next-entry in (append (rest entries) (list (first entries)))
+                  append (loop
+                           for store in (entry-stores entry)
+                           for index from 0
+                           collect (list store
+                                         (nth index (entry-old-values next-entry)))))))
+        (labels ((bind-getters (remaining)
+                   (if (endp remaining)
+                       `(let ,store-bindings
+                          ,@(loop for entry in entries collect (entry-setter entry))
+                          nil)
+                       (let ((entry (first remaining)))
+                         `(multiple-value-bind ,(entry-old-values entry)
+                              ,(entry-getter entry)
+                            ,(bind-getters (rest remaining)))))))
+          `(let* ,(loop
+                     for entry in entries
+                     append (loop
+                              for var in (entry-vars entry)
+                              for val in (entry-vals entry)
+                              collect `(,var ,val)))
+             ,(bind-getters entries)))))))
 
 (defmacro defsetf (access-fn &rest args)
   (cond ((listp (first args))

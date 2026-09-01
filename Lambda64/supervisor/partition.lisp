@@ -4,7 +4,9 @@
 
 (declaim (inline memref-ub16/le memref-ub16/be))
 (defun memref-ub16/le (base &optional (index 0))
-  (sys.int::memref-unsigned-byte-16 base index))
+  (let ((address (+ base (* index 2))))
+    (logior (sys.int::memref-unsigned-byte-8 address)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 1)) 8))))
 
 (defun memref-ub16/be (base)
   (logior (ash (sys.int::memref-unsigned-byte-8 base) 8)
@@ -12,7 +14,11 @@
 
 (declaim (inline memref-ub32/le memref-ub32/be))
 (defun memref-ub32/le (base &optional (index 0))
-  (sys.int::memref-unsigned-byte-32 base index))
+  (let ((address (+ base (* index 4))))
+    (logior (sys.int::memref-unsigned-byte-8 address)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 1)) 8)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 2)) 16)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 3)) 24))))
 
 (defun memref-ub32/be (base)
   (logior (ash (sys.int::memref-unsigned-byte-8 base) 24)
@@ -22,7 +28,15 @@
 
 (declaim (inline memref-ub64/le memref-ub64/be))
 (defun memref-ub64/le (base &optional (index 0))
-  (sys.int::memref-unsigned-byte-64 base index))
+  (let ((address (+ base (* index 8))))
+    (logior (sys.int::memref-unsigned-byte-8 address)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 1)) 8)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 2)) 16)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 3)) 24)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 4)) 32)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 5)) 40)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 6)) 48)
+            (ash (sys.int::memref-unsigned-byte-8 (+ address 7)) 56))))
 
 (defun memref-ub64/be (base)
   (logior (ash (sys.int::memref-unsigned-byte-8 base) 56)
@@ -79,64 +93,176 @@
      do (return nil)
      finally (return t)))
 
-(defun process-gpt-partition-table-entry (disk offset i entry-size sector-buffer)
-  (let ((sector-size (disk-sector-size disk)))
-    (multiple-value-bind (sector-index byte-offset)
-        (truncate (* i entry-size) sector-size)
-      (when (not (disk-read disk (+ offset sector-index) 1 sector-buffer))
-        (panic "Unable to read GPT entry block " (+ offset sector-index) " on disk " disk))
-      (let* ((base (+ sector-buffer byte-offset))
-             (first-lba (memref-ub64/le (+ base #x20) 0))
-             (last-lba (memref-ub64/le (+ base #x28) 0))
-             (size (- (1+ last-lba) first-lba))
-             (the-system-id nil))
-        (when (loop
-                 for i from 0 below 16
-                 for system-id = (sys.int::memref-unsigned-byte-8 (+ base i) 0)
-                            then (sys.int::memref-unsigned-byte-8 (+ base i) 0)
-                 when (not (eql system-id 0))
-                 do
-                   (setf the-system-id system-id)
-                   (return t)
-                 finally (return nil))
-          (debug-print-line "Detected partition " i " on disk " disk ". Start: " first-lba " size: " size)
-          (register-disk (make-partition :disk disk
-                                         :offset first-lba
-                                         :id i
-                                         :type the-system-id)
-                         (disk-writable-p disk)
-                         size
-                         sector-size
-                         (disk-max-transfer disk)
-                         #'read-disk-partition
-                         #'write-disk-partition
-                         #'flush-disk-partition
-                         nil))))))
+(defun gpt-crc32 (base n-bytes &optional zero-offset zero-length)
+  (let ((crc #xffffffff)
+        (zero-end (and zero-offset (+ zero-offset zero-length))))
+    (dotimes (i n-bytes (logxor crc #xffffffff))
+      (let ((octet (if (and zero-offset (<= zero-offset i) (< i zero-end))
+                       0
+                       (sys.int::memref-unsigned-byte-8 (+ base i)))))
+        (setf crc (logxor crc octet))
+        (dotimes (bit 8)
+          (declare (ignore bit))
+          (setf crc (if (logbitp 0 crc)
+                        (logxor (ash crc -1) #xedb88320)
+                        (ash crc -1))))))))
+
+(defun read-gpt-sectors (disk lba n-sectors buffer)
+  (let* ((sector-size (disk-sector-size disk))
+         (max-transfer (disk-max-transfer disk))
+         (transfer-limit (if (and max-transfer (plusp max-transfer))
+                             max-transfer
+                             n-sectors)))
+    (loop with remaining = n-sectors
+          with sector = lba
+          with address = buffer
+          while (plusp remaining)
+          for count = (min remaining transfer-limit)
+          do (when (not (disk-read disk sector count address))
+               (return nil))
+             (incf sector count)
+             (incf address (* count sector-size))
+             (decf remaining count)
+          finally (return t))))
+
+(defun gpt-guid-present-p (base)
+  (dotimes (i 16 nil)
+    (when (not (zerop (sys.int::memref-unsigned-byte-8 (+ base i))))
+      (return t))))
+
+(defun gpt-entry-system-id (base)
+  (dotimes (i 16 nil)
+    (let ((system-id (sys.int::memref-unsigned-byte-8 (+ base i))))
+      (when (not (zerop system-id))
+        (return system-id)))))
+
+(defun valid-gpt-entry-size-p (entry-size)
+  (when (and (>= entry-size 128)
+             (zerop (mod entry-size 128)))
+    (let ((multiple (truncate entry-size 128)))
+      (zerop (logand multiple (1- multiple))))))
+
+(defun gpt-partition-overlap-p (first-lba last-lba partitions)
+  (some (lambda (partition)
+          (let ((other-first (third partition))
+                (other-last (fourth partition)))
+            (not (or (< last-lba other-first)
+                     (> first-lba other-last)))))
+        partitions))
+
+(defun collect-gpt-partitions (buffer num-entries entry-size first-usable last-usable)
+  (let ((partitions '()))
+    (dotimes (i num-entries (values (nreverse partitions) t))
+      (let* ((base (+ buffer (* i entry-size)))
+             (system-id (gpt-entry-system-id base)))
+        (when system-id
+          (let ((first-lba (memref-ub64/le (+ base #x20)))
+                (last-lba (memref-ub64/le (+ base #x28))))
+            (when (or (not (gpt-guid-present-p (+ base #x10)))
+                      (< first-lba first-usable)
+                      (> first-lba last-lba)
+                      (> last-lba last-usable)
+                      (gpt-partition-overlap-p
+                       first-lba last-lba partitions))
+              (return-from collect-gpt-partitions (values nil nil)))
+            (push (list i system-id first-lba last-lba) partitions)))))))
+
+(defun process-gpt-partition-table-entry (disk descriptor)
+  (destructuring-bind (i system-id first-lba last-lba) descriptor
+    (let ((size (1+ (- last-lba first-lba))))
+      (debug-print-line "Detected partition " i " on disk " disk
+                        ". Start: " first-lba " size: " size)
+      (register-disk (make-partition :disk disk
+                                     :offset first-lba
+                                     :id i
+                                     :type system-id)
+                     (disk-writable-p disk)
+                     size
+                     (disk-sector-size disk)
+                     (disk-max-transfer disk)
+                     #'read-disk-partition
+                     #'write-disk-partition
+                     #'flush-disk-partition
+                     nil))))
+
+(defun process-gpt-header (disk header-buffer header-lba)
+  (when (not (check-gpt-header-signature header-buffer))
+    (return-from process-gpt-header nil))
+  (let* ((sector-size (disk-sector-size disk))
+         (n-sectors (disk-n-sectors disk))
+         (primaryp (eql header-lba 1))
+         (revision (memref-ub32/le (+ header-buffer #x08)))
+         (header-size (memref-ub32/le (+ header-buffer #x0c)))
+         (header-crc (memref-ub32/le (+ header-buffer #x10)))
+         (reserved (memref-ub32/le (+ header-buffer #x14)))
+         (current-lba (memref-ub64/le (+ header-buffer #x18)))
+         (backup-lba (memref-ub64/le (+ header-buffer #x20)))
+         (first-usable (memref-ub64/le (+ header-buffer #x28)))
+         (last-usable (memref-ub64/le (+ header-buffer #x30)))
+         (table-lba (memref-ub64/le (+ header-buffer #x48)))
+         (num-entries (memref-ub32/le (+ header-buffer #x50)))
+         (entry-size (memref-ub32/le (+ header-buffer #x54)))
+         (table-crc (memref-ub32/le (+ header-buffer #x58)))
+         (table-bytes (* num-entries entry-size))
+         (table-sectors (ceiling table-bytes sector-size))
+         (table-end (+ table-lba table-sectors)))
+    (when (or (not (eql revision #x00010000))
+              (< header-size 92)
+              (> header-size sector-size)
+              (not (zerop reserved))
+              (not (gpt-guid-present-p (+ header-buffer #x38)))
+              (not (eql current-lba header-lba))
+              (not (eql backup-lba (if primaryp (1- n-sectors) 1)))
+              (> first-usable last-usable)
+              (>= last-usable (1- n-sectors))
+              (zerop num-entries)
+              (not (valid-gpt-entry-size-p entry-size))
+              (not (typep table-bytes 'fixnum))
+              (zerop table-sectors)
+              (>= table-lba n-sectors)
+              (> table-end n-sectors)
+              (if primaryp
+                  (or (< table-lba 2)
+                      (> table-end first-usable))
+                  (or (<= table-lba last-usable)
+                      (> table-end header-lba)))
+              (not (eql header-crc
+                        (gpt-crc32 header-buffer header-size #x10 4))))
+      (return-from process-gpt-header nil))
+    (with-pages (table-buffer (ceiling table-bytes +4k-page-size+))
+      (when (not table-buffer)
+        (return-from process-gpt-header nil))
+      (when (not (read-gpt-sectors disk table-lba table-sectors table-buffer))
+        (return-from process-gpt-header nil))
+      (when (not (eql table-crc (gpt-crc32 table-buffer table-bytes)))
+        (return-from process-gpt-header nil))
+      (multiple-value-bind (partitions validp)
+          (collect-gpt-partitions table-buffer num-entries entry-size
+                                  first-usable last-usable)
+        (when (not validp)
+          (return-from process-gpt-header nil))
+        (debug-print-line "Detected " (if primaryp "primary" "backup")
+                          " GPT on disk " disk)
+        (dolist (partition partitions)
+          (process-gpt-partition-table-entry disk partition))
+        t))))
 
 (defun detect-gpt-partition-table (disk)
   (let* ((sector-size (disk-sector-size disk))
          (pages-per-sector (ceiling sector-size +4k-page-size+))
-         (found-table-p nil))
-    (with-pages (page-addr pages-per-sector
-                           :mandatory-p "DETECT-DISK disk buffer")
-      ;; GPT is stored on LBA 1, protective MBR on LBA 0.
-      (when (not (disk-read disk 1 1 page-addr))
+         (n-sectors (disk-n-sectors disk)))
+    (when (or (< sector-size 512) (< n-sectors 2))
+      (return-from detect-gpt-partition-table nil))
+    (with-pages (header-buffer pages-per-sector
+                               :mandatory-p "DETECT-DISK disk buffer")
+      ;; The primary header is at LBA 1. If it or its entry array fails
+      ;; validation, retry using the standard backup header at the final LBA.
+      (when (not (disk-read disk 1 1 header-buffer))
         (panic "Unable to read second block on disk " disk))
-      (when (and (>= sector-size 512)
-                 (check-gpt-header-signature page-addr))
-        ;; Found, scan partitions.
-        ;; FIXME: Deal with GPT tables that exceed the sector size.
-        ;; FIXME: Little-endian reads.
-        ;; FIXME: Verify the CRC & other fields.
-        (setf found-table-p t)
-        (debug-print-line "Detected GPT on disk " disk)
-        (let ((offset (memref-ub64/le (+ page-addr #x48)))
-              (num-entries (memref-ub32/le (+ page-addr #x50)))
-              (entry-size (memref-ub32/le (+ page-addr #x54))))
-          (dotimes (i num-entries)
-            (process-gpt-partition-table-entry
-             disk offset i entry-size page-addr))))
-      found-table-p)))
+      (or (process-gpt-header disk header-buffer 1)
+          (let ((backup-lba (1- n-sectors)))
+            (and (disk-read disk backup-lba 1 header-buffer)
+                 (process-gpt-header disk header-buffer backup-lba)))))))
 
 (defun decode-ebr (page-addr)
   (if (and (eql (sys.int::memref-unsigned-byte-8 page-addr #x1FE) #x55)
@@ -167,7 +293,8 @@
                 (start-lba (memref-ub32/le (+ page-addr #x1BE (* 16 i) 8)))
                 (size (memref-ub32/le (+ page-addr #x1BE (* 16 i) 12))))
             (when (and (not (eql part-type 0))
-                       (not (eql size 0)))
+                       (not (eql size 0))
+                       (not (eql part-type #xee)))
               (debug-print-line "Detected partition " i " on disk " disk ". Start: " start-lba " size: " size)
               (register-disk (make-partition :disk disk
                                              :offset start-lba

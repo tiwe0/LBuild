@@ -24,8 +24,10 @@
    (intermediate-characters :initform '())
    (parameters :initform (make-array 16 :initial-element nil))
    (n-parameters :initform 0)
+   (parameter-separator-count :initform 0)
    (escape-sequence :initform '())
    (osc-buffer :initform (make-array 100 :fill-pointer 0 :element-type 'character))
+   (response-function :initarg :response-function :reader response-function)
 
    ;; Terminal state.
    (font :initarg :font :reader font)
@@ -76,22 +78,25 @@
   "Translate a character into a form suitable for consumption by a terminal client.
 Calls FN with each output character."
   (declare (ignore terminal))
-  (cond ((or (mezzano.internals::char-bit character :meta)
-             (mezzano.internals::char-bit character :super)
+  (cond ((or (mezzano.internals::char-bit character :super)
              (mezzano.internals::char-bit character :hyper))
          ;; Ignore weird characters.
-         ;; FIXME: Do stuff with META.
          )
-        ((mezzano.internals::char-bit character :control)
-         ;; Control character. Translate to C0 control set or ignore.
-         ;; Wonder how to type the C1 control characters...
-         (when (<= #x3F (char-code (char-upcase character)) #x5F)
-           (funcall fn (code-char (logand (- (char-code (char-upcase character)) 64) #x7F)))))
         (t
-         (let ((translated (assoc character *xterm-translations*)))
-           (cond (translated
-                  (mapc fn (second translated)))
-                 (t (funcall fn character)))))))
+         (when (mezzano.internals::char-bit character :meta)
+           (funcall fn #\Escape)
+           (setf character
+                 (mezzano.internals::set-char-bit character :meta nil)))
+         (cond ((mezzano.internals::char-bit character :control)
+                ;; Control character. Translate to C0 control set or ignore.
+                ;; Wonder how to type the C1 control characters...
+                (when (<= #x3F (char-code (char-upcase character)) #x5F)
+                  (funcall fn (code-char (logand (- (char-code (char-upcase character)) 64) #x7F)))))
+               (t
+                (let ((translated (assoc character *xterm-translations*)))
+                  (cond (translated
+                         (mapc fn (second translated)))
+                        (t (funcall fn character)))))))))
 
 (defun soft-reset (terminal)
   "Reset the terminal to the default state."
@@ -209,6 +214,9 @@ Calls FN with each output character."
         *xterm-default-background-colour*)))
 
 (defmethod initialize-instance :after ((term xterm-terminal) &key width height)
+  (unless (and (slot-boundp term 'response-function)
+               (functionp (response-function term)))
+    (error "XTerm terminals require a response function."))
   (let* ((fb (terminal-framebuffer term)))
     (setf (slot-value term 'width) (truncate width (cell-pixel-width term))
           (slot-value term 'height) (truncate height (cell-pixel-height term)))
@@ -788,6 +796,7 @@ Calls FN with each output character."
 
 (defun xterm-clear (terminal)
   (setf (slot-value terminal 'n-parameters) 0
+        (slot-value terminal 'parameter-separator-count) 0
         (slot-value terminal 'intermediate-characters) '())
   (fill (slot-value terminal 'parameters) nil))
 
@@ -800,6 +809,7 @@ Calls FN with each output character."
 (defun xterm-param (terminal char)
   (when (< (slot-value terminal 'n-parameters) 16)
     (cond ((eql char #\;)
+           (incf (slot-value terminal 'parameter-separator-count))
            (incf (slot-value terminal 'n-parameters)))
           (t
            (unless (aref (slot-value terminal 'parameters)
@@ -864,10 +874,16 @@ Calls FN with each output character."
            (case char
              (#\c ; Device Attributes (DA).
               (cond ((or (null params)
-                         (eql (first params) 0))
-                     ;; FIXME: Respond with something.
-                     ;; \e[?1;2c  "I am a VT100 terminal with AVO."
-                     )
+                         (and (equal params '(0))
+                              (zerop (slot-value
+                                      terminal
+                                      'parameter-separator-count))))
+                     ;; "I am a VT100 terminal with Advanced Video Option."
+                     (map nil
+                          (response-function terminal)
+                          (concatenate 'string
+                                       (string #\Escape)
+                                       "[?1;2c")))
                     (t (report-unknown-escape terminal))))
              (#\d ; Line Position Absolute (VPA).
               (setf (y-pos terminal) (1- (or (first params) 1))))

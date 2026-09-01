@@ -196,6 +196,15 @@
      (let* ((car (stack-pop loader))
             (cdr (stack-pop loader)))
        (env:cons-in-area car cdr (loader-environment loader) (loader-allocation-area loader))))
+    (#.sys.int::+llf-allocate-cons+
+     (env:cons-in-area nil nil (loader-environment loader) (loader-allocation-area loader)))
+    (#.sys.int::+llf-initialize-cons+
+     (let ((cdr (stack-pop loader))
+           (car (stack-pop loader))
+           (cons (stack-pop loader)))
+       (setf (car cons) car
+             (cdr cons) cdr)
+       cons))
     (#.sys.int::+llf-symbol+
      (let* ((name (load-string loader))
             (package (load-string loader)))

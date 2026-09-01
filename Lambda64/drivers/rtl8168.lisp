@@ -239,10 +239,18 @@
        (when (not (logbitp +rtl8168-CR-RST+ (rtl8168-reg/8 nic +rtl8168-register-CR+)))
          (return))
        (sleep 0.01)
-     finally
+       finally
        (debug-print-line "RTL8168 reset timed out!")
        (return-from rtl8168-reset nil))
-  ;; FIXME: Verify that all buffers were allocated.
+  (unless (and (rtl8168-tx-ring-phys nic)
+               (rtl8168-tx-ring-virt nic)
+               (rtl8168-rx-ring-phys nic)
+               (rtl8168-rx-ring-virt nic)
+               (rtl8168-tx-bounce-phys nic)
+               (rtl8168-tx-bounce-virt nic)
+               (rtl8168-rx-bounce-phys nic)
+               (rtl8168-rx-bounce-virt nic))
+    (error "RTL8168 DMA buffers are not fully allocated."))
   ;; Reset the TX ring.
   (dotimes (i +rtl8168-n-tx-descriptors+)
     (setf (rtl8168-tx-desc-flags nic i) 0

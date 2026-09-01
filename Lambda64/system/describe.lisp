@@ -40,7 +40,7 @@
            (format stream "  ~A names the macro ~S~%" object (macro-function object)))
           (t
            (finfo nil)))
-    ;; TODO: Setf & Cas expanders.
+    ;; Report SETF and CAS expanders using their canonical function names.
     (finfo 'setf)
     (finfo 'cas))
   (when (symbol-plist object)
@@ -170,10 +170,17 @@
          (dotimes (i (%n-bignum-fragments object))
            (format stream "  ~D: ~16,'0X~%" i (%bignum-fragment object i))))))
 
+(defun %describe-cons-kind (object)
+  (cond ((null (dotted-list-length object))
+         "circular list")
+        ((null (cdr (last object)))
+         "proper list")
+        (t
+         "dotted list")))
+
 (defmethod describe-object ((object cons) stream)
-  ;; TODO: Identify proper/dotted/circular lists.
-  (format stream "~S is a list, with address ~X~%"
-          object (lisp-object-address object)))
+  (format stream "~S is a ~A, with address ~X~%"
+          object (%describe-cons-kind object) (lisp-object-address object)))
 
 (defmethod describe-object ((object standard-object) stream)
   (format stream "A Closette object~%~

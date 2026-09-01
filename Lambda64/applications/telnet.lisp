@@ -58,67 +58,74 @@ party to perform, the indicated option.")
 (defconstant +subnegotiation-send+ 1)
 (defconstant +subnegotiation-info+ 2)
 
+(defconstant +telnet-subnegotiation-payload-limit+ 4096
+  "Maximum number of octets retained for one Telnet subnegotiation.")
+
 (defun vector-ub8 (&rest elements)
   (declare (dynamic-extent elements))
   (make-array (length elements) :element-type '(unsigned-byte 8) :initial-contents elements))
 
-(defun read-subnegotiation (connection)
-  (let ((bytes (make-array 8 :element-type '(unsigned-byte 8)
-                           :adjustable t :fill-pointer 0))
-        (byte nil))
-    (loop (setf byte (read-byte connection))
-       (cond ((eql byte +command-iac+)
-              (case (read-byte connection)
-                (#.+command-iac+
-                 (vector-push-extend +command-iac+ bytes))
-                (#.+command-se+
-                 (return bytes))))
-             (t (vector-push-extend byte bytes))))))
+(defun %telnet-iac-escape-octets (octets)
+  "Quote every Telnet IAC byte in the data payload OCTETS."
+  (let ((iac-count (count +command-iac+ octets)))
+    (if (zerop iac-count)
+        octets
+        (let ((result (make-array (+ (length octets) iac-count)
+                                  :element-type '(unsigned-byte 8)))
+              (output-index 0))
+          (loop :for byte :across octets
+                :do (setf (aref result output-index) byte)
+                    (incf output-index)
+                    (when (= byte +command-iac+)
+                      (setf (aref result output-index) byte)
+                      (incf output-index)))
+          result))))
 
-(defun telnet-command (telnet command)
+(defun %telnet-encode-output (character)
+  "Encode CHARACTER as UTF-8 Telnet data."
+  (%telnet-iac-escape-octets
+   (mezzano.internals::encode-utf-8-string
+    (string character)
+    :eol-style :lf)))
+
+(defun %make-telnet-input-external-format ()
+  (make-instance 'mezzano.internals::external-format
+                 :coding :utf-8
+                 :eol-style :lf))
+
+(defun telnet-command (telnet command &optional option data)
+  (declare (ignore data))
   (let ((connection (connection telnet)))
     (case command
       (#.+command-sb+
-       (let ((option (read-byte connection))
-             (data (read-subnegotiation connection)))
-         (case option
-           (#.+option-terminal-type+
-            (write-sequence (apply 'vector-ub8
-                                   (append (list +command-iac+ +command-sb+ +option-terminal-type+ +subnegotiation-is+)
-                                           (map 'list 'char-code (terminal-type telnet))
-                                           (list +command-iac+ +command-se+)))
-                            connection))
-           (t (write-sequence (vector-ub8 +command-iac+ +command-sb+ option +subnegotiation-is+
-                                          +command-iac+ +command-se+)
-                              connection)))))
+       (case option
+         (#.+option-terminal-type+
+          (write-sequence (apply 'vector-ub8
+                                 (append (list +command-iac+ +command-sb+ +option-terminal-type+ +subnegotiation-is+)
+                                         (map 'list 'char-code (terminal-type telnet))
+                                         (list +command-iac+ +command-se+)))
+                          connection))
+         (t (write-sequence (vector-ub8 +command-iac+ +command-sb+ option +subnegotiation-is+
+                                        +command-iac+ +command-se+)
+                            connection))))
       (#.+command-do+
-       (let ((option (read-byte connection)))
-         (case option
-           (#.+option-terminal-type+
-            (write-sequence (vector-ub8 +command-iac+ +command-will+
-                                        +option-terminal-type+)
-                            connection))
-           (#.+option-window-size+
-            (when (eql option +option-window-size+)
-              (setf (do-window-size-updates telnet) t))
-            (send-window-size telnet))
-           (t (write-sequence (vector-ub8 +command-iac+ +command-wont+ option)
-                              connection)))))
+       (case option
+         (#.+option-terminal-type+
+          (write-sequence (vector-ub8 +command-iac+ +command-will+
+                                      +option-terminal-type+)
+                          connection))
+         (#.+option-window-size+
+          (setf (do-window-size-updates telnet) t)
+          (send-window-size telnet))
+         (t (write-sequence (vector-ub8 +command-iac+ +command-wont+ option)
+                            connection))))
       (#.+command-dont+
-       (let ((option (read-byte connection)))
-         (when (eql option +option-window-size+)
-           (setf (do-window-size-updates telnet) nil))
-         (write-sequence (vector-ub8 +command-iac+ +command-wont+
-                                     option)
-                         connection)))
-      (#.+command-will+
-       (read-byte connection)
-       #+nil(write-sequence (vector-ub8 +command-iac+ +command-wont+
-                                        (read-byte connection))))
-      (#.+command-wont+
-       (read-byte connection)
-       #+nil(write-sequence (vector-ub8 +command-iac+ +command-wont+
-                                        (read-byte connection)))))))
+       (when (eql option +option-window-size+)
+         (setf (do-window-size-updates telnet) nil))
+       (write-sequence (vector-ub8 +command-iac+ +command-wont+
+                                   option)
+                       connection))
+      ((#.+command-will+ #.+command-wont+)))))
 
 (defun send-window-size (telnet)
   (write-sequence (apply 'vector-ub8
@@ -139,8 +146,38 @@ party to perform, the indicated option.")
    (%terminal-type :initarg :terminal-type :reader terminal-type)
    (%connection :initarg :connection :accessor connection)
    (%do-window-size-updates :initarg :do-window-size-updates :accessor do-window-size-updates)
-   (%last-was-cr :initform nil :accessor last-was-cr))
+   (%last-was-cr :initform nil :accessor last-was-cr)
+   (%telnet-framing-state :initform :data :accessor telnet-framing-state)
+   (%telnet-pending-command :initform nil :accessor telnet-pending-command)
+   (%telnet-subnegotiation-option :initform nil :accessor telnet-subnegotiation-option)
+   (%telnet-subnegotiation-data
+    :initform (make-array +telnet-subnegotiation-payload-limit+
+                          :element-type '(unsigned-byte 8)
+                          :fill-pointer 0)
+    :accessor telnet-subnegotiation-data)
+   (%telnet-input-external-format
+    :initform (%make-telnet-input-external-format)
+    :accessor telnet-input-external-format)
+   (%telnet-receive-eof-p :initform nil :accessor telnet-receive-eof-p))
   (:default-initargs :connection nil))
+
+(defun %make-telnet-response-bridge ()
+  "Return an XTerm response callback and the setter for its client cell.
+
+The callback deliberately signals when invoked before the client has been
+bound or while it has no connection. Terminal protocol replies must never be
+silently discarded."
+  (let ((client nil))
+    (values
+     (lambda (character)
+       (unless client
+         (error "The Telnet terminal response client is not bound."))
+       (let ((stream (connection client)))
+         (unless stream
+           (error "The Telnet terminal response connection is not open."))
+         (write-sequence (%telnet-encode-output character) stream)))
+     (lambda (new-client)
+       (setf client new-client)))))
 
 (defun compute-telnet-window-size (font cwidth cheight)
   ;; Make a fake frame to get the frame size.
@@ -202,10 +239,9 @@ party to perform, the indicated option.")
     (mezzano.gui.xterm:input-translate (xterm telnet)
                                        (mezzano.gui.compositor:key-key event)
                                        (lambda (ch)
-                                         ;; FIXME: Translate to UTF-8 here.
-                                         (when (eql ch (code-char +command-iac+))
-                                           (write-byte +command-iac+ (connection telnet)))
-                                         (write-byte (char-code ch) (connection telnet))))))
+                                         (write-sequence
+                                          (%telnet-encode-output ch)
+                                          (connection telnet))))))
 
 (defmethod dispatch-event (app (event mezzano.gui.compositor:resize-request-event))
   (let ((old-width (mezzano.gui.compositor:width (window app)))
@@ -240,24 +276,134 @@ party to perform, the indicated option.")
   (when (do-window-size-updates app)
     (send-window-size app)))
 
-(defun telnet-receive-byte (telnet byte)
-  ;; FIXME: Translate from UTF-8 here. Can't use read-char on the tcp-stream because
-  ;; terminal IO happens on top of the binary telnet layer.
-  ;; FIXME: This does sync reads of the telnet stream when processing commands.
-  ;; If the server doesn't play nice this will block the UI.
-  (cond ((eql byte +command-iac+)
-         (let ((command (read-byte (connection telnet))))
-           (if (eql command +command-iac+)
-               (mezzano.gui.xterm:receive-char (xterm telnet) (code-char +command-iac+))
-               (telnet-command telnet command))))
-        ((eql byte #x0D) ; CR
-         (setf (last-was-cr telnet) t)
-         (mezzano.gui.xterm:receive-char (xterm telnet) (code-char byte)))
-        ((and (last-was-cr telnet) (eql byte #x00))
+(defun %telnet-reset-subnegotiation (telnet &optional (next-state :data))
+  (setf (telnet-subnegotiation-option telnet) nil
+        (fill-pointer (telnet-subnegotiation-data telnet)) 0
+        (telnet-framing-state telnet) next-state))
+
+(defun %telnet-deliver-decoder-result (telnet result)
+  (cond ((characterp result)
+         (mezzano.gui.xterm:receive-char (xterm telnet) result))
+        ((eql result :error)
+         (mezzano.gui.xterm:receive-char
+          (xterm telnet)
+          #\Replacement_Character))))
+
+(defun %telnet-receive-data-byte (telnet byte)
+  ;; NVT CR/NUL processing is applied to framed data before UTF-8 decoding.
+  (cond ((and (last-was-cr telnet) (eql byte #x00))
          (setf (last-was-cr telnet) nil))
         (t
-         (setf (last-was-cr telnet) nil)
-         (mezzano.gui.xterm:receive-char (xterm telnet) (code-char byte)))))
+         (setf (last-was-cr telnet) (eql byte #x0D))
+         ;; The external-format decoder may have a resynchronised character
+         ;; ready before it consumes BYTE. Keep driving until BYTE has been
+         ;; consumed and the decoder has no immediately available result.
+         (let ((byte-consumed nil))
+           (loop
+              for result =
+                (mezzano.internals::external-format-read-internal-code-point
+                 (telnet-input-external-format telnet)
+                 byte
+                 (lambda (source)
+                   (cond (byte-consumed nil)
+                         (t
+                          (setf byte-consumed t)
+                          source))))
+              while result
+              do (%telnet-deliver-decoder-result telnet result))))))
+
+(defun %telnet-begin-subnegotiation (telnet)
+  (setf (telnet-pending-command telnet) nil)
+  (%telnet-reset-subnegotiation telnet :sb-option))
+
+(defun %telnet-append-subnegotiation-byte (telnet byte next-state)
+  (cond ((vector-push byte (telnet-subnegotiation-data telnet))
+         (setf (telnet-framing-state telnet) next-state))
+        (t
+         ;; Discard through IAC SE. This keeps storage bounded and prevents the
+         ;; remainder of an oversized control payload from becoming user data.
+         (%telnet-reset-subnegotiation telnet :sb-discard))))
+
+(defun %telnet-process-iac-command (telnet command)
+  (case command
+    (#.+command-iac+
+     (setf (telnet-framing-state telnet) :data)
+     (%telnet-receive-data-byte telnet +command-iac+))
+    ((#.+command-do+ #.+command-dont+ #.+command-will+ #.+command-wont+)
+     (setf (telnet-pending-command telnet) command
+           (telnet-framing-state telnet) :negotiation-option))
+    (#.+command-sb+
+     (%telnet-begin-subnegotiation telnet))
+    (t
+     (setf (telnet-framing-state telnet) :data)
+     (telnet-command telnet command))))
+
+(defun telnet-receive-byte (telnet byte)
+  "Consume at most BYTE without performing any reads from the connection."
+  (when byte
+    (setf (telnet-receive-eof-p telnet) nil)
+    (ecase (telnet-framing-state telnet)
+      (:data
+       (cond ((eql byte +command-iac+)
+              (setf (telnet-framing-state telnet) :iac))
+             (t
+              (%telnet-receive-data-byte telnet byte))))
+      (:iac
+       (%telnet-process-iac-command telnet byte))
+      (:negotiation-option
+       (let ((command (telnet-pending-command telnet)))
+         (setf (telnet-pending-command telnet) nil
+               (telnet-framing-state telnet) :data)
+         (telnet-command telnet command byte)))
+      (:sb-option
+       (setf (telnet-subnegotiation-option telnet) byte
+             (telnet-framing-state telnet) :sb-data))
+      (:sb-data
+       (cond ((eql byte +command-iac+)
+              (setf (telnet-framing-state telnet) :sb-iac))
+             (t
+              (%telnet-append-subnegotiation-byte telnet byte :sb-data))))
+      (:sb-iac
+       (case byte
+         (#.+command-iac+
+          (%telnet-append-subnegotiation-byte telnet +command-iac+ :sb-data))
+         (#.+command-se+
+          (let ((option (telnet-subnegotiation-option telnet))
+                (data (telnet-subnegotiation-data telnet)))
+            (setf (telnet-framing-state telnet) :data)
+            (telnet-command telnet +command-sb+ option data)
+            (%telnet-reset-subnegotiation telnet)))
+         (t
+          ;; Drop the malformed SB and interpret BYTE as the command that
+          ;; followed its IAC, giving the top-level parser a clean resync.
+          (%telnet-reset-subnegotiation telnet :iac)
+          (%telnet-process-iac-command telnet byte))))
+      (:sb-discard
+       (when (eql byte +command-iac+)
+         (setf (telnet-framing-state telnet) :sb-discard-iac)))
+      (:sb-discard-iac
+       (cond ((eql byte +command-se+)
+              (%telnet-reset-subnegotiation telnet))
+             (t
+              (setf (telnet-framing-state telnet) :sb-discard)))))))
+
+(defun telnet-receive-eof (telnet)
+  "Finalize pending UTF-8 input and reset incomplete Telnet framing once."
+  (unless (telnet-receive-eof-p telnet)
+    (%telnet-deliver-decoder-result
+     telnet
+     (mezzano.internals::external-format-read-internal-code-point
+      (telnet-input-external-format telnet)
+      nil
+      (lambda (source)
+        (declare (ignore source))
+        :eof)))
+    (setf (telnet-input-external-format telnet)
+          (%make-telnet-input-external-format)
+          (telnet-pending-command telnet) nil
+          (last-was-cr telnet) nil
+          (telnet-receive-eof-p telnet) t)
+    (%telnet-reset-subnegotiation telnet)))
 
 (defvar *server-shortcuts*
   '(("nao" "nethack.alt.org")))
@@ -292,7 +438,9 @@ party to perform, the indicated option.")
         (multiple-value-bind (window-width window-height xterm-width xterm-height)
             (compute-telnet-window-size font cwidth cheight)
           (mezzano.gui.compositor:with-window (window fifo window-width window-height)
-            (let* ((framebuffer (mezzano.gui.compositor:window-buffer window))
+            (let* ((response-bridge (multiple-value-list
+                                      (%make-telnet-response-bridge)))
+                   (framebuffer (mezzano.gui.compositor:window-buffer window))
                    (frame (make-instance 'mezzano.gui.widgets:frame
                                          :framebuffer framebuffer
                                          :title "Telnet"
@@ -307,7 +455,8 @@ party to perform, the indicated option.")
                                          :y (nth-value 2 (mezzano.gui.widgets:frame-size frame))
                                          :width xterm-width
                                          :height xterm-height
-                                         :damage-function (mezzano.gui.widgets:default-damage-function window)))
+                                         :damage-function (mezzano.gui.widgets:default-damage-function window)
+                                         :response-function (first response-bridge)))
                    (telnet (make-instance 'telnet-client
                                           :fifo fifo
                                           :window window
@@ -315,6 +464,7 @@ party to perform, the indicated option.")
                                           :frame frame
                                           :xterm xterm
                                           :terminal-type terminal-type)))
+              (funcall (second response-bridge) telnet)
               (setf (mezzano.gui.compositor:name window) telnet)
               (mezzano.gui.widgets:draw-frame frame)
               (mezzano.gui.compositor:damage-window window
@@ -345,6 +495,7 @@ party to perform, the indicated option.")
                            while byte
                            do (cond ((eql byte :eof)
                                      ;; Server disconnected
+                                     (telnet-receive-eof telnet)
                                      (setf (connection telnet) nil)
                                      (telnet-write-string telnet (format nil "~%Disconnected from server"))
                                      (return))

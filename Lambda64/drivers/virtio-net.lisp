@@ -106,8 +106,8 @@ and then some alignment.")
            ;; All packets have been processed, notify the device that buffers are available.
            (virtio:virtio-kick dev +virtio-net-receiveq+)
            (return)))
-       ;; Allocate a buffer. Try to minimize the amount of work done in a device-access region, hence the dropping in and out.
-       ;; TODO: Get the packet size correct.
+       ;; Allocate a maximum-sized buffer before entering the device-access
+       ;; region. It is trimmed to the descriptor's actual payload length below.
        (let ((packet (make-array +virtio-net-mtu+ :element-type '(unsigned-byte 8))))
          (with-virito-net-access (nic)
            (let* ((ring-entry (rem (virtio:virtqueue-last-seen-used rx-queue)
@@ -118,11 +118,16 @@ and then some alignment.")
                   ;; to offsets in the RX buffer.
                   (rx-offset (+ (* (truncate id 2) +virtio-net-rx-buffer-size+) +virtio-net-hdr-size+)))
              ;;(format t "RX ring entry: ~D  buffer: ~D  len ~D~%" ring-entry id len)
-             ;; Extract the packet!
-             (dotimes (i (- len +virtio-net-hdr-size+))
-               (setf (aref packet i) (sys.int::memref-unsigned-byte-8 (virtio-net-rx-virt nic)
-                                                                      (+ rx-offset i))))
-             (incf (virtio-net-total-rx-bytes nic) +virtio-net-mtu+)
+             (let ((packet-size (- len +virtio-net-hdr-size+)))
+               (when (or (< packet-size 0) (> packet-size +virtio-net-mtu+))
+                 (error "Invalid virtio-net packet size ~D (descriptor length ~D)."
+                        packet-size len))
+               ;; Extract the packet!
+               (dotimes (i packet-size)
+                 (setf (aref packet i) (sys.int::memref-unsigned-byte-8 (virtio-net-rx-virt nic)
+                                                                        (+ rx-offset i))))
+               (setf packet (adjust-array packet packet-size))
+               (incf (virtio-net-total-rx-bytes nic) packet-size))
              (incf (virtio-net-total-rx-packets nic))
              ;; Re-add the descriptor to the avail ring.
              (virtio:virtio-ring-add-to-avail-ring rx-queue id)

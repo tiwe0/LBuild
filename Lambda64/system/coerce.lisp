@@ -37,10 +37,8 @@
              element-type)))))
 )
 
-(defun coerce (object result-type)
-  (when (or (eql result-type 't)
-            (typep object result-type))
-    (return-from coerce object))
+(declaim (inline %coerce-value))
+(defun %coerce-value (object result-type)
   (cond ((subtypep result-type 'list)
          (map 'list 'identity object))
         ((subtypep result-type 'vector)
@@ -83,6 +81,12 @@
          (character object))
         (t (error 'unknown-coercion :object object :type result-type))))
 
+(defun coerce (object result-type)
+  (if (or (eql result-type 't)
+          (typep object result-type))
+      object
+      (%coerce-value object result-type)))
+
 (define-compiler-macro coerce (&whole whole object result-type &environment env)
   ;; Result type must be known.
   (cond ((or (eql result-type 't)
@@ -95,42 +99,6 @@
          (return-from coerce whole)))
   (let ((obj (gensym "OBJECT")))
     `(let ((,obj ,object))
-       ;; TODO: Dedup this against the COERCE function.
-       ,(cond ((subtypep result-type 'list env)
-               `(map 'list 'identity ,obj))
-              ((subtypep result-type 'vector env)
-               (let ((element-type (coerce-vector-element-type result-type env)))
-                 (if element-type
-                     `(progn
-                        (check-type ,obj sequence)
-                        (make-array (length ,obj)
-                                    :element-type ',element-type
-                                    :initial-contents ,obj))
-                     (return-from coerce whole))))
-              ((subtypep result-type 'short-float)
-               `(float ,obj 1.0s0))
-              ((subtypep result-type 'single-float)
-               `(float ,obj 1.0f0))
-              ((subtypep result-type 'double-float)
-               `(float ,obj 1.0d0))
-              ((subtypep result-type 'long-float)
-               `(float ,obj 1.0l0))
-              ((subtypep result-type 'float)
-               `(float ,obj 1.0f0))
-              ((subtypep result-type '(complex short-float))
-               `(complex (float (realpart ,obj) 1.0s0) (float (imagpart ,obj) 1.0s0)))
-              ((subtypep result-type '(complex single-float))
-               `(complex (float (realpart ,obj) 1.0f0) (float (imagpart ,obj) 1.0f0)))
-              ((subtypep result-type '(complex double-float))
-               `(complex (float (realpart ,obj) 1.0d0) (float (imagpart ,obj) 1.0d0)))
-              ((subtypep result-type 'complex)
-               `(complex (realpart ,obj) (imagpart ,obj)))
-              ((subtypep result-type 'character)
-               `(character ,obj))
-              ((subtypep result-type 'function)
-               (return-from coerce whole))
-              (t
-               `(progn
-                  (when (not (typep ,obj ',result-type))
-                    (error 'unknown-coercion :object ,obj :type ',result-type))
-                  ,obj))))))
+       (if (typep ,obj ',result-type)
+           ,obj
+           (%coerce-value ,obj ',result-type)))))

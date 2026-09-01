@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseline-id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "baseline-product-input-manifest-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baseline-raw-occurrence-scan-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baseline-unicode-input-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "counts": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "documentation": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "logical-total": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "raw": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "data",
+        "documentation",
+        "logical-total",
+        "raw",
+        "source"
+      ],
+      "type": "object"
+    },
+    "created-at": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "frozen-at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance-freeze-head": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance-freeze-index-tree": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance-freeze-manifest-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance-freeze-tree": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mapping-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "occurrences-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase": {
+      "enum": [
+        "bootstrap",
+        "frozen"
+      ]
+    },
+    "scanner-bootstrap-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scanner-freeze-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schema-version": {
+      "const": 1
+    },
+    "source-baseline-head": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "type": "string"
+    },
+    "source-baseline-index-tree": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "type": "string"
+    },
+    "source-baseline-tree": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "type": "string"
+    },
+    "unicode-allowlist-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "work-items-identity-spec-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema-version",
+    "baseline-id",
+    "phase",
+    "created-at",
+    "frozen-at",
+    "source-baseline-head",
+    "source-baseline-tree",
+    "source-baseline-index-tree",
+    "baseline-product-input-manifest-sha256",
+    "baseline-raw-occurrence-scan-sha256",
+    "baseline-unicode-input-sha256",
+    "governance-freeze-head",
+    "governance-freeze-tree",
+    "governance-freeze-index-tree",
+    "governance-freeze-manifest-sha256",
+    "scanner-bootstrap-sha256",
+    "scanner-freeze-sha256",
+    "occurrences-sha256",
+    "work-items-identity-spec-sha256",
+    "mapping-sha256",
+    "unicode-allowlist-sha256",
+    "counts"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 TODO/FIXME baseline snapshot",
+  "type": "object"
+}

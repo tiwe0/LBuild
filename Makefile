@@ -103,6 +103,18 @@ test-codegen:
 test-fast: test-unit test-codegen
 	@echo "Local fast test layers passed"
 
+docs-check:
+	@python3 scripts/check-docs.py
+
+todo-fixme-check:
+	@python3 scripts/check-todo-fixme.py --verify
+
+lisp-style-check:
+	@$(LAMBDA64_ROOT)/tests/host/test-first-party-source-hygiene.sh
+	@$(LAMBDA64_ROOT)/tests/host/test-first-party-generic-declarations.sh
+
+style-check: lisp-style-check
+
 test-integration: test-fast test-image
 	@./scripts/run-local-test-matrix.sh \
 		--suite integration \
@@ -159,4 +171,4 @@ clean:
 	fi
 	rm -f "$(IMAGE_PATH)" "$(IMAGE_MAP)" "$(IMAGE_SYMBOL_TABLE)" "$(TEST_MANIFEST)"
 
-.PHONY: all cold-image test-image test-scripts test-unit test-codegen test-fast test-integration test-stress test-local test-all run-file-server deps asdf qemu qemu-arm64 kvm kvm-arm64 hvf hvf-arm64 clean
+.PHONY: all cold-image test-image test-scripts test-unit test-codegen test-fast docs-check todo-fixme-check lisp-style-check style-check test-integration test-stress test-local test-all run-file-server deps asdf qemu qemu-arm64 kvm kvm-arm64 hvf hvf-arm64 clean

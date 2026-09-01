@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseline-id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema-version": {
+      "const": 1
+    },
+    "statuses": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence-ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "history": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "actor": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "at": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "evidence-ids": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "to": {
+                  "enum": [
+                    "inventoried",
+                    "specified",
+                    "test-locked",
+                    "implemented",
+                    "verified"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to",
+                "at",
+                "actor",
+                "evidence-ids"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "lease-ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "inventoried",
+              "specified",
+              "test-locked",
+              "implemented",
+              "verified"
+            ]
+          },
+          "updated-at": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "updated-by": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "work-item-id": {
+            "pattern": "^TF-[A-Za-z0-9-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work-item-id",
+          "status",
+          "history",
+          "evidence-ids",
+          "lease-ids",
+          "updated-at",
+          "updated-by"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema-version",
+    "baseline-id",
+    "statuses"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 mutable work-item status ledger",
+  "type": "object"
+}

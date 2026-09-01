@@ -346,22 +346,15 @@
             `(let ,(mapcar #'list vars params)
                (funcall (symbol-function ',fn) xp ,(get-arg) ,colon ,atsign ,@ vars)))))))
 
-;; TODO: Process mincol,colinc,minpad,padchar.
 (defun impl-A/S (start end escape-value readably-is-nil)
   (declare (ignore end))
   (multiple-value-bind (colon atsign params)
       (parse-params start '(0 1 0 #\Space))
-    (declare (ignore atsign))
-    `(let ((*print-escape* ,escape-value)
-           ,@(when readably-is-nil
-               `((*print-readably* nil))))
-       ,@params
-       ,(if colon
-            `(let ((arg ,(get-arg)))
-               (if arg
-                   (write+ arg XP)
-                   (write-string++ "()" XP 0 2)))
-            `(write+ ,(get-arg) XP)))))
+    `(let ((the-params (list ,@params)))
+       (mezzano.format::format-printer-operation
+        XP ,(get-arg) (first the-params) (second the-params)
+        (third the-params) (fourth the-params)
+        ',atsign ',colon ,escape-value ',readably-is-nil))))
 
 (def-format-handler #\A (start end)
   (impl-A/S start end nil t))
@@ -412,20 +405,8 @@
     `(mezzano.format::format-character XP ,(get-arg) ',atsign ',colon)))
 
 (defun format-float (stream object params atsign colon)
-  (declare (ignore atsign colon))
-  (let ((w (first params))
-        (d (second params))
-        (k (or (third params) 0))
-        (overflowchar (fourth params))
-        (padchar (or (fifth params) #\Space)))
-    ;; TODO.
-    (declare (ignore d k overflowchar padchar))
-    (let ((*print-escape* nil)
-          (*print-readably* nil))
-      (if (realp object)
-          (mezzano.internals::write-float (float object) stream)
-          ;; Format as if by ~wD
-          (mezzano.format::format-integer stream object 10 (list w) nil nil)))))
+  "Render an XP ~F field through the shared early-FORMAT implementation."
+  (mezzano.format::format-fixed-float stream object params atsign colon))
 
 (def-format-handler #\F (start end)
   (declare (ignore end))
@@ -435,22 +416,8 @@
        (format-float XP ,(get-arg) the-params ',atsign ',colon))))
 
 (defun format-exponent (stream object params atsign colon)
-  (declare (ignore atsign colon))
-  (let ((w (first params))
-        (d (second params))
-        (e (third params))
-        (k (or (fourth params) 1))
-        (overflowchar (fifth params))
-        (padchar (or (sixth params) #\Space))
-        (exponentchar (seventh params)))
-    ;; TODO.
-    (declare (ignore d e k overflowchar padchar exponentchar))
-    (let ((*print-escape* nil)
-          (*print-readably* nil))
-      (if (realp object)
-          (mezzano.internals::write-float (float object) stream)
-          ;; Format as if by ~wD
-          (mezzano.format::format-integer stream object 10 (list w) nil nil)))))
+  "Render an XP ~E field through the shared early-FORMAT implementation."
+  (mezzano.format::format-exponent-float stream object params atsign colon))
 
 (def-format-handler #\E (start end)
   (declare (ignore end))
@@ -460,22 +427,8 @@
        (format-exponent XP ,(get-arg) the-params ',atsign ',colon))))
 
 (defun format-general-float (stream object params atsign colon)
-  (declare (ignore atsign colon))
-  (let ((w (first params))
-        (d (second params))
-        (e (third params))
-        (k (or (fourth params) 1))
-        (overflowchar (fifth params))
-        (padchar (or (sixth params) #\Space))
-        (exponentchar (seventh params)))
-    ;; TODO.
-    (declare (ignore d e k overflowchar padchar exponentchar))
-    (let ((*print-escape* nil)
-          (*print-readably* nil))
-      (if (realp object)
-          (mezzano.internals::write-float (float object) stream)
-          ;; Format as if by ~wD
-          (mezzano.format::format-integer stream object 10 (list w) nil nil)))))
+  "Render an XP ~G field through the shared early-FORMAT implementation."
+  (mezzano.format::format-general-float stream object params atsign colon))
 
 (def-format-handler #\G (start end)
   (declare (ignore end))
@@ -485,19 +438,8 @@
        (format-general-float XP ,(get-arg) the-params ',atsign ',colon))))
 
 (defun format-monetary (stream object params atsign colon)
-  (declare (ignore atsign colon))
-  (let ((d (or (first params) 2))
-        (e (or (second params) 1))
-        (w (or (third params) 0))
-        (padchar (or (fourth params) #\Space)))
-    ;; TODO.
-    (declare (ignore d e padchar))
-    (let ((*print-escape* nil)
-          (*print-readably* nil))
-      (if (realp object)
-          (mezzano.internals::write-float (float object) stream)
-          ;; Format as if by ~wD
-          (mezzano.format::format-integer stream object 10 (list w) nil nil)))))
+  "Render an XP ~$ field through the shared early-FORMAT implementation."
+  (mezzano.format::format-monetary-float stream object params atsign colon))
 
 (def-format-handler #\$ (start end)
   (declare (ignore end))
@@ -662,8 +604,7 @@
 
 (def-format-handler #\; (start end)
   (declare (ignore start))
-  (when (not *in-justify*)
-    (err 15 "~~; appears out of context" (1- end))))
+  (err 15 "~~; appears out of context" (1- end)))
 (def-format-handler #\] (start end) (declare (ignore start))
   (err 16 "Unmatched closing directive" (1- end)))
 (def-format-handler #\) (start end) (declare (ignore start))
@@ -713,12 +654,49 @@
       (handle-logical-block start end)
       (handle-standard-< start end)))
 
-(defvar *in-justify* t)
-;; TODO.
+(defun format-standard-justification (xp args initial control atsign colon
+                                      end-atsign params escape-tag
+                                      colon-escape-tag colon-arguments)
+  "Render a standard ~<...~> block with XP as the character output stream."
+  (let ((*standard-output* xp)
+        (mezzano.format::*format-argument-base* initial)
+        (mezzano.format::*format-escape-tag* escape-tag)
+        (mezzano.format::*format-colon-escape-tag* colon-escape-tag)
+        (mezzano.format::*format-colon-arguments* colon-arguments))
+    (mezzano.format::format-justification
+     args (mezzano.format::parse-format-control control)
+     atsign colon end-atsign params)))
+
 (defun handle-standard-< (start end)
-  (num-args-in-directive start end)
-  (let ((*in-justify* t))
-    `(progn ,@(compile-format (1+ (params-end start)) (directive-start end)))))
+  (multiple-value-bind (colon atsign params)
+      (parse-params start '(0 1 0 #\Space))
+    (let ((control (subseq *string*
+                           (1+ (params-end start))
+                           (directive-start end))))
+      `(let ((the-params (list ,@params))
+             (escape-tag (gensym "XP-FORMAT-ESCAPE-"))
+             (colon-escape-tag (gensym "XP-FORMAT-COLON-ESCAPE-")))
+         (multiple-value-bind (remaining escape)
+             (catch escape-tag
+               (multiple-value-bind (result colon-escaped)
+                   (catch colon-escape-tag
+                     (values
+                      (format-standard-justification
+                       XP ,(args) ,(initial) ,control ',atsign ',colon
+                       ',(atsignp (1- end)) the-params escape-tag
+                       colon-escape-tag
+                       ,(if (null *outer-end*)
+                            `(cdr ,(outer-args))
+                            (initial)))
+                      nil))
+                 (if colon-escaped
+                     (values result :colon)
+                     (values result nil))))
+           (setf ,(args) remaining)
+           (cond ((eq escape :colon)
+                  (return-from ,*outer-end* nil))
+                 (escape
+                  (return-from ,*inner-end* nil))))))))
 
 (defun num-args-in-directive (start end)
   (let ((n 0) c i j)

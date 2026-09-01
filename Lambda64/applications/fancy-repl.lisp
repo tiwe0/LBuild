@@ -6,6 +6,125 @@
 
 (in-package :mezzano.gui.fancy-repl)
 
+(defun %completion-character-kind (character syntax-type-function macro-character-function)
+  (let ((syntax (funcall syntax-type-function character)))
+    (cond ((eql syntax :whitespace) :whitespace)
+          ((eql syntax :single-escape) :single-escape)
+          ((eql syntax :multiple-escape) :multiple-escape)
+          (t
+           (multiple-value-bind (function non-terminating-p)
+               (funcall macro-character-function character)
+             (if (and function (not non-terminating-p))
+                 :terminating-macro
+                 :constituent))))))
+
+(defun %completion-token-bounds
+    (buffer cursor-position
+     &optional
+       (syntax-type-function #'mezzano.internals::readtable-syntax-type)
+       (macro-character-function #'get-macro-character))
+  "Return the reader-token bounds at CURSOR-POSITION, or NIL in text/comment syntax."
+  (check-type buffer string)
+  (check-type cursor-position (integer 0))
+  (when (> cursor-position (length buffer))
+    (error "Cursor position ~D is beyond a buffer of length ~D."
+           cursor-position (length buffer)))
+  (labels ((kind (character)
+             (%completion-character-kind character
+                                         syntax-type-function
+                                         macro-character-function))
+           (scan-string (position)
+             (let ((start position)
+                   (closedp nil))
+               (incf position)
+               (loop :while (< position (length buffer))
+                     :for character = (char buffer position)
+                     :for character-kind = (kind character)
+                     :do (cond ((eql character-kind :single-escape)
+                                (incf position (min 2 (- (length buffer) position))))
+                               ((and (char= character #\")
+                                     (eql character-kind :terminating-macro))
+                                (incf position)
+                                (setf closedp t)
+                                (return))
+                               (t (incf position))))
+               (values position
+                       (and (> cursor-position start)
+                            (if closedp
+                                (< cursor-position position)
+                                (<= cursor-position position))))))
+           (scan-comment (position)
+             (let ((start position))
+               (incf position)
+               (loop :while (< position (length buffer))
+                     :until (char= (char buffer position) #\Newline)
+                     :do (incf position))
+               (values position
+                       (and (> cursor-position start)
+                            (<= cursor-position position)))))
+           (scan-token (position)
+             (let ((start position)
+                   (multiple-escape-p nil))
+               (loop :while (< position (length buffer))
+                     :for character-kind = (kind (char buffer position))
+                     :do (cond ((eql character-kind :single-escape)
+                                (incf position (min 2 (- (length buffer) position))))
+                               ((eql character-kind :multiple-escape)
+                                (setf multiple-escape-p (not multiple-escape-p))
+                                (incf position))
+                               (multiple-escape-p
+                                (incf position))
+                               ((member character-kind '(:whitespace :terminating-macro))
+                                (return))
+                               (t (incf position))))
+               (values start position))))
+    (let ((position 0))
+      (loop :while (< position (length buffer))
+            :for character = (char buffer position)
+            :for character-kind = (kind character)
+            :do (cond ((eql character-kind :whitespace)
+                       (incf position))
+                      ((eql character-kind :terminating-macro)
+                       (cond ((char= character #\")
+                              (multiple-value-bind (next-position contains-cursor-p)
+                                  (scan-string position)
+                                (when contains-cursor-p
+                                  (return-from %completion-token-bounds nil))
+                                (setf position next-position)))
+                             ((char= character #\;)
+                              (multiple-value-bind (next-position contains-cursor-p)
+                                  (scan-comment position)
+                                (when contains-cursor-p
+                                  (return-from %completion-token-bounds nil))
+                                (setf position next-position)))
+                             (t (incf position))))
+                      (t
+                       (multiple-value-bind (start end) (scan-token position)
+                         (when (and (>= cursor-position start)
+                                    (<= cursor-position end))
+                           (return-from %completion-token-bounds
+                             (values start end)))
+                         (setf position end)))))
+      (values cursor-position cursor-position))))
+
+(defun %completion-package-marker
+    (buffer start end
+     &optional (syntax-type-function #'mezzano.internals::readtable-syntax-type))
+  "Return the first unescaped package marker between START and END."
+  (let ((position start)
+        (multiple-escape-p nil))
+    (loop :while (< position end)
+          :for character = (char buffer position)
+          :for syntax = (funcall syntax-type-function character)
+          :do (cond ((eql syntax :single-escape)
+                     (incf position (min 2 (- end position))))
+                    ((eql syntax :multiple-escape)
+                     (setf multiple-escape-p (not multiple-escape-p))
+                     (incf position))
+                    ((and (not multiple-escape-p) (char= character #\:))
+                     (return position))
+                    (t (incf position))))))
+
 (defclass fancy-repl (mezzano.line-editor:line-edit-mixin
                       mezzano.gray:fundamental-character-input-stream
                       mezzano.gui.widgets:text-widget)
@@ -19,33 +138,12 @@
                      :window-closed nil))
 
 (defmethod mezzano.line-editor:compute-completions ((stream fancy-repl) buffer cursor-position)
-  (let ((start cursor-position)
-        (end cursor-position))
-    ;; Walk backwards, looking for the start of the completable thing.
-    ;; TODO: Deal with non-terminating macro characters, escape characters and strings.
-    (loop
-       (when (zerop start)
-         (return))
-       (let ((ch (char buffer (1- start))))
-         (when (eql (mezzano.internals::readtable-syntax-type ch) :whitespace)
-           (return))
-         (when (get-macro-character ch)
-           (return)))
-       (decf start))
-    ;; Find the end.
-    (loop
-       (when (eql end (length buffer))
-         (return))
-       (let ((ch (char buffer end)))
-         (when (get-macro-character ch)
-           (return))
-         (when (eql (mezzano.internals::readtable-syntax-type ch) :whitespace)
-           (return)))
-       (incf end))
+  (multiple-value-bind (start end)
+      (%completion-token-bounds buffer cursor-position)
+    (unless start
+      (return-from mezzano.line-editor:compute-completions nil))
     ;; Divide into package and symbol.
-    (let* ((marker (position #\: buffer
-                             :start start
-                             :end end))
+    (let* ((marker (%completion-package-marker buffer start end))
            (internalp (or (not marker)
                           (and (< (1+ marker) end)
                                (eql (char buffer (1+ marker)) #\:))))

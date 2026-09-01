@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseline-id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "occurrences": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "content-sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "context-sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^TF-[a-z0-9-]+$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "source",
+              "documentation",
+              "data-false-positive"
+            ]
+          },
+          "line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "marker": {
+            "enum": [
+              "TODO",
+              "FIXME"
+            ]
+          },
+          "path": {
+            "pattern": "^Lambda64/",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "line",
+          "marker",
+          "text",
+          "kind",
+          "content-sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "baseline-id",
+    "occurrences"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 TODO/FIXME occurrence ledger",
+  "type": "object"
+}

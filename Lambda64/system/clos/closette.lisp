@@ -157,15 +157,17 @@ the old or new values are expected to be unbound.")
      do (return (svref instance-slots (1+ i)))
      finally (return nil)))
 
-;; TODO: This and FAST-SLOT-WRITE should use the correct slot access function.
-;; It doesn't really matter though, as instances and funcallable instances
-;; are all compatible.
+(defun instance-slot-access-function (instance)
+  (if (sys.int::funcallable-instance-p instance)
+      #'funcallable-standard-instance-access
+      #'standard-instance-access))
+
 (defun fast-slot-read (instance location slot-definition)
   (multiple-value-bind (slots layout)
       ;; This is required in case the instance is obsolete.
       (fetch-up-to-date-instance-slots-and-layout instance)
     (declare (ignore layout))
-    (let* ((val (standard-instance-access slots location)))
+    (let* ((val (funcall (instance-slot-access-function slots) slots location)))
       (if (eq *secret-unbound-value* val)
           (values (slot-unbound (class-of instance)
                                 instance
@@ -180,7 +182,10 @@ the old or new values are expected to be unbound.")
       ;; This is required in case the instance is obsolete.
       (fetch-up-to-date-instance-slots-and-layout instance)
     (declare (ignore layout))
-    (setf (standard-instance-access slots location) new-value)))
+    (funcall (if (sys.int::funcallable-instance-p slots)
+                 #'(setf funcallable-standard-instance-access)
+                 #'(setf standard-instance-access))
+             new-value slots location)))
 
 (defun fetch-up-to-date-instance-slots-and-layout (instance)
   (loop
@@ -195,11 +200,10 @@ the old or new values are expected to be unbound.")
               ;; Obsolete instance.
               ;; There should never be nested layers of obsolete instances.
               (let* ((real-layout (sys.int::%instance-layout new-instance)))
-                ;; But it's possible that the layout of the new instance is obsolete
-                ;; FIXME: This needs to use NEW-INSTANCE to populate the new instance,
-                ;; but the old instance must be what gets superseded.
+                ;; The replacement may itself have become obsolete. Populate from
+                ;; that replacement, while keeping the original forwarding object.
                 (cond ((sys.int::layout-obsolete real-layout)
-                       (update-instance-for-new-layout instance))
+                       (update-instance-for-new-layout new-instance instance))
                       (t
                        (return (values new-instance real-layout))))))))))
 
@@ -1002,6 +1006,12 @@ Other arguments are included directly."
 
 ;;; finalize-inheritance
 
+(defun layout-instance-slot-pairs (layout)
+  (loop
+     with slots = (sys.int::layout-instance-slots layout)
+     for index below (length slots) by 2
+     collect (cons (svref slots index) (svref slots (1+ index)))))
+
 (defun class-layouts-compatible-p (layout-a layout-b)
   (and (eql (sys.int::layout-heap-size layout-a)
             (sys.int::layout-heap-size layout-b))
@@ -1009,10 +1019,21 @@ Other arguments are included directly."
               (sys.int::layout-heap-layout layout-b))
        (equal (sys.int::layout-area layout-a)
               (sys.int::layout-area layout-b))
-       ;; TODO: This could be less conservative.
-       ;; Only the slot-name/location pairs matter, not the ordering of the pairs.
-       (equalp (sys.int::layout-instance-slots layout-a)
-               (sys.int::layout-instance-slots layout-b))))
+       (let ((pairs-a (layout-instance-slot-pairs layout-a))
+             (pairs-b (layout-instance-slot-pairs layout-b)))
+         (and (= (length pairs-a) (length pairs-b))
+              (every (lambda (pair)
+                       (let ((other (assoc (car pair) pairs-b :test #'eq)))
+                         (and other (equalp (cdr pair) (cdr other)))))
+                     pairs-a)))))
+
+(defun install-class-layout (class layout)
+  (let ((previous-layout (safe-class-slot-storage-layout class)))
+    (setf (safe-class-slot-storage-layout class) layout)
+    (when (and previous-layout
+               (not (class-layouts-compatible-p previous-layout layout)))
+      (setf (sys.int::layout-obsolete previous-layout) layout)))
+  class)
 
 (defun compute-class-heap-size (class instance-slots)
   (cond ((and (endp instance-slots)
@@ -1029,6 +1050,34 @@ Other arguments are included directly."
             for location = (mezzano.runtime::location-offset-t
                             (safe-slot-definition-location slot))
             maximize (1+ location)))))
+
+(defun compute-class-slot-storage-layout (class)
+  (let* ((instance-slots (remove-if-not 'instance-slot-p
+                                        (safe-class-slots class)))
+         (instance-slot-vector (make-array (* (length instance-slots) 2)))
+         (layout (sys.int::make-layout
+                  :class class
+                  :hash (safe-class-hash class)
+                  :obsolete nil
+                  :heap-size (compute-class-heap-size class instance-slots)
+                  :heap-layout t
+                  :area (std-slot-value class 'allocation-area)
+                  :instance-slots instance-slot-vector)))
+    (loop
+       for index from 0 by 2
+       for slot in instance-slots
+       for slot-name = (safe-slot-definition-name slot)
+       for location = (safe-slot-definition-location slot)
+       do
+         (assert (eql (mezzano.runtime::location-type location)
+                      mezzano.runtime::+location-type-t+))
+         (setf (aref instance-slot-vector index) slot-name
+               (aref instance-slot-vector (1+ index)) location))
+    layout))
+
+(defun make-instances-obsolete (class)
+  "Rebuild CLASS's layout and lazily forward instances using its old layout."
+  (install-class-layout class (compute-class-slot-storage-layout class)))
 
 (defun std-finalize-inheritance (class)
   (dolist (super (safe-class-direct-superclasses class))
@@ -1051,39 +1100,13 @@ Other arguments are included directly."
                   class (safe-class-precedence-list class)))))
   (setf (safe-class-slots class) (compute-slots class))
   (setf (safe-class-default-initargs class) (compute-default-initargs class))
-  (let* ((instance-slots (remove-if-not 'instance-slot-p
-                                        (safe-class-slots class)))
-         (instance-slot-vector
-          (make-array (* (length instance-slots) 2)))
-         (layout (sys.int::make-layout
-                  :class class
-                  :hash (safe-class-hash class)
-                  :obsolete nil
-                  :heap-size (compute-class-heap-size class instance-slots)
-                  :heap-layout t
-                  :area (std-slot-value class 'allocation-area)
-                  :instance-slots instance-slot-vector)))
-    (loop
-       for i from 0 by 2
-       for slot in instance-slots
-       for slot-name = (safe-slot-definition-name slot)
-       for location = (safe-slot-definition-location slot)
-       do
-       ;; (funcallable-)standard-instance-access requires that all slots
-       ;; be of type T, as does the above heap layout.
-         (assert (eql (mezzano.runtime::location-type location)
-                      mezzano.runtime::+location-type-t+))
-         (setf (aref instance-slot-vector i) slot-name
-               (aref instance-slot-vector (1+ i)) location))
-    ;; TODO: Should call MAKE-INSTANCES-OBSOLETE here and have that rebuild
-    ;; the layout.
+  (let ((layout (compute-class-slot-storage-layout class)))
     (let ((prev-layout (safe-class-slot-storage-layout class)))
       ;; Don't obsolete instances if the existing layout is compatible.
       (cond ((not prev-layout)
              (setf (safe-class-slot-storage-layout class) layout))
             ((not (class-layouts-compatible-p prev-layout layout))
-             (setf (safe-class-slot-storage-layout class) layout
-                   (sys.int::layout-obsolete prev-layout) layout)))))
+             (make-instances-obsolete class)))))
   (setf (safe-class-finalized-p class) t)
   (values))
 
@@ -1406,12 +1429,14 @@ Other arguments are included directly."
 
 ;;; ensure-generic-function
 
-(defun normalize-e-g-f-args (&rest all-keys &key generic-function-class method-class &allow-other-keys)
+(defun normalize-e-g-f-args (&rest all-keys &key generic-function-class method-class environment &allow-other-keys)
+  ;; ENVIRONMENT belongs to the macroexpansion context, not to the
+  ;; generic-function metaobject's initialization arguments.
+  (declare (ignore environment))
     ;; :GENERIC-FUNCTION-CLASS is not included as an initarg.
   (remf all-keys :generic-function-class)
   ;; Passing our own.
   (remf all-keys :method-class)
-  ;; FIXME: What to do with this?
   (remf all-keys :environment)
   (when (and generic-function-class
              (symbolp generic-function-class))
@@ -1641,7 +1666,7 @@ has only has class specializer."
 
 (defun defmethod-1 (gf-name &rest args)
   (when (not (fboundp gf-name))
-    (warn "Implicit defintion of generic function ~S." gf-name))
+    (warn "Implicit definition of generic function ~S." gf-name))
   (apply #'ensure-method
          (ensure-generic-function gf-name)
          args))
@@ -1942,8 +1967,10 @@ has only has class specializer."
              (slow-single-dispatch-method-lookup* gf argument-offset (list new-value object) :writer))))))
 
 (defun compute-1-effective-discriminator (gf emf-table argument-offset)
-  ;; TODO: This table should be a weak-alist, but that's not thread-safe.
-  (let ((eql-table (compute-1-effective-eql-table gf argument-offset)))
+  (let ((eql-table
+          (cons (mezzano.garbage-collection.weak-objects:make-weak-alist
+                 :initial-contents (compute-1-effective-eql-table gf argument-offset))
+                (mezzano.supervisor:make-mutex `(one-effective-eql-table ,gf)))))
     ;; Generate specialized dispatch functions for various combinations of
     ;; arguments.
     (macrolet ((gen-one (index n-required restp eql-spec-p)
@@ -1970,7 +1997,8 @@ has only has class specializer."
                                        `()))
                         (block nil
                           ,(when eql-spec-p
-                             `(let ((eql-emfun (assoc ,(nth index req-args) eql-table)))
+                             `(let ((eql-emfun (one-effective-eql-table-assoc
+                                                ,(nth index req-args) eql-table)))
                                 (when eql-emfun
                                   (return ,(if rest-arg
                                                `(apply (cdr eql-emfun) ,@req-args ,rest-arg)
@@ -2009,13 +2037,17 @@ has only has class specializer."
           (lambda (&rest args)
             (declare (dynamic-extent args))
             (let* ((arg (nth argument-offset args))
-                   (eql-emfun (assoc arg eql-table)))
+                   (eql-emfun (one-effective-eql-table-assoc arg eql-table)))
               (if eql-emfun
                   (apply (cdr eql-emfun) args)
                   (let ((emfun (single-dispatch-emf-entry-by-object emf-table arg)))
                     (if emfun
                         (apply emfun args)
                         (slow-single-dispatch-method-lookup gf args (class-of arg)))))))))))
+
+(defun one-effective-eql-table-assoc (object table)
+  (mezzano.supervisor:with-mutex ((cdr table))
+    (mezzano.garbage-collection.weak-objects:weak-alist-assoc object (car table))))
 
 (defun compute-n-effective-discriminator (gf emf-table n-required-args)
   (lambda (&rest args sys.int::&count arg-count)
@@ -2449,6 +2481,13 @@ always match."
       (let ((next-emfun (compute-primary-emfun (cdr methods))))
         (method-fast-function (car methods) next-emfun (cdr methods)))))
 
+(defun standard-call-method-list (methods)
+  "Return the ordered methods visible to CALL-NEXT-METHOD in an around method."
+  (remove-if-not (lambda (method)
+                   (or (around-method-p method)
+                       (primary-method-p method)))
+                 methods))
+
 (defun applicable-methods-keywords (gf methods)
   (let* ((gf-lambda-list-info (analyze-lambda-list (safe-generic-function-lambda-list gf)))
          (any-has-keys (member '&key (safe-generic-function-lambda-list gf)))
@@ -2497,11 +2536,12 @@ always match."
     (when (null primaries)
       (error "No applicable primary methods for the generic function ~S." gf))
     (if around
-        (let ((next-emfun
+        (let* ((remaining-methods (remove around methods :count 1))
+               (next-methods (standard-call-method-list remaining-methods))
+               (next-emfun
                 (std-compute-effective-method-function-with-standard-method-combination-1
-                 gf (remove around methods))))
-          ;; FIXME: Method list isn't sorted properly for this...
-          (method-fast-function around next-emfun (remove around methods)))
+                 gf remaining-methods)))
+          (method-fast-function around next-emfun next-methods))
         (let ((primary (compute-primary-emfun primaries))
               (befores (mapcar (lambda (m) (method-fast-function m nil '()))
                                (remove-if-not #'before-method-p methods)))
@@ -2537,15 +2577,22 @@ always match."
       (applicable-methods-keywords gf methods)
     (let* ((method-args (gensym "ARGS"))
            (gf-lambda-list-info (analyze-lambda-list (safe-generic-function-lambda-list gf)))
+           (effective-method-required-arguments
+             (loop repeat (length (getf gf-lambda-list-info :required-names))
+                   collect (gensym "ARG")))
+           (effective-method-rest-arguments (gensym "REST"))
            (key-arg-index (+ (length (getf gf-lambda-list-info :required-names))
                              (length (getf gf-lambda-list-info :optional-args))))
            (tracep (safe-generic-function-trace-p gf)))
-      ;; TODO: make the lambda-list here refect the actual lambda list more accurately.
-      `(lambda (&rest ,method-args)
+      `(lambda (,@effective-method-required-arguments
+                &rest ,effective-method-rest-arguments)
          (declare (sys.int::lambda-name (effective-method ,@name)))
-         ,@(when (not suppress-keyword-checking)
-             (list `(check-method-keyword-arguments ',gf (nthcdr ',key-arg-index ,method-args) ',keywords)))
-         (macrolet ((call-method (method &optional next-method-list)
+         (let ((,method-args
+                 (list* ,@effective-method-required-arguments
+                        ,effective-method-rest-arguments)))
+           ,@(when (not suppress-keyword-checking)
+               (list `(check-method-keyword-arguments ',gf (nthcdr ',key-arg-index ,method-args) ',keywords)))
+           (macrolet ((call-method (method &optional next-method-list)
                       (when (listp method)
                         (assert (eql (first method) 'make-method)))
                       (cond ((listp method)
@@ -2580,11 +2627,13 @@ always match."
                     (make-method (form)
                       (declare (ignore form))
                       (error "MAKE-METHOD must be either the method argument or a next-method supplied to CALL-METHOD.")))
-           ,effective-method-body)))))
+             ,effective-method-body))))))
 
 (defun generate-method-combination-effective-method-name (gf mc-object methods)
   (list* (safe-generic-function-name gf)
-         (method-combination-name mc-object)
+         (if mc-object
+             (method-combination-name mc-object)
+             'standard)
          (mapcar (lambda (method)
                    (list (safe-method-qualifiers method)
                          (mapcar (lambda (specializer)
@@ -2643,11 +2692,10 @@ always match."
 
 (defun std-compute-effective-method-function (gf methods)
   (let ((mc (safe-generic-function-method-combination gf)))
-    ;; FIXME: Still should call COMPUTE-EFFECTIVE-METHOD when
-    ;; the generic function is not a standard-generic-function and mc is the standard method combination.
-    (cond ((or mc
+    (cond ((or (not (standard-generic-function-instance-p gf))
+               mc
                (safe-generic-function-trace-p gf))
-           (let* ((mc-object (method-combination-object-method-combination mc))
+           (let* ((mc-object (and mc (method-combination-object-method-combination mc)))
                   (effective-method-body (compute-effective-method gf mc methods))
                   (name (generate-method-combination-effective-method-name gf mc-object methods)))
              (eval (generate-method-combination-effective-method name effective-method-body gf methods))))
@@ -2667,6 +2715,10 @@ always match."
 
 (defgeneric print-object (instance stream))
 
+;; MAKE-LOAD-FORM is a standard generic function. It must exist before
+;; runtime/simd.lisp installs its specialized method during cold-image build.
+(defgeneric make-load-form (object &optional environment))
+
 (defmethod print-object ((instance t) stream)
   (print-unreadable-object (instance stream :type t :identity t)))
 
@@ -2676,62 +2728,52 @@ always match."
             (class-name (class-of instance))))
   instance)
 
-;;; TODO: The following reader function should use standard class readers
-;;; instead of open-coded methods.
-
 ;;; Class metaobject readers
-;;; FIXME: CLASS-DEFAULT-INITARGS, CLASS-PRECEDENCE-LIST, and CLASS-SLOTS
-;;; must signal an error if the class has not been finalized, but doing
-;;; this causing issues during finalization.
-;;; I guess making the appropriate slots unbound if the class is not finalized,
-;;; then filling them in during finalization would work.
+
+(defun ensure-finalized-class-reader (class reader-name)
+  (unless (safe-class-finalized-p class)
+    (error "~S cannot read ~S before the class is finalized."
+           reader-name class)))
 
 (defgeneric class-default-initargs (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'default-initargs)))
+    (ensure-finalized-class-reader class 'class-default-initargs)
+    (std-slot-value class 'default-initargs)))
 (defgeneric class-direct-default-initargs (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'direct-default-initargs))
+    (std-slot-value class 'direct-default-initargs))
   (:method ((class forward-referenced-class))
     '()))
 (defgeneric class-direct-slots (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'direct-slots))
+    (std-slot-value class 'direct-slots))
   (:method ((class forward-referenced-class))
     '()))
 (defgeneric class-direct-superclasses (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'direct-superclasses))
+    (std-slot-value class 'direct-superclasses))
   (:method ((class forward-referenced-class))
     '()))
 (defgeneric class-finalized-p (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
     ;; The slot may be unbound if the class has not been initialized yet.
-    (and (slot-boundp class 'finalized-p)
-         (slot-value class 'finalized-p)))
+    (and (std-slot-boundp class 'finalized-p)
+         (std-slot-value class 'finalized-p)))
   (:method ((class forward-referenced-class))
     nil))
 (defgeneric class-name (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'name))
+    (std-slot-value class 'name))
   (:method ((class forward-referenced-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'name)))
+    (std-slot-value class 'name)))
 (defgeneric class-precedence-list (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'precedence-list)))
+    (ensure-finalized-class-reader class 'class-precedence-list)
+    (std-slot-value class 'precedence-list)))
 (defgeneric class-slots (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'effective-slots)))
-;; TODO: Prototypes for built-in classes
+    (ensure-finalized-class-reader class 'class-slots)
+    (std-slot-value class 'effective-slots)))
 (defgeneric class-prototype (class)
   (:method ((class std-class))
     (declare (notinline slot-boundp slot-value (setf slot-value))) ; bootstrap hack
@@ -2739,28 +2781,19 @@ always match."
       (setf (slot-value class 'prototype) (allocate-instance class)))
     (slot-value class 'prototype))
   (:method ((class built-in-class))
-    ;; FIXME: This is a bit weird.
-    ;; Cook up a layout & instance for this class.
-    (sys.int::%allocate-instance
-     (sys.int::make-layout :class class
-                           :hash (safe-class-hash class)
-                           :obsolete nil
-                           :heap-size 0
-                           :heap-layout t
-                           :area nil
-                           :instance-slots #()))))
+    (declare (notinline slot-boundp slot-value (setf slot-value))) ; bootstrap hack
+    (when (not (slot-boundp class 'prototype))
+      (setf (slot-value class 'prototype) (std-allocate-instance class)))
+    (slot-value class 'prototype)))
 (defgeneric class-sealed (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'sealed)))
+    (std-slot-value class 'sealed)))
 (defgeneric class-allocation-area (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'allocation-area)))
+    (std-slot-value class 'allocation-area)))
 (defgeneric class-layout (class)
   (:method ((class clos-class))
-    (declare (notinline slot-value)) ; bootstrap hack
-    (slot-value class 'slot-storage-layout)))
+    (std-slot-value class 'slot-storage-layout)))
 
 ;;; Slot definition metaobject readers
 
@@ -3105,10 +3138,21 @@ always match."
 (defun applicable-method-initargs (generic-function arguments)
   (applicable-methods-initargs (compute-applicable-methods generic-function arguments)))
 
+(defun initarg-cache-safe-p (functions)
+  (every (lambda (entry)
+           (every (lambda (method)
+                    (notany (lambda (specializer)
+                              (typep specializer 'eql-specializer))
+                            (safe-method-specializers method)))
+                  (safe-generic-function-methods (fdefinition (car entry)))))
+         functions))
+
 (defun valid-initargs (class cache functions)
-  (multiple-value-bind (cached-initargs cache-validp)
-      (gethash class cache)
-    ;; FIXME: This must take EQL specializers into account.
+  (let ((cache-safe-p (and cache (initarg-cache-safe-p functions))))
+    (multiple-value-bind (cached-initargs cache-validp)
+        (if cache-safe-p
+            (gethash class cache)
+            (values nil nil))
     (cond (cache-validp
            cached-initargs)
           (t
@@ -3118,31 +3162,28 @@ always match."
                 do (multiple-value-bind (keys aok)
                        (applicable-method-initargs (fdefinition fn) args)
                      (when aok
-                       (setf (gethash class cache) t)
+                       (when cache-safe-p
+                         (setf (gethash class cache) t))
                        (return-from valid-initargs
                          t))
                      (dolist (key keys)
                        (pushnew key initargs))))
-             (when cache
+             (when cache-safe-p
                (setf (gethash class cache) initargs))
-             initargs)))))
+             initargs))))))
 
 ;; Avoid evaluating functions & error-fn until as late as possible.
 (defmacro check-initargs (class cache functions initargs error-fn)
   (let ((valid-initargs (gensym "VALID-INITARGS"))
         (invalid-initargs (gensym "INVALID-INITARGS"))
         (initarg (gensym "INITARG"))
-        (cache-validp (gensym "CACHE-VALIDP"))
         (class-sym (gensym "CLASS"))
         (cache-sym (gensym "CACHE"))
         (initargs-sym (gensym "INITARGS")))
     `(let ((,class-sym ,class)
            (,cache-sym ,cache)
            (,initargs-sym ,initargs))
-       (multiple-value-bind (,valid-initargs ,cache-validp)
-           (gethash ,class-sym ,cache-sym)
-         (when (not ,cache-validp)
-           (setf ,valid-initargs (valid-initargs ,class-sym ,cache-sym ,functions)))
+       (let ((,valid-initargs (valid-initargs ,class-sym ,cache-sym ,functions)))
          (when (and (not (eql ,valid-initargs 't))
                     (not (getf ,initargs-sym :allow-other-keys)))
            (let ((,invalid-initargs (loop
@@ -3651,6 +3692,16 @@ always match."
     :readers ,(safe-slot-definition-readers direct-slot)
     :writers ,(safe-slot-definition-writers direct-slot)))
 
+(defun flush-generic-functions-specializing-on-class-tree (class)
+  (labels ((walk (current)
+             (dolist (gf (safe-specializer-direct-generic-functions current))
+               (reset-gf-emf-table gf))
+             (flush-emf-tables-on-class-redefinition current)
+             (dolist (subclass (safe-class-direct-subclasses current))
+               (walk subclass))))
+    (walk class))
+  (values))
+
 (defun std-after-reinitialization-for-classes (class &rest args &key &allow-other-keys)
   ;; Unfinalize the class.
   (setf (safe-class-finalized-p class) nil)
@@ -3672,11 +3723,9 @@ always match."
                  (list :direct-superclasses (safe-class-direct-superclasses class))
                  (list :direct-slots (mapcar #'convert-direct-slot-definition-to-canonical-direct-slot (safe-class-direct-slots class)))
                  (list :direct-default-initargs (safe-class-direct-default-initargs class))))
-  ;; Flush the EMF tables of generic functions.
-  ;; FIXME: Make this cleaner, needs to cover any generic function that indirectly specializes on this class.
-  (dolist (gf (safe-specializer-direct-generic-functions class))
-    (reset-gf-emf-table gf))
-  (flush-emf-tables-on-class-redefinition class)
+  ;; A method specializing on a descendant is indirectly affected because the
+  ;; descendant's CPL and effective slots can change with this class.
+  (flush-generic-functions-specializing-on-class-tree class)
   ;; Refinalize any subclasses.
   (dolist (subclass (safe-class-direct-subclasses class))
     (std-after-reinitialization-for-classes subclass))
@@ -3715,11 +3764,9 @@ always match."
      for i below (length instance-slots) by 2
      collect (aref instance-slots i)))
 
-(defun update-instance-for-new-layout (instance)
-  (let* ((class (class-of instance))
-         (old-potentially-obsolete-layout (sys.int::%instance-layout instance))
-         (old-instance (or (sys.int::layout-new-instance old-potentially-obsolete-layout)
-                           instance))
+(defun update-instance-for-new-layout (instance &optional (instance-to-supersede instance))
+  (let* ((class (class-of instance-to-supersede))
+         (old-instance instance)
          (old-layout (sys.int::%instance-layout old-instance))
          (new-layout (safe-class-slot-storage-layout class))
          (old-layout-slots (layout-instance-slots-list old-layout))
@@ -3744,9 +3791,10 @@ always match."
               (setf property-list (list* slot value
                                          property-list)))))
     ;; Obsolete the old instance, replacing it with the new instance.
-    (mezzano.runtime::supersede-instance instance new-instance)
+    (mezzano.runtime::supersede-instance instance-to-supersede new-instance)
     ;; Magic.
-    (update-instance-for-redefined-class instance added-slots discarded-slots property-list)))
+    (update-instance-for-redefined-class instance-to-supersede
+                                         added-slots discarded-slots property-list)))
 
 (sys.int::defglobal *u-i-f-r-c-initargs-cache*
     (make-hash-table :synchronized t :weakness :key))

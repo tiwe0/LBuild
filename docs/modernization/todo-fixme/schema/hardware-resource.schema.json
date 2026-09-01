@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "resources": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "access-status": {
+            "enum": [
+              "available",
+              "unavailable",
+              "unknown"
+            ]
+          },
+          "class": {
+            "type": "string"
+          },
+          "device-identity": {
+            "type": "object"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "resource-id": {
+            "type": "string"
+          },
+          "runner-identity": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "resource-id",
+          "class",
+          "device-identity",
+          "runner-identity",
+          "owner",
+          "access-status"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "resources"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 hardware resource matrix",
+  "type": "object"
+}

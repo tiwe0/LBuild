@@ -1088,19 +1088,29 @@ collected result will be returned as the value of the LOOP."
 ;;;; Loop Types
 
 
-(defun loop-typed-init (data-type)
+(defun loop-typed-init (data-type &optional (environment *loop-macro-environment*))
   (when data-type
-    ;; FIXME: This should pass the macro environment to typeexpand.
-    (let ((expanded-type (sys.int::typeexpand data-type)))
-      ;; Best effort... TODO: Make this more complete.
+    (let ((expanded-type (sys.int::typeexpand data-type environment)))
+      ;; Select a type-compatible initializer for the common LOOP type families.
       (cond ((or (subtypep expanded-type 'float)
                  (subtypep expanded-type '(complex float)))
              (coerce 0 data-type))
             ((subtypep expanded-type 'number)
              0)
             ((subtypep expanded-type 'vector)
-             ;; FIXME: This doesn't work for sized vectors.
-             (coerce nil expanded-type))
+             ;; COERCE NIL produces an empty vector, which does not satisfy
+             ;; a vector type with a required size.  Allocate sized vectors
+             ;; directly and retain the existing empty-vector fallback for
+             ;; unsized vector types.
+             (if (consp expanded-type)
+                 (multiple-value-bind (element-type dimensions)
+                     (sys.int::parse-array-type expanded-type)
+                   (if (and (listp dimensions)
+                            (= (length dimensions) 1)
+                            (integerp (first dimensions)))
+                       (make-array dimensions :element-type element-type)
+                       (coerce nil expanded-type)))
+                 (coerce nil expanded-type)))
             (t
              nil)))))
 

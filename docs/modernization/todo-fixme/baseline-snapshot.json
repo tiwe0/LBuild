@@ -1,0 +1,30 @@
+{
+  "baseline-id": "lambda64-todo-fixme-b23039a161b87194b7a6",
+  "baseline-product-input-manifest-sha256": "6631a566f0c5f52761d1c1ab83e61bbdebd3b146291243450b9e57fd5ccdca6c",
+  "baseline-raw-occurrence-scan-sha256": "63732fa93fc1d4fdf4f0b6d2be4b6e347d02f6ba23a7e2b09f4e68fba1d371e1",
+  "baseline-unicode-input-sha256": "90b45b777346bef027556f9c6cb3ea5d7d745bd60d6762855c08d8a22d34f771",
+  "counts": {
+    "data": 29,
+    "documentation": 4,
+    "logical-total": null,
+    "raw": 484,
+    "source": 451
+  },
+  "created-at": "2026-08-31T07:17:33Z",
+  "frozen-at": null,
+  "governance-freeze-head": null,
+  "governance-freeze-index-tree": null,
+  "governance-freeze-manifest-sha256": null,
+  "governance-freeze-tree": null,
+  "mapping-sha256": null,
+  "occurrences-sha256": "4bf56868ca587aa5940166537eaf0ff63b52e02c01043cb3ff2f2fa477284a4b",
+  "phase": "bootstrap",
+  "scanner-bootstrap-sha256": "10ad7551ffa9c0dbbfe535fee9d7eece044d2a42a07e20d302acd25c7431b3a2",
+  "scanner-freeze-sha256": null,
+  "schema-version": 1,
+  "source-baseline-head": "5422d69249c2104ff0ab1feff20806013cdba635",
+  "source-baseline-index-tree": "8c4625caaffb0b4bd5471474d213d0cf0bff93cd",
+  "source-baseline-tree": "335959b5cf7d3ea13926ed11f90335eadb87abaf",
+  "unicode-allowlist-sha256": "0ce8d0bce9cc814284c96667b6c8ba48ee075bcd3b28179ade68d49467e33874",
+  "work-items-identity-spec-sha256": null
+}

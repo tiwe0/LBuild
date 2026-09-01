@@ -66,7 +66,11 @@
               (cold-unread-char ch s)
               ch)))
         ((characterp peek-type)
-         (error "TODO: character peek."))
+         (do ((ch (cold-read-char s)
+                  (cold-read-char s)))
+             ((char= ch peek-type)
+              (cold-unread-char ch s)
+              ch)))
         (t (error "Bad peek type ~S." peek-type))))
 
 (defun read-line (&optional (input-stream *standard-input*) (eof-error-p t) eof-value recursive-p)

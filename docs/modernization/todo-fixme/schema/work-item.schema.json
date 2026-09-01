@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseline-id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema-version": {
+      "const": 1
+    },
+    "work-items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance-criteria": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "contract-source": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expected-behavior": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^TF-[A-Za-z0-9-]+$",
+            "type": "string"
+          },
+          "required-resource-ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "required-test-levels": {
+            "items": {
+              "enum": [
+                "host",
+                "codegen",
+                "cold-image",
+                "guest",
+                "integration",
+                "stress",
+                "hardware"
+              ]
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "risk": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "spec-path": {
+            "pattern": "^docs/modernization/todo-fixme/specs/[A-Za-z0-9-]+\\.md$",
+            "type": "string"
+          },
+          "test-before": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "work-kind": {
+            "enum": [
+              "bug",
+              "missing-feature",
+              "compatibility",
+              "performance",
+              "documentation-contract",
+              "stale-marker"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "risk",
+          "work-kind",
+          "contract-source",
+          "expected-behavior",
+          "acceptance-criteria",
+          "required-test-levels",
+          "required-resource-ids",
+          "test-before"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema-version",
+    "baseline-id",
+    "work-items"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 immutable work-item ledger",
+  "type": "object"
+}

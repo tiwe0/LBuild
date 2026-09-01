@@ -41,54 +41,71 @@
     (format stream "~S" (path object))))
 
 (defmethod parse-namestring-using-host ((host http-host) namestring junk-allowed)
-  (when junk-allowed
-    (error "TODO: Junk-allowed"))
   ;; A namestring looks like:
   ;; url: ["//"] host [port] [path]
   ;; host: [a-zA-Z0-9_.-]+
   ;; port: ":" [0-9]+
   ;; path: "/" .*
   (let ((current 0)
-        (domain (make-array 30 :adjustable t :fill-pointer 0 :element-type 'character))
-        (port (make-array 30 :adjustable t :fill-pointer 0 :element-type 'character))
-        (port-number 80)
-        (path nil))
-    (flet ((peek ()
-             (when (< current (length namestring))
-               (char namestring current)))
-           (consume ()
-             (prog1
-                 (char namestring current)
-               (incf current))))
-      (when (and (>= (length namestring) 2)
+        (end (length namestring)))
+    (labels ((peek ()
+               (when (< current end)
+                 (char namestring current)))
+             (domain-character-p (character)
+               (and character
+                    (find character "abcdefghijklmnopqrstuvwxyz0123456789-_."
+                          :test #'char-equal)))
+             (make-result (domain port path position)
+               (values (make-pathname :host host
+                                      :device (cons domain port)
+                                      :directory '(:absolute)
+                                      :name path)
+                       position))
+             (syntax-error ()
+               (error "Invalid HTTP namestring ~S at position ~D."
+                      namestring current)))
+      (when (and (>= end 2)
                  (eql (char namestring 0) #\/)
                  (eql (char namestring 1) #\/))
-        ;; Skip leading "//"
         (setf current 2))
-      ;; Read host portion.
-      (loop
-         (when (not (find (peek) "abcdefghijklmnopqrstuvwxyz0123456789-_."))
-           (return))
-         (vector-push-extend (consume) domain))
-      ;; Possible port.
-      (when (eql (peek) #\:)
-        (consume)
-        (loop
-           (when (not (find (peek) "abcdefghijklmnopqrstuvwxyz0123456789-_."))
-             (setf port-number (parse-integer port))
-             (return))
-           (vector-push-extend (consume) port)))
-      ;; Finally, the path.
-      (cond
-        ((eql (peek) #\/)
-         (setf path (subseq namestring current)))
-        ((eql (peek) nil)
-         (setf path "/"))
-        (t (error "Syntax error in path, expected / and or nothing after host/port.")))
-      (make-pathname :host host
-                     :device (cons domain port-number)
-                     :directory '(:absolute)
-                     :name path))))
+      (let ((domain-start current))
+        (loop :while (domain-character-p (peek)) :do (incf current))
+        (when (= current domain-start)
+          (syntax-error))
+        (let ((domain (subseq namestring domain-start current)))
+          (cond
+            ((null (peek))
+             (make-result domain 80 "/" current))
+            ((eql (peek) #\/)
+             (make-result domain 80 (subseq namestring current) end))
+            ((eql (peek) #\:)
+             (let ((port-marker current))
+               (incf current)
+               (let ((port-start current))
+                 (loop :while (find (peek) "0123456789")
+                       :do (incf current))
+                 (when (= current port-start)
+                   (setf current port-marker)
+                   (if junk-allowed
+                       (return-from parse-namestring-using-host
+                         (make-result domain 80 "/" current))
+                       (syntax-error)))
+                 (let ((port (parse-integer namestring
+                                            :start port-start
+                                            :end current)))
+                   (cond
+                     ((null (peek))
+                      (make-result domain port "/" current))
+                     ((eql (peek) #\/)
+                      (make-result domain port (subseq namestring current) end))
+                     (junk-allowed
+                      (make-result domain port "/" current))
+                     (t
+                      (syntax-error)))))))
+            (junk-allowed
+             (make-result domain 80 "/" current))
+            (t
+             (syntax-error))))))))
 
 (defun unparse-http-path (path)
   (format nil "~A:~D~A"
@@ -207,11 +224,16 @@
          (setf body (read-content-length-body stream content-length-header))))
       (values version status-code reason-phrase headers body))))
 
-(defun http-request (host port path)
-  ;; FIXME: Should catch unknown host & do something with that.
-  (mezzano.network::with-open-network-stream (con host port)
-    (mezzano.network:buffered-format con "GET ~A HTTP/1.1~%Host: ~A~%~%" path host)
-    (read-http-response con)))
+(defun http-request (host port path &optional pathname)
+  (let ((address (mezzano.network:resolve-address host nil)))
+    (unless address
+      (error 'simple-file-error
+             :pathname pathname
+             :format-control "Unable to resolve HTTP host ~S."
+             :format-arguments (list host)))
+    (mezzano.network::with-open-network-stream (con address port)
+      (mezzano.network:buffered-format con "GET ~A HTTP/1.1~%Host: ~A~%~%" path host)
+      (read-http-response con))))
 
 (defun make-http-stream (pathname body element-type external-format)
   (if (mezzano.internals::type-equal element-type 'character)
@@ -252,7 +274,8 @@
     ;; Initial request.
     (setf (values version status-code reason-phrase headers body) (http-request (car (pathname-device pathname))
                                                                                 (cdr (pathname-device pathname))
-                                                                                (url-encode (pathname-name pathname))))
+                                                                                (url-encode (pathname-name pathname))
+                                                                                pathname))
     (tagbody
      REDIRECTED
        (when (and *permit-redirects*
@@ -262,7 +285,7 @@
              (multiple-value-bind (host port path)
                  (decode-location (header-value location))
                (when host
-                 (setf (values version status-code reason-phrase headers body) (http-request host port path))
+                 (setf (values version status-code reason-phrase headers body) (http-request host port path pathname))
                  (incf redirect-count)
                  ;; Avoid redirect loops.
                  (when (< redirect-count 10)

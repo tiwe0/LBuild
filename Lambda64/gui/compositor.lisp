@@ -82,7 +82,7 @@
   (setf *idle-time* (get-internal-run-time)))
 
 (defun screensaver-running-p ()
-  (get-window-by-kind :screensaver))
+  (%find-window-by-kind :screensaver))
 
 (defun damage-whole-screen ()
   (setf *clip-rect-width* (mezzano.supervisor:framebuffer-width *main-screen*)
@@ -913,15 +913,36 @@ so that windows can notice when they lose their mouse visibility.")
        (values (+ (window-x window) (truncate delta-w 2))
                (+ (window-y window) (truncate delta-h 2)))))))
 
+(defun window-grab-offset-for-resize (window origin new-width new-height)
+  (multiple-value-bind (new-window-x new-window-y)
+      (updated-window-origin-for-resize window origin new-width new-height)
+    (values (- (window-x window) new-window-x)
+            (- (window-y window) new-window-y))))
+
+(defun updated-window-grab-for-resize (window x-offset y-offset new-width new-height)
+  ;; Grab coordinates are window-relative. Translate them by the inverse
+  ;; window-origin displacement so the region stays attached to the same
+  ;; screen edges, then constrain it to the resized window.
+  (values (clamp (+ (grab-x1 window) x-offset) 0 new-width)
+          (clamp (+ (grab-y1 window) y-offset) 0 new-height)
+          (clamp (+ (grab-x2 window) x-offset) 0 new-width)
+          (clamp (+ (grab-y2 window) y-offset) 0 new-height)))
+
 (defmethod process-event ((event resize-event))
   (let* ((window (window event))
          (origin (resize-origin event))
          (old-framebuffer (window-buffer window))
          (new-framebuffer (resize-new-fb event))
+         (new-width (mezzano.gui:surface-width new-framebuffer))
+         (new-height (mezzano.gui:surface-height new-framebuffer))
          (delta-w (- (mezzano.gui:surface-width old-framebuffer)
-                     (mezzano.gui:surface-width new-framebuffer)))
+                     new-width))
          (delta-h (- (mezzano.gui:surface-height old-framebuffer)
-                     (mezzano.gui:surface-height new-framebuffer))))
+                     new-height))
+         (grab-offset
+           (multiple-value-list
+            (window-grab-offset-for-resize window origin
+                                           new-width new-height))))
     (assert (eql (mezzano.gui:surface-format new-framebuffer) :argb32))
     ;; Window size and position is going to change.
     (expand-clip-rectangle-by-window window)
@@ -942,22 +963,23 @@ so that windows can notice when they lose their mouse visibility.")
          (decf *drag-y-origin* delta-h))))
     (setf (values (window-x window) (window-y window))
           (updated-window-origin-for-resize window origin
-                                            (mezzano.gui:surface-width new-framebuffer)
-                                            (mezzano.gui:surface-height new-framebuffer)))
+                                            new-width new-height))
     ;; Switch over to the new framebuffer.
     (setf (slot-value window '%buffer) new-framebuffer)
     ;; Update display based on new position & geometry.
     (expand-clip-rectangle-by-window window)
     ;; Notify the client that the resize has completed here.
     (send-event window event)
-    ;; Adjust the window's grab region, keeping it clamped to the
-    ;; window geometry.
-    ;; TODO: Make use of origin when adjusting it?
     (when (grabp window)
-      (setf (grab-x1 window) (min (grab-x1 window) (width window))
-            (grab-y1 window) (min (grab-y1 window) (height window))
-            (grab-x2 window) (min (grab-x2 window) (width window))
-            (grab-y2 window) (min (grab-y2 window) (height window))))
+      (multiple-value-bind (x1 y1 x2 y2)
+          (updated-window-grab-for-resize window
+                                          (first grab-offset)
+                                          (second grab-offset)
+                                          new-width new-height)
+        (setf (grab-x1 window) x1
+              (grab-y1 window) y1
+              (grab-x2 window) x2
+              (grab-y2 window) y2)))
     ;; Mouse cursor may or may not be over a different window now.
     (update-mouse-cursor)))
 
@@ -1130,11 +1152,36 @@ Only works when the window is active."
          (setf (window-unresponsive window) t)
          (expand-clip-rectangle-by-window window))))
 
-;; FIXME: This really shouldn't be synchronous.
-(defun get-window-by-kind (kind)
+;;;; Asynchronous window queries.
+
+(defun %find-window-by-kind (kind)
   (dolist (win *window-list*)
     (when (eql (kind win) kind)
       (return win))))
+
+(defclass window-by-kind-query-event (event)
+  ((%kind :initarg :kind :reader kind)
+   (%result-mailbox :initarg :result-mailbox :reader result-mailbox)))
+
+(defmethod process-event ((event window-by-kind-query-event))
+  ;; The result mailbox is fresh and unbounded, but keep this send explicitly
+  ;; nonblocking so a malformed caller can never stall the compositor thread.
+  (mezzano.sync:mailbox-send (%find-window-by-kind (kind event))
+                             (result-mailbox event)
+                             :wait-p nil))
+
+(defun get-window-by-kind (kind)
+  "Asynchronously find the frontmost window of KIND.
+Returns a fresh mailbox that receives exactly one value after all compositor
+events submitted before this query have been processed. The value is the
+matching window, or NIL when no such window exists."
+  (let ((result-mailbox
+          (mezzano.sync:make-mailbox :name 'window-by-kind-query-result)))
+    (submit-compositor-event
+     (make-instance 'window-by-kind-query-event
+                    :kind kind
+                    :result-mailbox result-mailbox))
+    result-mailbox))
 
 ;;;; Main body of the compositor.
 

@@ -334,6 +334,11 @@
   sector-count)
 
 (defconstant +ahci-irq-state-buffer-size+ 16)
+(defconstant +ahci-comreset-minimum-seconds+ 0.001)
+(defconstant +ahci-port-stop-timeout-seconds+ 1)
+(defconstant +ahci-port-link-timeout-seconds+ 5)
+(defconstant +ahci-command-timeout-seconds+ 30)
+(defconstant +ahci-prdt-maximum-byte-count+ #x400000)
 
 (defun ahci-port (ahci port)
   (svref (ahci-ports ahci) port))
@@ -394,100 +399,185 @@
      (sup::physical-memref-unsigned-byte-32 base (+ (* i 4) 2)) " "
      (sup::physical-memref-unsigned-byte-32 base (+ (* i 4) 3)))))
 
-(defun ahci-port-reset (ahci port)
+(defun ahci-wait-port-bits-clear (ahci port register mask timeout)
+  (let ((timer (ahci-port-irq-timeout-timer (ahci-port ahci port))))
+    (sup:timer-arm timeout timer)
+    (unwind-protect
+         (loop
+            (when (zerop (logand (ahci-port-register ahci port register) mask))
+              (return t))
+            (when (sup:timer-expired-p timer)
+              (return nil))
+            (sup:safe-sleep 0.001))
+      (sup:timer-disarm-absolute timer))))
+
+(defun ahci-wait-port-field (ahci port register position size value timeout)
+  (let ((timer (ahci-port-irq-timeout-timer (ahci-port ahci port))))
+    (sup:timer-arm timeout timer)
+    (unwind-protect
+         (loop
+            (when (= (ldb (byte size position)
+                          (ahci-port-register ahci port register))
+                     value)
+              (return t))
+            (when (sup:timer-expired-p timer)
+              (return nil))
+            (sup:safe-sleep 0.001))
+      (sup:timer-disarm-absolute timer))))
+
+(defun ahci-port-reset (ahci port &key (restart t))
   (sup:debug-print-line "Resetting port " port)
   ;; Stop command processing. Clear ST and wait for CR to clear.
   (setf (ldb (byte 1 +ahci-PxCMD-ST+)
              (ahci-port-register ahci port +ahci-register-PxCMD+))
         0)
-  (loop
-     (when (not (logbitp +ahci-PxCMD-CR+
-                         (ahci-port-register ahci port +ahci-register-PxCMD+)))
-       (return)))
+  (unless (ahci-wait-port-bits-clear ahci port +ahci-register-PxCMD+
+                                     (ash 1 +ahci-PxCMD-CR+)
+                                     +ahci-port-stop-timeout-seconds+)
+    (sup:debug-print-line "AHCI port " port " command engine did not stop.")
+    (return-from ahci-port-reset nil))
   ;; Issue COMRESET.
   (sup:debug-print-line "Issue COMRESET.")
   (setf (ldb (byte +ahci-PxSCTL-DET-size+ +ahci-PxSCTL-DET-position+)
              (ahci-port-register ahci port +ahci-register-PxSCTL+))
         1)
-  (sup:safe-sleep 0.01) ; TODO: Figure out what timeout is actually required here.
+  ;; AHCI 1.3 requires DET=1 to remain asserted for at least one millisecond.
+  (sup:safe-sleep +ahci-comreset-minimum-seconds+)
   (setf (ldb (byte +ahci-PxSCTL-DET-size+ +ahci-PxSCTL-DET-position+)
              (ahci-port-register ahci port +ahci-register-PxSCTL+))
         0)
   ;; Wait for PHY communication to be reestablished.
   (sup:debug-print-line "Waiting for PHY.")
-  (loop
-     (when (logbitp 0
-                    (ldb (byte +ahci-PxSSTS-DET-size+ +ahci-PxSSTS-DET-position+)
-                         (ahci-port-register ahci port +ahci-register-PxSSTS+)))
-       (return)))
+  (unless (ahci-wait-port-field ahci port +ahci-register-PxSSTS+
+                                +ahci-PxSSTS-DET-position+
+                                +ahci-PxSSTS-DET-size+
+                                +ahci-PxSSTS-DET-ready+
+                                +ahci-port-link-timeout-seconds+)
+    (sup:debug-print-line "AHCI port " port " PHY did not become ready.")
+    (return-from ahci-port-reset nil))
   ;; Clear errors.
   (setf (ahci-port-register ahci port +ahci-register-PxSERR+) #xFFFFFFFF)
   ;; Wait for BSY to clear and the device to come back up.
   (sup:debug-print-line "Waiting for BSY to clear.")
-  (loop
-     (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
-            (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
-       (when (not (logtest ata:+ata-bsy+ sts))
-         (return))))
-  ;; Reenable command processing.
-  ;; Stop command processing. Clear ST and wait for CR to clear.
-  (setf (ldb (byte 1 +ahci-PxCMD-ST+)
-             (ahci-port-register ahci port +ahci-register-PxCMD+))
-        1)
-  (sup:debug-print-line "Port reset complete."))
+  (unless (ahci-wait-port-bits-clear
+           ahci port +ahci-register-PxTFD+ ata:+ata-bsy+
+           +ahci-port-link-timeout-seconds+)
+    (sup:debug-print-line "AHCI port " port " remained busy after COMRESET.")
+    (return-from ahci-port-reset nil))
+  ;; Command-timeout recovery can restart an already configured engine, while
+  ;; initialization must leave it stopped until its new CLB/FB are installed.
+  (when restart
+    (setf (ldb (byte 1 +ahci-PxCMD-ST+)
+               (ahci-port-register ahci port +ahci-register-PxCMD+))
+          1))
+  (sup:debug-print-line "Port reset complete.")
+  t)
 
 (defun ahci-set-port-atapi (ahci port atapi-p)
   (setf (ldb (byte 1 +ahci-PxCMD-ATAPI+)
              (ahci-port-register ahci port +ahci-register-PxCMD+))
         (if atapi-p 1 0)))
 
+(defun ahci-dma32-addressable-p (physical-address length)
+  (or (zerop length)
+      (and (<= 0 physical-address)
+           (<= (+ physical-address length -1) #xFFFFFFFF))))
+
+(defun ahci-call-with-dma-buffer (ahci buffer length write function)
+  "Call FUNCTION with a controller-addressable physical buffer address."
+  (cond ((or (null buffer) (zerop length))
+         (funcall function 0))
+        (t
+         (let ((physical-address (- buffer sup::+physical-map-base+)))
+           (cond ((or (ahci-64-bit-p ahci)
+                      (ahci-dma32-addressable-p physical-address length))
+                  (funcall function physical-address))
+                 (t
+                  (let* ((page-count (ceiling length sup::+4k-page-size+))
+                         (bounce-frame
+                           (sup::allocate-physical-pages
+                            page-count
+                            :mandatory-p "AHCI DMA32 bounce buffer"
+                            :32-bit-only t))
+                         (bounce-physical (* bounce-frame sup::+4k-page-size+))
+                         (bounce-virtual (sup::convert-to-pmap-address bounce-physical)))
+                    (unwind-protect
+                         (progn
+                           (when write
+                             (ata::ata-copy-memory bounce-virtual buffer length))
+                           (let ((result (funcall function bounce-physical)))
+                             (when (and result (not write))
+                               (ata::ata-copy-memory buffer bounce-virtual length))
+                             result))
+                      (sup::release-physical-pages bounce-frame page-count)))))))))
+
 (defun ahci-issue-packet-command (port-info cdb result-buffer result-len)
   (sup:ensure (ahci-port-atapi-p port-info))
-  ;; FIXME: Bounce buffer on non-64-bit capable HBAs
-  (cond (result-buffer
-         (setf result-buffer (- result-buffer sup::+physical-map-base+)))
-        (t
-         (setf result-buffer 0)))
+  (sup:ensure (and (integerp result-len) (<= 0 result-len #x10000)))
+  (sup:ensure (or (zerop result-len) result-buffer))
   (let ((ahci (ahci-port-ahci port-info))
         (port (ahci-port-id port-info)))
-    (ahci-setup-buffer ahci port result-buffer result-len nil t)
-    ;; Set registers in the FIS for an ATAPI command.
-    ;; DMA, device-to-host direction.
-    (setf (ahci-fis ahci port +sata-register-features+) #b0101)
-    (setf (ahci-fis ahci port +sata-register-lba-mid+) (ldb (byte 8 0) result-len)
-          (ahci-fis ahci port +sata-register-lba-high+) (ldb (byte 8 8) result-len))
-    ;; Fill the ACMD field.
-    (let* ((command-table (ahci-port-command-table port-info))
-           (ct (+ command-table +ahci-ct-ACMD+)))
-      (dotimes (i (ahci-port-cdb-size port-info))
-        (setf (sup::physical-memref-unsigned-byte-8 ct i) (svref cdb i))))
-    (ahci-run-command ahci port ata:+ata-command-packet+)
-    (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
-           (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
-      (cond ((logtest sts ata:+ata-err+)
-             (sup:debug-print-line "PACKET command failed. TFD: " tfd)
-             nil)
-            (t result-len)))))
+    (ahci-call-with-dma-buffer
+     ahci result-buffer result-len nil
+     (lambda (physical-buffer)
+       (if (plusp result-len)
+           (ahci-setup-buffer ahci port physical-buffer result-len nil t)
+           (ahci-setup-no-data ahci port t))
+       ;; Set registers in the FIS for an ATAPI command.
+       ;; DMA, device-to-host direction.
+       (setf (ahci-fis ahci port +sata-register-features+) #b0101)
+       (setf (ahci-fis ahci port +sata-register-lba-mid+) (ldb (byte 8 0) result-len)
+             (ahci-fis ahci port +sata-register-lba-high+) (ldb (byte 8 8) result-len))
+       ;; Fill the ACMD field.
+       (let* ((command-table (ahci-port-command-table port-info))
+              (ct (+ command-table +ahci-ct-ACMD+)))
+         (dotimes (i (ahci-port-cdb-size port-info))
+           (setf (sup::physical-memref-unsigned-byte-8 ct i) (svref cdb i))))
+       (unless (ahci-run-command ahci port ata:+ata-command-packet+)
+         (return-from ahci-issue-packet-command nil))
+       (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
+              (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
+         (cond ((logtest sts ata:+ata-err+)
+                (sup:debug-print-line "PACKET command failed. TFD: " tfd)
+                nil)
+               (t result-len)))))))
+
+(defun ahci-validate-lba-transfer (port-info lba count)
+  (sup:ensure (and (integerp lba) (not (minusp lba))))
+  (sup:ensure (and (integerp count) (not (minusp count))))
+  (sup:ensure (<= (+ lba count) (ahci-port-sector-count port-info)))
+  (let ((maximum-count (if (ahci-port-lba48-capable port-info) #x10000 #x100)))
+    (sup:ensure (<= count maximum-count)))
+  t)
 
 (defun ahci-rw-command (port-info lba count mem-addr command command-ext write)
   (sup:ensure (not (ahci-port-atapi-p port-info)))
-  ;; FIXME: Bounce buffer on non-64-bit capable HBAs
-  (setf mem-addr (- mem-addr sup::+physical-map-base+))
+  (ahci-validate-lba-transfer port-info lba count)
+  (when (zerop count)
+    (return-from ahci-rw-command t))
   (let ((ahci (ahci-port-ahci port-info))
-        (port (ahci-port-id port-info)))
-    (ahci-setup-buffer ahci port mem-addr (* count (ahci-port-sector-size port-info)) write nil)
-    (cond ((ahci-port-lba48-capable port-info)
-           (ahci-setup-lba48 ahci port lba count)
-           (ahci-run-command ahci port command-ext))
-          (t
-           (ahci-setup-lba28 ahci port lba count)
-           (ahci-run-command ahci port command)))
-    (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
-           (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
-      (cond ((logtest sts ata:+ata-err+)
-             (sup:debug-print-line (if write "Write" "Read") " failed. TFD: " tfd)
-             nil)
-            (t t)))))
+        (port (ahci-port-id port-info))
+        (length (* count (ahci-port-sector-size port-info))))
+    (sup:ensure (<= length +ahci-prdt-maximum-byte-count+))
+    (ahci-call-with-dma-buffer
+     ahci mem-addr length write
+     (lambda (physical-buffer)
+       (ahci-setup-buffer ahci port physical-buffer length write nil)
+       (let ((completed
+               (cond ((ahci-port-lba48-capable port-info)
+                      (ahci-setup-lba48 ahci port lba count)
+                      (ahci-run-command ahci port command-ext))
+                     (t
+                      (ahci-setup-lba28 ahci port lba count)
+                      (ahci-run-command ahci port command)))))
+         (unless completed
+           (return-from ahci-rw-command nil)))
+       (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
+              (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
+         (cond ((logtest sts ata:+ata-err+)
+                (sup:debug-print-line (if write "Write" "Read") " failed. TFD: " tfd)
+                nil)
+               (t t)))))))
 
 (defun ahci-read (port-info lba count mem-addr)
   (ahci-rw-command port-info
@@ -508,9 +598,14 @@
                    t))
 
 (defun ahci-flush (port-info)
-  ;; TODO. Should be pretty simple, but I'm not sure if this needs a DMA buffer
-  ;; configured. There's no data being transfered.
-  t)
+  (sup:ensure (not (ahci-port-atapi-p port-info)))
+  (let ((ahci (ahci-port-ahci port-info))
+        (port (ahci-port-id port-info)))
+    (ahci-setup-no-data ahci port nil)
+    (ahci-run-command ahci port
+                      (if (ahci-port-lba48-capable port-info)
+                          ata:+ata-command-flush-cache-ext+
+                          ata:+ata-command-flush-cache+))))
 
 (defun ahci-detect-atapi-drive (ahci port)
   ;; Issue IDENTIFY PACKET.
@@ -521,7 +616,9 @@
     (ahci-set-port-atapi ahci port t)
     (ahci-setup-buffer ahci port identify-data-phys 512 nil nil)
     (ahci-dump-port-registers ahci port)
-    (ahci-run-command ahci port ata:+ata-command-identify-packet+)
+    (unless (ahci-run-command ahci port ata:+ata-command-identify-packet+)
+      (sup:debug-print-line "IDENTIFY PACKET timed out or failed.")
+      (return-from ahci-detect-atapi-drive))
     (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
            (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
       (when (logtest sts ata:+ata-err+)
@@ -567,7 +664,9 @@
     (ahci-set-port-atapi ahci port nil)
     (ahci-setup-buffer ahci port identify-data-phys 512 nil nil)
     (ahci-dump-port-registers ahci port)
-    (ahci-run-command ahci port ata:+ata-command-identify+)
+    (unless (ahci-run-command ahci port ata:+ata-command-identify+)
+      (sup:debug-print-line "IDENTIFY timed out or failed.")
+      (return-from ahci-detect-drive))
     (let* ((tfd (ahci-port-register ahci port +ahci-register-PxTFD+))
            (sts (ldb (byte +ahci-PxTFD-STS-size+ +ahci-PxTFD-STS-position+) tfd)))
       (when (logtest sts ata:+ata-err+)
@@ -606,12 +705,11 @@
       (sup:debug-print-line "Sector count: " sector-count)
       (sup:debug-print-line "Serial: " serial-number)
       (sup:debug-print-line "Model: " model-number)
-      ;; FIXME: Can transfer more than 256 sectors at once...
       (sup:register-disk port-info
                          t
                          sector-count
                          sector-size
-                         256
+                         (ahci-maximum-transfer-sectors port-info)
                          'ahci-read 'ahci-write 'ahci-flush
                          (sys.int::cons-in-area
                           model-number
@@ -620,6 +718,11 @@
                            nil
                            :wired)
                           :wired)))))
+
+(defun ahci-maximum-transfer-sectors (port-info)
+  (min (if (ahci-port-lba48-capable port-info) #x10000 #x100)
+       (floor +ahci-prdt-maximum-byte-count+
+              (ahci-port-sector-size port-info))))
 
 (defun (setf ahci-fis) (value ahci port offset)
   "Write an octet into the command FIS for PORT."
@@ -635,7 +738,9 @@
 
 (defun ahci-setup-lba28 (ahci port lba count)
   "Set registers in the FIS for an LBA28 command."
-  ;; FIXME: Limit checking LBA & COUNT and if COUNT = MAX, then handle that.
+  (sup:ensure (and (integerp lba) (<= 0 lba) (< lba (ash 1 28))))
+  (sup:ensure (and (integerp count) (<= 1 count #x100)))
+  (sup:ensure (<= (+ lba count) (ash 1 28)))
   ;; Count.
   (setf (ahci-fis ahci port +sata-register-count+) (ldb (byte 8 0) count))
   ;; LBA.
@@ -648,7 +753,9 @@
 
 (defun ahci-setup-lba48 (ahci port lba count)
   "Set registers in the FIS for an LBA48 command."
-  ;; FIXME: Limit checking LBA & COUNT and if COUNT = MAX, then handle that.
+  (sup:ensure (and (integerp lba) (<= 0 lba) (< lba (ash 1 48))))
+  (sup:ensure (and (integerp count) (<= 1 count #x10000)))
+  (sup:ensure (<= (+ lba count) (ash 1 48)))
   ;; Count.
   (setf (ahci-fis ahci port +sata-register-count+) (ldb (byte 8 0) count)
         (ahci-fis ahci port +sata-register-count-exp+) (ldb (byte 8 8) count))
@@ -664,6 +771,7 @@
 
 (defun ahci-setup-buffer (ahci port buffer length write atapi)
   "Configure the DMA buffer for this command."
+  (sup:ensure (<= 1 length +ahci-prdt-maximum-byte-count+))
   (let* ((ct (ahci-port-command-table (ahci-port ahci port)))
          (cl (ahci-port-command-list (ahci-port ahci port))))
     ;; Update write bit in the command header.
@@ -673,10 +781,26 @@
     (setf (ldb (byte 1 +ahci-ch-di-A+)
                (sup::physical-memref-unsigned-byte-32 cl +ahci-ch-descriptor-information+))
           (if atapi 1 0))
+    (setf (ldb (byte +ahci-ch-di-PRDTL-size+ +ahci-ch-di-PRDTL-position+)
+               (sup::physical-memref-unsigned-byte-32 cl +ahci-ch-descriptor-information+))
+          1)
     ;; Point the PRDT 0 to the buffer.
     (setf (sup::physical-memref-unsigned-byte-32 (+ ct +ahci-ct-PRDT+) +ahci-PRDT-DBA+) (ldb (byte 32 0) buffer)
           (sup::physical-memref-unsigned-byte-32 (+ ct +ahci-ct-PRDT+) +ahci-PRDT-DBAU+) (ldb (byte 32 32) buffer))
     (setf (sup::physical-memref-unsigned-byte-32 (+ ct +ahci-ct-PRDT+) +ahci-PRDT-descriptor-information+) (ash (1- length) +ahci-PRDT-di-DBC-position+))))
+
+(defun ahci-setup-no-data (ahci port atapi)
+  (let ((cl (ahci-port-command-list (ahci-port ahci port))))
+    (setf (ldb (byte 1 +ahci-ch-di-W+)
+               (sup::physical-memref-unsigned-byte-32 cl +ahci-ch-descriptor-information+))
+          0)
+    (setf (ldb (byte 1 +ahci-ch-di-A+)
+               (sup::physical-memref-unsigned-byte-32 cl +ahci-ch-descriptor-information+))
+          (if atapi 1 0))
+    (setf (ldb (byte +ahci-ch-di-PRDTL-size+ +ahci-ch-di-PRDTL-position+)
+               (sup::physical-memref-unsigned-byte-32 cl +ahci-ch-descriptor-information+))
+          0))
+  (values))
 
 (defun ahci-clear-irq-state-buffer (port-info)
   (sup:without-interrupts
@@ -715,7 +839,9 @@
 
 (defun ahci-run-command (ahci port command)
   (let* ((port-info (ahci-port ahci port))
-         (irq-timeout-timer (ahci-port-irq-timeout-timer port-info)))
+         (irq-timeout-timer (ahci-port-irq-timeout-timer port-info))
+         (completed nil)
+         (timed-out nil))
     ;; Reset PRDBC, stop it accumulating over commands. I'm not sure how the HBA actually uses this,
     ;; if it keeps track of DMA progress or if it's just for reporting.
     (setf (sup::physical-memref-unsigned-byte-32 (ahci-port-command-list port-info) +ahci-ch-PRDBC+) 0)
@@ -735,7 +861,7 @@
     ;; Start command 1.
     (setf (ahci-port-register ahci port +ahci-register-PxCI+) 1)
     ;; Wait for it... Wait for it...
-    (sup:timer-arm 30 irq-timeout-timer)
+    (sup:timer-arm +ahci-command-timeout-seconds+ irq-timeout-timer)
     (loop
        ;; Success is still determined by hardware command state. Error exit is
        ;; driven by a new TFES interrupt for this port, not by the sticky TFD
@@ -767,13 +893,19 @@
           (when (and (not (logbitp 0 pxci))
                      (not (or (logtest sts ata:+ata-bsy+)
                               (logtest sts ata:+ata-drq+))))
+            (setf completed t)
             (return)))
        (when (sup:timer-expired-p irq-timeout-timer)
-         ;; FIXME: Do something better than this.
          (sup:debug-print-line "*** AHCI-RUN-COMMAND TIMEOUT EXPIRED! ***")
+         (setf timed-out t)
          (return)))
     ;; -absolute is non-consing
-    (sup:timer-disarm-absolute irq-timeout-timer)))
+    (sup:timer-disarm-absolute irq-timeout-timer)
+    (when timed-out
+      (unless (ahci-port-reset ahci port)
+        (sup:debug-print-line "AHCI port " port " reset failed after command timeout."))
+      (return-from ahci-run-command nil))
+    completed))
 
 (defun ahci-initialize-port (ahci port)
   ;; Disable Command List processing and FIS RX.
@@ -781,14 +913,25 @@
     (setf (ldb (byte 1 +ahci-PxCMD-ST+) cmd) 0
           (ldb (byte 1 +ahci-PxCMD-FRE+) cmd) 0)
     (setf (ahci-port-register ahci port +ahci-register-PxCMD+) cmd))
-  ;; Wait for CR and FR to clear before changing Command List/FIS base addresses.
-  ;; TODO: Put a timeout on this and reset the port if needed.
-  (sup:debug-print-line "Waiting for CR/FR to stop.")
-  (loop
-     (let ((cmd (ahci-port-register ahci port +ahci-register-PxCMD+)))
-       (when (and (not (logbitp +ahci-PxCMD-CR+ cmd))
-                  (not (logbitp +ahci-PxCMD-FR+ cmd)))
-         (return))))
+  ;; All command/FIS engine state must be stopped before changing Command
+  ;; List/FIS base addresses.
+  (sup:debug-print-line "Waiting for ST/FRE/CR/FR to stop.")
+  (let ((running-mask (logior (ash 1 +ahci-PxCMD-ST+)
+                              (ash 1 +ahci-PxCMD-FRE+)
+                              (ash 1 +ahci-PxCMD-CR+)
+                              (ash 1 +ahci-PxCMD-FR+))))
+    (unless (ahci-wait-port-bits-clear ahci port +ahci-register-PxCMD+
+                                       running-mask
+                                       +ahci-port-stop-timeout-seconds+)
+      (sup:debug-print-line "AHCI port " port " did not stop; resetting.")
+      (unless (and (ahci-port-reset ahci port :restart nil)
+                   (ahci-wait-port-bits-clear ahci port +ahci-register-PxCMD+
+                                              running-mask
+                                              +ahci-port-stop-timeout-seconds+))
+        (sup:debug-print-line "AHCI port " port
+                              " cannot be stopped; disabling the port.")
+        (setf (svref (ahci-ports ahci) port) nil)
+        (return-from ahci-initialize-port nil))))
   ;; Allocate the Command List, Received FIS and one Command Table.
   (let* ((port-data (sup::allocate-physical-pages 1
                                                   :mandatory-p "AHCI Port"

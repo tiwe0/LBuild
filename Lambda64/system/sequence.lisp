@@ -465,21 +465,39 @@
                      (funcall key (aref vector (1+ i)))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute) ; needed for x-compiler
-;; FIXME: This should also extract the length and return it too.
 (defun vector-type-element-type (type &optional environment)
   (let ((expanded-type (typeexpand type environment)))
     (cond ((and (listp expanded-type)
-                (member (first expanded-type) '(vector simple-array array))
-                (>= (length expanded-type) 2)
-                (not (eql (second expanded-type) '*)))
-           (second expanded-type))
+                (eql (first expanded-type) 'vector)
+                (>= (length expanded-type) 2))
+           (values (if (eql (second expanded-type) '*)
+                       't
+                       (second expanded-type))
+                   (if (>= (length expanded-type) 3)
+                       (third expanded-type)
+                       '*)))
+          ((and (listp expanded-type)
+                (member (first expanded-type) '(simple-array array))
+                (>= (length expanded-type) 2))
+           (let ((dimensions (if (>= (length expanded-type) 3)
+                                 (third expanded-type)
+                                 '*)))
+             (values (if (eql (second expanded-type) '*)
+                         't
+                         (second expanded-type))
+                     (if (and (consp dimensions)
+                              (null (rest dimensions))
+                              (integerp (first dimensions)))
+                         (first dimensions)
+                         '*))))
           ((subtypep expanded-type 'base-string environment)
-           'base-char)
+           (values 'base-char '*))
           ((subtypep expanded-type 'string environment)
-           'character)
+           (values 'character '*))
           ((subtypep expanded-type 'bit-vector environment)
-           'bit)
-          (t 't))))
+           (values 'bit '*))
+          (t
+           (values 't '*)))))
 )
 
 (define-compiler-macro concatenate (&whole whole &environment environment result-type &rest sequences)
@@ -494,24 +512,33 @@
                   (subtypep type 'list environment))
              `(%concatenate-list ,@sequences))
             ((subtypep type 'vector environment)
-             `(%concatenate-vector ',(upgraded-array-info
-                                      (vector-type-element-type type environment))
-                                   ,@sequences))
+             (multiple-value-bind (element-type expected-length)
+                 (vector-type-element-type type environment)
+               `(%concatenate-vector ',(upgraded-array-info element-type)
+                                     ',expected-length
+                                     ,@sequences)))
             (t (bail))))))
 
-(defun %concatenate-vector (array-info &rest sequences)
+(defun %concatenate-vector (array-info expected-length &rest sequences)
   (declare (dynamic-extent sequences))
   ;; Compute total length.
-  (let* ((total-length (loop for seq in sequences summing (length seq)))
-         (result (if (specialized-array-definition-tag array-info)
-                     (make-simple-array-1 total-length array-info nil)
-                     (make-array total-length
-                                 :element-type (specialized-array-definition-type array-info))))
-         (position 0))
-    (dolist (seq sequences)
-      (setf (subseq result position) seq)
-      (incf position (length seq)))
-    result))
+  (let* ((total-length (loop for seq in sequences summing (length seq))))
+    (unless (or (eql expected-length '*)
+                (eql total-length expected-length))
+      (error 'simple-type-error
+             :expected-type `(eql ,expected-length)
+             :datum total-length
+             :format-control "Result-type restricted to ~D elements, but ~D elements provided"
+             :format-arguments (list expected-length total-length)))
+    (let* ((result (if (specialized-array-definition-tag array-info)
+                       (make-simple-array-1 total-length array-info nil)
+                       (make-array total-length
+                                   :element-type (specialized-array-definition-type array-info))))
+           (position 0))
+      (dolist (seq sequences)
+        (setf (subseq result position) seq)
+        (incf position (length seq)))
+      result)))
 
 (defun %concatenate-list (&rest sequences)
   (declare (dynamic-extent sequences))
@@ -539,9 +566,12 @@
     ((subtypep result-type 'list)
      (apply #'%concatenate-list sequences))
     ((subtypep result-type 'vector)
-     (apply #'%concatenate-vector
-            (upgraded-array-info (vector-type-element-type result-type))
-            sequences))
+     (multiple-value-bind (element-type expected-length)
+         (vector-type-element-type result-type)
+       (apply #'%concatenate-vector
+              (upgraded-array-info element-type)
+              expected-length
+              sequences)))
     (t (error "Don't understand result-type ~S." result-type))))
 
 (define-compiler-macro every (predicate first-seq &rest more-sequences)
@@ -1206,6 +1236,10 @@
   ;; to lists before doing MERGE-LISTS -- WHN 2003-01-05
   (cond
     ((subtypep result-type 'list)
+     (dolist (sequence (list sequence1 sequence2))
+       (when (and (consp sequence)
+                  (null (list-length sequence)))
+         (error "MERGE does not accept circular lists.")))
      ;; the VECTOR clause, below, goes through MAKE-SEQUENCE, so
      ;; benefits from the error checking there. Short of
      ;; reimplementing everything, we can't do the same for the LIST
@@ -1220,8 +1254,6 @@
                   (subtypep result-type 'null))
          (if (and (null s1) (null s2))
              (return-from merge 'nil)
-             ;; FIXME: This will break on circular lists (as,
-             ;; indeed, will the whole MERGE function).
              (error "MERGE result type has too few elements.")))
        (error "Result type ~S looks a bit like 'LIST, but is too complicated!" result-type)))
     ((subtypep result-type 'vector)

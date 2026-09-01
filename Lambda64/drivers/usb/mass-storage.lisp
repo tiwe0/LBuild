@@ -91,6 +91,7 @@
 (define-constant +scsi-flags+           1)
 
 (defconstant +scsi-code-inquiry+    #x12)
+(defconstant +scsi-code-mode-sense/6+ #x1A)
 (defconstant +scsi-code-read/10+    #x28)
 (defconstant +scsi-code-write/10+   #x2A)
 (defconstant +scsi-code-read/16+    #x88)
@@ -98,6 +99,10 @@
 (defconstant +scsi-service-action+  #x9E)
 
 (defconstant +scsi-code-read-capacity+ #x10)
+(defconstant +scsi-control-naca+ #x04)
+(defconstant +scsi-mode-sense-dbd+ #x08)
+(defconstant +scsi-mode-page-all+ #x3F)
+(defconstant +scsi-mode-device-write-protected+ #x80)
 
 ;;======================================================================
 ;; Notes
@@ -156,6 +161,23 @@
                   (timeout-endpoint c)
                   (timeout-enqueued-buf c)))
 
+(define-condition mass-storage-transfer-timeout (error)
+  ((%operation :initarg :operation :reader timeout-operation)
+   (%stage :initarg :stage :reader timeout-stage)
+   (%endpoint :initarg :endpoint :reader timeout-endpoint)
+   (%length :initarg :length :reader timeout-length)
+   (%seconds :initarg :seconds :reader timeout-seconds))
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "USB mass storage ~A ~A transfer timed out after ~,3F seconds ~
+              on endpoint ~D (~D bytes)"
+             (timeout-operation condition)
+             (timeout-stage condition)
+             (timeout-seconds condition)
+             (timeout-endpoint condition)
+             (timeout-length condition)))))
+
 ;;======================================================================
 ;;======================================================================
 (defclass usb-ms-partition (disk-partition-mixin)
@@ -191,14 +213,26 @@
         (aref buf (+ offset +cbw-lun+))
         logical-unit))
 
-(defun encode-scsi-inquiry (buf offset vital-p page length)
+(defun encode-scsi-inquiry (buf offset vital-p page length &key naca-p)
   (let ((cbw-offset (+ offset +cbw-control-block+)))
     (setf (aref buf (+ offset +cbw-cb-length+)) 6
           (aref buf cbw-offset) +scsi-code-inquiry+
           (aref buf (+ cbw-offset 1)) (if vital-p 1 0)
           (aref buf (+ cbw-offset 2)) page
           (get-unsigned-word/16 buf (+ cbw-offset 3)) length
-          (aref buf (+ cbw-offset 5)) 0))) ;; TODO what about the NACA bit
+          (aref buf (+ cbw-offset 5))
+          (if naca-p +scsi-control-naca+ 0))))
+
+(defun encode-scsi-mode-sense/6 (buf offset length)
+  "Encode MODE SENSE(6) for the mode header containing the WP bit."
+  (let ((cbw-offset (+ offset +cbw-control-block+)))
+    (setf (aref buf (+ offset +cbw-cb-length+)) 6
+          (aref buf cbw-offset) +scsi-code-mode-sense/6+
+          (aref buf (+ cbw-offset 1)) +scsi-mode-sense-dbd+
+          (aref buf (+ cbw-offset 2)) +scsi-mode-page-all+
+          (aref buf (+ cbw-offset 3)) 0
+          (aref buf (+ cbw-offset 4)) length
+          (aref buf (+ cbw-offset 5)) 0)))
 
 (defun encode-scsi-read-capacity/10 (buf offset)
   (let ((cbw-offset (+ offset +cbw-control-block+)))
@@ -248,6 +282,25 @@
     (when (eq (timed-wait event 0.500) :timeout)
       (sup:debug-print-line "send-buf timeout")
       (signal 'timeout-retry :endpoint endpoint :enqueued-buf buf))))
+
+(defun probe-transfer
+    (usbd device mass-storage operation stage endpoint buf length
+     &optional (timeout 1.0))
+  "Run one probe transfer and report enough context to diagnose a timeout."
+  (let ((event (mass-storage-event mass-storage)))
+    (setf (sup:event-state event) nil)
+    (bulk-enqueue-buf usbd device endpoint buf length)
+    (when (eq (timed-wait event timeout) :timeout)
+      ;; The probe buffers have dynamic extent. Ensure the controller cannot
+      ;; retain one before the error unwinds through WITH-BUFFERS.
+      (bulk-dequeue-buf usbd device endpoint buf)
+      (error 'mass-storage-transfer-timeout
+             :operation operation
+             :stage stage
+             :endpoint endpoint
+             :length length
+             :seconds timeout))
+    (mass-storage-status mass-storage)))
 
 (defun %read-sector (usbd device mass-storage lba buf offset)
   (enter-function "%read-sector")
@@ -484,43 +537,28 @@
 (defun parse-inquiry (usbd device mass-storage)
   (enter-function "parse-inquiry")
 
-  (let ((data-length 36)
-        (event (mass-storage-event mass-storage)))
+  (let ((data-length 36))
     (with-buffers ((buf-pool usbd) ((cmd-buf /8 31)
                                     (data-buf /8 data-length)
                                     (status-buf /8 13)))
       ;; send inquiry command
       (encode-cbw mass-storage cmd-buf 0 data-length T 0)
       (encode-scsi-inquiry cmd-buf 0 NIL 0 data-length)
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-out-endpt-num mass-storage)
-                        cmd-buf
-                        31)
+      (probe-transfer usbd device mass-storage :inquiry :command
+                      (mass-storage-bulk-out-endpt-num mass-storage)
+                      cmd-buf 31)
 
       (with-trace-level (4)
         (sup:debug-print-line "inquiry command buffer:")
         (print-buffer sys.int::*cold-stream* cmd-buf :indent "  "))
 
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage inquiry command timeout"))
-
       (with-trace-level (4)
         (sup:debug-print-line "inquiry command status"
                               (mass-storage-status mass-storage)))
 
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-in-endpt-num mass-storage)
-                        data-buf
-                        data-length)
-
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage inquiry data timeout"))
+      (probe-transfer usbd device mass-storage :inquiry :data-in
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      data-buf data-length)
 
       (with-trace-level (3)
         (sup:debug-print-line "inquiry data buffer:")
@@ -528,16 +566,9 @@
         (sup:debug-print-line "inquiry data status "
                               (mass-storage-status mass-storage)))
 
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-in-endpt-num mass-storage)
-                        status-buf
-                        13)
-
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage inquiry status timeout"))
+      (probe-transfer usbd device mass-storage :inquiry :status
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      status-buf 13)
 
       (with-trace-level (4)
         (sup:debug-print-line "inquiry status buffer:")
@@ -571,8 +602,7 @@
 (defun parse-read-capacity (usbd device mass-storage cap/10-p)
   (enter-function "parse-read-capacity")
 
-  (let ((data-length (if cap/10-p 8 32))
-        (event (mass-storage-event mass-storage)))
+  (let ((data-length (if cap/10-p 8 32)))
     (with-buffers ((buf-pool usbd) ((cmd-buf /8 31)
                                     (data-buf /8 data-length)
                                     (status-buf /8 13)))
@@ -581,35 +611,21 @@
       (if cap/10-p
           (encode-scsi-read-capacity/10 cmd-buf 0)
           (encode-scsi-read-capacity/16 cmd-buf 0 data-length))
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-out-endpt-num mass-storage)
-                        cmd-buf
-                        31)
+      (probe-transfer usbd device mass-storage :read-capacity :command
+                      (mass-storage-bulk-out-endpt-num mass-storage)
+                      cmd-buf 31)
 
       (with-trace-level (4)
         (sup:debug-print-line "read capacity command buffer:")
         (print-buffer sys.int::*cold-stream* cmd-buf :indent "  "))
 
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage read capacity command timeout"))
-
       (with-trace-level (4)
         (sup:debug-print-line "read capacity command status "
                               (mass-storage-status mass-storage)))
 
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-in-endpt-num mass-storage)
-                        data-buf
-                        data-length)
-
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage read capacity data timeout"))
+      (probe-transfer usbd device mass-storage :read-capacity :data-in
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      data-buf data-length)
 
       (with-trace-level (3)
         (sup:debug-print-line "read capacity data buffer:")
@@ -617,16 +633,9 @@
         (sup:debug-print-line "read capacity data status "
                               (mass-storage-status mass-storage)))
 
-      (setf (sup:event-state event) nil)
-      (bulk-enqueue-buf usbd
-                        device
-                        (mass-storage-bulk-in-endpt-num mass-storage)
-                        status-buf
-                        13)
-
-      (when (eq (timed-wait event 1.0) :timeout)
-        ;; TODO need better error message here
-        (error "Mass storage read capacity status timeout"))
+      (probe-transfer usbd device mass-storage :read-capacity :status
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      status-buf 13)
 
       (with-trace-level (4)
         (sup:debug-print-line "read capacity status buffer:")
@@ -664,6 +673,44 @@
                                    "read capacity failed with unkown error "
                                    (aref status-buf 12))
              (throw :probe-failed :failed))))))
+
+(defun probe-writable-p (usbd device mass-storage)
+  "Return true when MODE SENSE(6) reports that the medium is writable."
+  (let ((data-length 4))
+    (with-buffers ((buf-pool usbd) ((cmd-buf /8 31)
+                                    (data-buf /8 data-length)
+                                    (status-buf /8 13)))
+      (encode-cbw mass-storage cmd-buf 0 data-length t 0)
+      (encode-scsi-mode-sense/6 cmd-buf 0 data-length)
+      (probe-transfer usbd device mass-storage :mode-sense :command
+                      (mass-storage-bulk-out-endpt-num mass-storage)
+                      cmd-buf 31)
+      (probe-transfer usbd device mass-storage :mode-sense :data-in
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      data-buf data-length)
+      (probe-transfer usbd device mass-storage :mode-sense :status
+                      (mass-storage-bulk-in-endpt-num mass-storage)
+                      status-buf 13)
+      (case (aref status-buf +cs2-status+)
+        (#.+csw-status-success+
+         (zerop (logand (aref data-buf 2)
+                        +scsi-mode-device-write-protected+)))
+        (#.+csw-status-cmd-failed+
+         ;; MODE SENSE failure cannot safely establish write capability.
+         (sup:debug-print-line
+          "Mass Storage MODE SENSE failed; registering read-only")
+         nil)
+        (#.+csw-phase-error+
+         (sup:debug-print-line
+          "Mass Storage MODE SENSE phase error; registering read-only")
+         (reset-recovery usbd device mass-storage)
+         nil)
+        (otherwise
+         (sup:debug-print-line
+          "Mass Storage MODE SENSE returned invalid CSW status "
+          (aref status-buf +cs2-status+)
+          "; registering read-only")
+         nil)))))
 
 (defun probe-mass-storage-scsi (usbd device iface-desc configs)
   (when (/= (aref iface-desc +id-num-endpoints+) 2)
@@ -719,8 +766,8 @@
     (setf (mass-storage-disk mass-storage)
           (make-instance 'usb-ms-disk
                          :mass-storage mass-storage
-                         ;; TODO really determine writable
-                         :writable-p T
+                         :writable-p
+                         (probe-writable-p usbd device mass-storage)
                          :n-sectors (mass-storage-num-blocks mass-storage)
                          :sector-size (mass-storage-block-size mass-storage))
           (mass-storage-partitions mass-storage)

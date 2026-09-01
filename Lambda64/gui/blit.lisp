@@ -105,7 +105,23 @@
 
 ;;; High-level functions.
 
-;;; FIXME: BITBLT has problems with overlapping copies.
+(defun %2d-array-storage-regions-overlap-p (nrows ncols
+                                            from-offset from-stride
+                                            to-offset to-stride)
+  "Return true when two row-major rectangular storage regions intersect."
+  (loop
+    with from-row = 0
+    with to-row = 0
+    while (and (< from-row nrows) (< to-row nrows))
+    for from-start = (+ from-offset (* from-row from-stride))
+    for to-start = (+ to-offset (* to-row to-stride))
+    do (cond ((<= (+ from-start ncols) to-start)
+              (incf from-row))
+             ((<= (+ to-start ncols) from-start)
+              (incf to-row))
+             (t
+              (return t)))
+    finally (return nil)))
 
 (defun 2d-array-bitblt (nrows ncols from-array from-row from-col to-array to-row to-col)
   (multiple-value-bind (nrows ncols from from-offset from-stride to to-offset to-stride)
@@ -113,13 +129,31 @@
     (assert (simple-ub32-vector-p from))
     (assert (simple-ub32-vector-p to))
     (when (> ncols 0)
-      (dotimes (y nrows)
-        (%bitblt-line #'%%set-one-argb8888-argb8888
-                      to to-offset
-                      ncols
-                      from from-offset)
-        (incf from-offset from-stride)
-        (incf to-offset to-stride)))))
+      (if (and (eq from to)
+               (%2d-array-storage-regions-overlap-p
+                nrows ncols from-offset from-stride to-offset to-stride))
+          ;; A line-wise copy cannot select one traversal direction that is
+          ;; safe for every overlapping 2D layout. Snapshot the complete
+          ;; source rectangle before modifying the shared storage.
+          (let ((source-copy (make-array (* nrows ncols)
+                                         :element-type '(unsigned-byte 32))))
+            (dotimes (y nrows)
+              (%bitblt-line #'%%set-one-argb8888-argb8888
+                            source-copy (* y ncols)
+                            ncols
+                            from (+ from-offset (* y from-stride))))
+            (dotimes (y nrows)
+              (%bitblt-line #'%%set-one-argb8888-argb8888
+                            to (+ to-offset (* y to-stride))
+                            ncols
+                            source-copy (* y ncols))))
+          (dotimes (y nrows)
+            (%bitblt-line #'%%set-one-argb8888-argb8888
+                          to to-offset
+                          ncols
+                          from from-offset)
+            (incf from-offset from-stride)
+            (incf to-offset to-stride))))))
 
 (defun 2d-array-bitblt-blend (nrows ncols from-array from-row from-col to-array to-row to-col)
   (multiple-value-bind (nrows ncols from from-offset from-stride to to-offset to-stride)
@@ -324,11 +358,31 @@
         (incf mask-offset mask-stride)
         (incf to-offset to-stride)))))
 
-;; TODO: Be more smart with alignment here.
+(declaim (inline %bitblt-blend-alignment-prefix))
+(defun %bitblt-blend-alignment-prefix (to-offset ncols)
+  "Return the scalar prefix needed to align a UB32 destination for SIMD."
+  (declare (type fixnum to-offset ncols)
+           (optimize speed (safety 0) (debug 0)))
+  ;; Heap objects are 16-byte aligned and an unpadded UB32 array's payload
+  ;; begins after its one-word header. Consequently element offset 2 modulo 4
+  ;; is the first 16-byte-aligned pixel address.
+  (min ncols (logand (- 2 to-offset) 3)))
+
 (defun %bitblt-blend-line (to to-offset ncols from from-offset)
   (declare (type (simple-array (unsigned-byte 32) (*)) to from)
            (type fixnum ncols to-offset from-offset)
            (optimize speed (safety 0) (debug 0)))
+  ;; Peel only the destination prefix, giving subsequent bulk stores a
+  ;; 16-byte-aligned effective address. Keep the existing source access
+  ;; semantics so differing offsets do not discard the bulk path.
+  (let ((prefix (%bitblt-blend-alignment-prefix to-offset ncols)))
+    (loop
+      repeat prefix
+      do (%%alpha-blend-one-argb8888-argb8888
+          (aref from from-offset) to to-offset)
+         (decf ncols)
+         (incf to-offset)
+         (incf from-offset)))
   ;; Blast whole chunks of 16 pixels at once
   (loop
     while (>= ncols 16)

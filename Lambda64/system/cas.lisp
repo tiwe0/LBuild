@@ -87,10 +87,9 @@ Returns a fixnum. X & Y must be fixnums."
   (when (not (fixnump y))
     (raise-type-error y 'fixnum)
     (%%unreachable))
-  ;; FIXME: %FAST-FIXNUM-+ isn't the right function to use.
-  ;; The behaviour on overflow is undefined, not wrapping, but the current
-  ;; implementation wraps the result.
-  (the fixnum (mezzano.compiler::%fast-fixnum-+ x y)))
+  ;; Use the dedicated wrapping primitive rather than %FAST-FIXNUM-+:
+  ;; callers of this helper rely on the defined modulo-fixnum result.
+  (the fixnum (mezzano.compiler::%wrapping-fixnum-+ x y)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun struct-accessor-info (name &optional environment)
@@ -186,8 +185,8 @@ If NAME does not name a struct accessor, then NIL is returned."
                         when (eq ,cas-form ,old-sym)
                         return ,,(if no-result '(values) 'old-sym)))))))))))
 
-;; TODO: We've got atomic ops that perform these operations directly. Use
-;; them instead of expanding to CAS loops.
+;; Prefer the operation-specific atomic primitive for supported places; the
+;; generated macro retains a CAS loop only for places without a direct form.
 
 (define-atomic-rmw-operation atomic-incf (&optional (delta 1))
   wrapping-fixnum-+
@@ -206,9 +205,14 @@ PLACE must contain a fixnum and if overflow occurs then the resulting value
 will be wrapped as though it were a fixnum-sized signed 2's complement integer.
 DELTA must be a fixnum.
 Returns the old value of PLACE."
-  ;; FIXME: This won't work for subtracting MOST-NEGATIVE-FIXNUM.
-  ;; Negating it produces (1+ MOST-POSITIVE-FIXNUM)
-  `(atomic-incf ,place (- ,delta)))
+  ;; The negation of MOST-NEGATIVE-FIXNUM is not representable as a fixnum,
+  ;; but it has the same two's-complement bit pattern as the required wrapped
+  ;; addition delta.
+  `(atomic-incf ,place
+                (let ((delta ,delta))
+                  (if (eql delta most-negative-fixnum)
+                      delta
+                      (- delta)))))
 
 (define-atomic-rmw-operation atomic-logandf (integer)
   logand

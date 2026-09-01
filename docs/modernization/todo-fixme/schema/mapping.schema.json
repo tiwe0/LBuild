@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseline-id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "links": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "occurrence-id": {
+            "pattern": "^TF-[a-z0-9-]+$",
+            "type": "string"
+          },
+          "relation": {
+            "enum": [
+              "implements",
+              "documents",
+              "blocks",
+              "same-capability"
+            ]
+          },
+          "work-item-id": {
+            "pattern": "^TF-[A-Za-z0-9-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "occurrence-id",
+          "work-item-id",
+          "relation"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "baseline-id",
+    "links"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 occurrence-to-work-item mapping",
+  "type": "object"
+}

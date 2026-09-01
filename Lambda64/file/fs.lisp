@@ -41,6 +41,8 @@
            #:file-host-mount-device
            #:mount-host
            #:create-host
+           #:filesystem-host-name
+           #:filesystem-name-alist
            #:register-block-device-host-type
            #:mount-block-device
            #:unmount-block-device
@@ -211,21 +213,46 @@
             (mezzano.internals::sxhash-1 (pathname-type pathname) depth)
             (mezzano.internals::sxhash-1 version depth))))
 
+(defun match-directory-components (source pattern)
+  "Match directory component lists and return wildcard captures.
+Each capture is a cons whose car is :WILD or :WILD-INFERIORS and whose cdr is
+the corresponding source component or component list."
+  (labels ((match (source pattern captures)
+             (cond ((null pattern)
+                    (if (null source)
+                        (values t (nreverse captures))
+                        (values nil nil)))
+                   ((eql (first pattern) :wild-inferiors)
+                    (loop for count from 0 to (length source)
+                          do
+                             (multiple-value-bind (matchedp result)
+                                 (match (nthcdr count source)
+                                        (rest pattern)
+                                        (cons (cons :wild-inferiors
+                                                    (subseq source 0 count))
+                                              captures))
+                               (when matchedp
+                                 (return (values t result))))
+                          finally (return (values nil nil))))
+                   ((null source)
+                    (values nil nil))
+                   ((eql (first pattern) :wild)
+                    (match (rest source)
+                           (rest pattern)
+                           (cons (cons :wild (first source)) captures)))
+                   ((equal (first source) (first pattern))
+                    (match (rest source) (rest pattern) captures))
+                   (t
+                    (values nil nil)))))
+    (match source pattern '())))
+
 (defun pathname-match-directory (p w)
   (let ((p-dir (pathname-directory p))
         (w-dir (pathname-directory w)))
-    (labels ((match (p w)
-               (cond
-                 ;; :wild-inferiors matches the remaining directory levels
-                 ((eql (first w) :wild-inferiors) t)
-                 ((and (null p) (null w)) t)
-                 ((or (null p) (null w)) nil)
-                 ((eql (first w) :wild)
-                  (match (rest p) (rest w)))
-                 (t (and (string= (first p) (first w))
-                         (match (rest p) (rest w)))))))
-      (and (eql (first p-dir) (first w-dir))
-           (match (rest p-dir) (rest w-dir))))))
+    (and (eql (first p-dir) (first w-dir))
+         (nth-value 0
+                    (match-directory-components (rest p-dir)
+                                                (rest w-dir))))))
 
 (defun pathname-match-p (pathname wildcard)
   (let ((p (pathname pathname))
@@ -612,46 +639,48 @@ NAMESTRING as the second."
 (defun translate-directory (source from-wildcard to-wildcard)
   (let* ((s-d (pathname-directory source))
          (f-d (pathname-directory from-wildcard))
-         (t-d (pathname-directory to-wildcard))
-         (new-path (list (first t-d))))
-    (when (null f-d)
-      (return-from translate-directory source))
-    (loop ;; Match leading parts of source/from.
-       (cond ((eql (first f-d) :wild)
-              (error ":WILD elements in from-wildcard directory not yet supported..."))
-             ((eql (first f-d) :wild-inferiors)
-              (assert (null (rest f-d)) (source from-wildcard to-wildcard)
-                      ":WILD-INFERIORS must be the last directory entry... (FIXME)")
-              (return))
-             ((and (null s-d) (null f-d))
-              (return))
-             ((or (null s-d)
-                  (null f-d)
-                  (not (equal (first s-d) (first f-d))))
-              (error "Directory entry mismatch. ~S ~S ~S ~S ~S~%"
-                     (first s-d) (first f-d)
-                     source from-wildcard to-wildcard)))
-       (setf s-d (rest s-d)
-             f-d (rest f-d)))
-    ;; Merge SOURCE and TO. First component was done above.
-    (do ((d (rest t-d) (cdr d)))
-        ((or (null d)
-             (eql (first d) :wild-inferiors))
-         (cond ((null d)
-                (assert (endp s-d) (s-d)
-                        "To-wildcard directory portion exhausted with remaining source values.")
-                (nreverse new-path))
-               (t
-                (assert (null (rest d))
-                        (source from-wildcard to-wildcard)
-                        ":WILD-INFERIORS must be the last directory entry... (FIXME)")
-                (nconc (nreverse new-path)
-                       (loop
-                          for component in s-d
-                          collect (case-correct-path-component component (pathname-host source) (pathname-host to-wildcard)))))))
-      (push (first d) new-path))))
+         (t-d (pathname-directory to-wildcard)))
+    (unless (eql (first s-d) (first f-d))
+      (error "Directory roots do not match: ~S and ~S."
+             source from-wildcard))
+    (multiple-value-bind (matchedp captures)
+        (match-directory-components (rest s-d) (rest f-d))
+      (unless matchedp
+        (error "Source and from-wildcard directories do not match: ~S ~S."
+               source from-wildcard))
+      (let ((result (if t-d (list (first t-d)) '())))
+        (flet ((next-capture (expected-type)
+                 (let ((capture (pop captures)))
+                   (unless capture
+                     (error "No source directory wildcard for ~S."
+                            to-wildcard))
+                   (unless (eql (car capture) expected-type)
+                     (error "Directory wildcard type mismatch: ~S cannot fill ~S."
+                            (car capture) expected-type))
+                   capture)))
+          (dolist (component (rest t-d))
+            (cond ((eql component :wild-inferiors)
+                   (dolist (captured-component
+                            (cdr (next-capture :wild-inferiors)))
+                     (push (case-correct-path-component
+                            captured-component
+                            (pathname-host source)
+                            (pathname-host to-wildcard))
+                           result)))
+                  ((eql component :wild)
+                   (push (case-correct-path-component
+                          (cdr (next-capture :wild))
+                          (pathname-host source)
+                          (pathname-host to-wildcard))
+                         result))
+                  (t
+                   (push component result)))))
+        (nreverse result)))))
 
 (defun translate-pathname (source from-wildcard to-wildcard &key)
+  (unless (pathname-match-p source from-wildcard)
+    (error "Source pathname ~S does not match from-wildcard ~S."
+           source from-wildcard))
   (make-pathname :host (pathname-host to-wildcard)
                  :device (cond ((typep source 'logical-pathname)
                                 ;; Always favour the to-wildcard's device when
@@ -821,11 +850,30 @@ properties will be ignored."
 
 (defvar *filesystems-alist* NIL)
 
+(defun copy-filesystem-name-alist (name-alist)
+  "Copy namespace entries and their mutable string UUID and name values."
+  (mapcar (lambda (entry)
+            (mapcar (lambda (value)
+                      (if (stringp value) (copy-seq value) value))
+                    entry))
+          name-alist))
+
+(defun filesystem-name-alist ()
+  "Return an isolated snapshot of the configured UUID-to-host-name mapping."
+  (copy-filesystem-name-alist *filesystems-alist*))
+
+(defun filesystem-host-name (uuid &optional (name-alist
+                                               (filesystem-name-alist)))
+  "Return the configured host name for UUID, or NIL when it is unnamed."
+  (second (assoc uuid name-alist :test #'string-equal)))
+
 (defun register-block-device-host-type (host-type)
   (mezzano.supervisor:with-mutex (*block-device-host-type-lock*)
     (push host-type *block-device-host-types*))
-  (dolist (block-device (mezzano.disk:all-block-devices))
-    (create-host host-type block-device *filesystems-alist*))
+  (let ((name-alist (filesystem-name-alist)))
+    (dolist (block-device (mezzano.disk:all-block-devices))
+      (create-host host-type block-device
+                   (copy-filesystem-name-alist name-alist))))
   T)
 
 (defun mount-block-device (block-device)
@@ -839,18 +887,17 @@ properties will be ignored."
          (format t "mount-block-device: mounted ~A on ~A~%"
                  block-device (car pair))
          (return-from mount-block-device)))
-  ;; No existing host found
-  ;; if *filesystems* bound (usually in config.lisp) check list for
-  ;; cold-boot hosts.
+  ;; No existing host found. Try each registered filesystem using a stable
+  ;; snapshot of the configured UUID-to-host-name namespace. Filesystem
+  ;; implementations retain their label/UUID fallback when no mapping exists.
+  (let ((name-alist (filesystem-name-alist)))
     (loop
        for host-class in *block-device-host-types*
-       for name = (create-host host-class block-device *filesystems-alist*)
+       for name = (create-host host-class block-device
+                               (copy-filesystem-name-alist name-alist))
        when name do
          (format t "mount-block-device: mounted ~A on ~A~%" block-device name)
-         (return-from mount-block-device))
-  ;; No host in *filesystems-alist* found
-  ;; TODO get uuid/host name alist from name space server and call
-  ;; create-host for each host class, exit on success.
+         (return-from mount-block-device)))
   (format t "mount-block-device: no host found for ~A~%" block-device))
 
 (defun unmount-block-device (block-device)

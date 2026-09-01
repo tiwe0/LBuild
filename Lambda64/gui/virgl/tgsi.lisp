@@ -35,8 +35,92 @@
            (substitute #\_ #\- name))
           (t name))))
 
+(defparameter +declaration-semantics+
+  '(:position :color :bcolor :fog :psize :generic :normal :face :edgeflag
+    :prim-id :instanceid :vertexid :stencil :clipdist :clipvertex :grid-size
+    :block-id :block-size :thread-id :texcoord :pcoord :viewport-index :layer
+    :sampleid :samplepos :samplemask :invocationid :vertexid-nobase
+    :basevertex :patch :tesscoord :tessouter :tessinner :verticesin
+    :helper-invocation :baseinstance :drawid :work-dim :subgroup-size
+    :subgroup-invocation :subgroup-eq-mask :subgroup-ge-mask :subgroup-gt-mask
+    :subgroup-le-mask :subgroup-lt-mask :cs-user-data-amd :viewport-mask))
+
+(defparameter +declaration-interpolations+
+  '(:constant :linear :perspective :color))
+
+(defparameter +declaration-interpolation-locations+
+  '(:center :centroid :sample))
+
+(defun parameterized-declaration-qualifier-p (thing name)
+  (and (consp thing)
+       (eql (first thing) name)
+       (consp (rest thing))
+       (null (cddr thing))))
+
+(defun parse-declaration-qualifiers (processor file things)
+  (let ((remaining things)
+        (dimension nil)
+        (array nil)
+        (semantic nil)
+        (interpolation nil)
+        (location nil)
+        (invariant nil))
+    (when (parameterized-declaration-qualifier-p
+           (first remaining) :dimension)
+      (setf dimension (second (pop remaining)))
+      (check-type dimension (unsigned-byte 32)))
+    (when (parameterized-declaration-qualifier-p (first remaining) :array)
+      (setf array (second (pop remaining)))
+      ;; TGSI declaration ArrayID is an unsigned 32-bit field, just like
+      ;; register and dimension indices.  A signed check would accept -1 and
+      ;; emit invalid ARRAY(-1) text.
+      (check-type array (unsigned-byte 32)))
+    (when (and remaining
+               (or (member (first remaining) +declaration-semantics+)
+                   (and (consp (first remaining))
+                        (member (first (first remaining))
+                                +declaration-semantics+))))
+      (setf semantic (pop remaining))
+      (when (consp semantic)
+        (unless (and (consp (rest semantic)) (null (cddr semantic)))
+          (error "Malformed indexed declaration semantic ~S" semantic))
+        (check-type (second semantic) (unsigned-byte 32))))
+    (when (member (first remaining) +declaration-interpolations+)
+      (setf interpolation (pop remaining)))
+    (when (member (first remaining) +declaration-interpolation-locations+)
+      (unless interpolation
+        (error "Interpolation location ~S requires an interpolation mode"
+               (first remaining)))
+      (setf location (pop remaining)))
+    (when (eql (first remaining) :invariant)
+      (setf invariant (pop remaining)))
+    (when remaining
+      (error "Invalid or misplaced declaration qualifier ~S" (first remaining)))
+    (when (and (eql processor :vertex)
+               (eql file :in)
+               (or semantic interpolation location invariant))
+      (error "Vertex input declarations cannot have semantic or interpolation qualifiers"))
+    (values dimension array semantic interpolation location invariant)))
+
+(defun write-declaration-semantic (semantic stream)
+  (cond ((consp semantic)
+         (format stream "~A[~D]"
+                 (convert-opcode-name (first semantic))
+                 (second semantic)))
+        (semantic
+         (format stream "~A" (convert-opcode-name semantic)))))
+
+(defun tgsi-float-string (value)
+  ;; Common Lisp prints double-float exponents with D, but Mesa's TGSI reader
+  ;; delegates to the C floating-point reader and therefore requires E.
+  (map 'string
+       (lambda (character)
+         (if (find character "dDfFsSlL") #\e character))
+       (format nil "~A" value)))
+
 (defun assemble (processor source)
   (let* ((total-size 2) ; header token + processor token
+         (immediate-index 0)
          (saw-label nil)
          (text (with-output-to-string (text)
                  (write-line (ecase processor
@@ -61,34 +145,89 @@
                         (check-type file (member :in :out :const :temp :samp))
                         (check-type index (unsigned-byte 32))
                         (check-type end-index (unsigned-byte 32))
-                        (incf total-size 2) ; Declaration + range (for index)
-                        (cond ((eql index end-index)
-                               (format text "DCL ~A[~D]" file index))
-                              (t
-                               (format text "DCL ~A[~D..~D]" file index end-index)))
-                        ;; Things are dimensions, semantic, interpolation & array info.
-                        ;; TODO: Check this more exactly.
-                        (dolist (thing things)
-                          (incf total-size) ; Each thing requires an extra token.
-                          (check-type thing keyword)
-                          (format text ", ~A" thing))
-                        (terpri text)))
+                        (when (< end-index index)
+                          (error "Declaration range ends before it starts: ~D..~D"
+                                 index end-index))
+                        (multiple-value-bind
+                              (dimension array semantic interpolation location invariant)
+                            (parse-declaration-qualifiers processor file things)
+                          (incf total-size 2) ; Declaration + register range.
+                          (format text "DCL ~A" file)
+                          (when dimension
+                            (incf total-size)
+                            (format text "[~D]" dimension))
+                          (cond ((eql index end-index)
+                                 (format text "[~D]" index))
+                                (t
+                                 (format text "[~D..~D]" index end-index)))
+                          (when array
+                            (incf total-size)
+                            (format text ", ARRAY(~D)" array))
+                          (when semantic
+                            (incf total-size)
+                            (write-string ", " text)
+                            (write-declaration-semantic semantic text))
+                          (when interpolation
+                            ;; The mode and optional location share one token.
+                            (incf total-size)
+                            (format text ", ~A" interpolation))
+                          (when location
+                            (format text ", ~A" location))
+                          (when invariant
+                            ;; INVARIANT is a bit in the declaration token.
+                            (format text ", INVARIANT"))
+                          (terpri text))))
                      ((cons (eql imm))
                       ;; Immediate.
                       (when saw-label
                         (error "Unexpected label ~D before immediate ~S" saw-label stmt))
-                      ;; TODO: Immediates can be numbered too: "IMM[42] FLT32 ..."
-                      (destructuring-bind (type (x y z w))
-                          ;; TODO: Support uint32, int32, and flt64
-                          ;; flt32, uint32, int32 all have 4 elements. flt64 has 2.
-                          (rest stmt)
-                        (assert (eql type :flt32))
-                        (check-type x single-float)
-                        (check-type y single-float)
-                        (check-type z single-float)
-                        (check-type w single-float)
-                        (incf total-size 5) ; immediate token + 4 data elements.
-                        (format text "IMM FLT32 {~A, ~A, ~A, ~A}~%" x y z w)))
+                      (let ((number nil)
+                            (arguments (rest stmt)))
+                        (when (integerp (first arguments))
+                          (setf number (pop arguments))
+                          (check-type number (unsigned-byte 32))
+                          (unless (= number immediate-index)
+                            (error "Expected immediate number ~D, got ~D"
+                                   immediate-index number)))
+                        (destructuring-bind (type values) arguments
+                          (when number
+                            (format text "IMM[~D] " number))
+                          (unless number
+                            (write-string "IMM " text))
+                          (ecase type
+                            (:flt32
+                             (destructuring-bind (x y z w) values
+                               (check-type x single-float)
+                               (check-type y single-float)
+                               (check-type z single-float)
+                               (check-type w single-float)
+                               (format text "FLT32 {~A, ~A, ~A, ~A}~%"
+                                       x y z w)))
+                            (:uint32
+                             (destructuring-bind (x y z w) values
+                               (check-type x (unsigned-byte 32))
+                               (check-type y (unsigned-byte 32))
+                               (check-type z (unsigned-byte 32))
+                               (check-type w (unsigned-byte 32))
+                               (format text "UINT32 {~D, ~D, ~D, ~D}~%"
+                                       x y z w)))
+                            (:int32
+                             (destructuring-bind (x y z w) values
+                               (check-type x (signed-byte 32))
+                               (check-type y (signed-byte 32))
+                               (check-type z (signed-byte 32))
+                               (check-type w (signed-byte 32))
+                               (format text "INT32 {~D, ~D, ~D, ~D}~%"
+                                       x y z w)))
+                            (:flt64
+                             (destructuring-bind (x y) values
+                               (check-type x double-float)
+                               (check-type y double-float)
+                               (format text "FLT64 {~A, ~A}~%"
+                                       (tgsi-float-string x)
+                                       (tgsi-float-string y)))))
+                          (incf total-size 5)
+                          (incf immediate-index)))) ; Immediate + 4 data tokens.
                      (cons
                       ;; An instruction.
                       (setf saw-label nil)

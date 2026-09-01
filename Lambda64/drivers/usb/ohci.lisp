@@ -235,6 +235,8 @@
 (defconstant +td-next-td+        2)
 (defconstant +td-buffer-end+     3)
 
+(defconstant +ohci-page-size+ #x1000)
+
 (defconstant +td-buffer-rounding+ (byte 1 18))
 (defconstant +td-direction-pid+   (byte 2 19))
 (defconstant +td-delay-interrupt+ (byte 3 21))
@@ -296,6 +298,9 @@
 (defun (setf td-buffer-end) (phys-addr td)
   (setf (aref td +td-buffer-end+) phys-addr))
 
+(defun td-condition-code (td)
+  (ldb +td-condition-code+ (td-header td)))
+
 (defun alloc-td (ohci &key event-type endpoint buf-size buf)
   (let ((td (alloc-buffer/32 (buf-pool ohci) 4)))
     (setf (gethash td (td->xfer-info ohci)) (make-xfer-info :event-type event-type
@@ -323,19 +328,33 @@
           (td-next-td td) (array->phys-addr next-td)
           (td-buffer-end td) (+ buf-phys-addr (array-total-bytes buf) -1))))
 
-(defun td-buf-info (td buf-size)
-  ;; TODO this code won't work for non-contiguous buffers
+(defun td-buffer-remaining-bytes (td)
+  "Return the bytes remaining in TD's one-or-two-page OHCI buffer."
   (let ((buf-pointer (td-buffer-pointer td))
-        (buf-start (- (1+ (td-buffer-end td)) buf-size)))
-    (values
-     (phys-addr->array buf-start)
-     (if (= buf-pointer 0) buf-size (- buf-pointer buf-start)))))
+        (buf-end (td-buffer-end td)))
+    (cond ((zerop buf-pointer)
+           0)
+          ((= (ash buf-pointer -12) (ash buf-end -12))
+           (1+ (- buf-end buf-pointer)))
+          (t
+           (+ (- +ohci-page-size+ (logand buf-pointer
+                                          (1- +ohci-page-size+)))
+              (1+ (logand buf-end (1- +ohci-page-size+))))))))
 
 (defun td-xfer-bytes (td buf-size)
-  ;; TODO this code won't work for non-contiguous buffers
-  (let ((buf-pointer (td-buffer-pointer td))
-        (buf-start (- (1+ (td-buffer-end td)) buf-size)))
-    (if (= buf-pointer 0) buf-size (- buf-pointer buf-start))))
+  (let ((remaining (td-buffer-remaining-bytes td)))
+    (unless (<= 0 remaining buf-size)
+      (error "OHCI TD has ~D bytes remaining in a ~D byte transfer"
+             remaining buf-size))
+    (- buf-size remaining)))
+
+(defun td-buf-info (td buf buf-size)
+  "Return the original buffer and the number of bytes transferred by TD.
+
+The original buffer is supplied explicitly because OHCI retains only the
+current and final physical pages; after crossing to a non-contiguous final
+page the descriptor no longer contains the original physical address."
+  (values buf (td-xfer-bytes td buf-size)))
 
 ;;======================================================================
 ;; HCCA (Host Controller Communication Area) - defined in section 4.4
@@ -360,18 +379,17 @@
 ;;======================================================================
 
 (defun wait-for-next-sof (ohci)
-  ;; TODO wait for 1 ms when sleep has better resolution
   ;; wait for sof - frame time is 1ms
   ;; clear sof
   (setf (get-interrupt-status ohci) (dpb 1 +interrupt-start-of-frame+ 0))
 
-  (loop for timeout = 0 then (+ timeout 0.010)
+  (loop for timeout = 0 then (+ timeout 0.001)
      do
-       (sleep  0.010)
+       (sleep 0.001)
        (cond ((ldb-test +interrupt-start-of-frame+ (get-interrupt-status ohci))
               ;; see sof interrupt
               (return))
-             ((> timeout 1.0)
+             ((>= timeout 1.0)
               ;; timed out
               (error "wait-for-next-sof did not see SOF interrupt")))))
 
@@ -738,6 +756,22 @@
      (ed-tdq-tail ed) (array->phys-addr dummy-td))
     dummy-td))
 
+(defun clear-ed-halted (ed)
+  (setf (aref ed +endpt-tdq-head+)
+        (dpb 0 +endpt-halted+ (aref ed +endpt-tdq-head+))))
+
+(defun recover-completed-ed (ed condition-code)
+  "Resume ED after the controller retires a failed transfer."
+  (unless (zerop condition-code)
+    (clear-ed-halted ed)))
+
+(defun advance-ed-head (ed next-td-phys-addr)
+  "Advance ED to NEXT-TD-PHYS-ADDR without discarding its toggle carry."
+  (setf (aref ed +endpt-tdq-head+)
+        (logior next-td-phys-addr
+                (logand (aref ed +endpt-tdq-head+)
+                        (dpb 1 +endpt-toggle-carry+ 0)))))
+
 (defmethod create-interrupt-endpt
     ((ohci ohci) device driver endpt-num num-bufs buf-size event-type interval)
   (with-trace-level (1)
@@ -824,10 +858,8 @@
   ;; then call the driver interrupt handler
 
   (with-hcd-access (ohci)
-    (let ((data-status (aref +condition-codes+
-                             (ldb +td-condition-code+ (td-header td)))))
-
-      ;; TODO check condition code - handle errors
+    (let* ((condition-code (td-condition-code td))
+           (data-status (aref +condition-codes+ condition-code)))
 
       ;; Reuse td as "dummy" td and put back in queue
       (let* ((endpoint (xfer-info-endpoint xfer-info))
@@ -855,6 +887,11 @@
          (td-buffer-end msg-td) (+ buf-phys-addr buf-size -1)
          ;; update queue tail pointer to new dummy td
          (ed-tdq-tail ed) (array->phys-addr dummy-td))
+
+        (sys.int::dma-write-barrier)
+        ;; Error retirement halts the ED. The failed transfer has been removed
+        ;; and reported below, so clear Halted to keep a polling endpoint alive.
+        (recover-completed-ed ed condition-code)
 
         ;; Signal driver that an interrupt transfer is complete
         (transfer-complete (ohci-endpoint-driver endpoint)
@@ -995,28 +1032,44 @@
           (dpb 1 +command-bulk-list-filled+ 0))
     (values)))
 
+(defun dequeue-bulk-td (ohci ed buf)
+  "Quiesce ED and remove the queued transfer whose buffer is BUF."
+  (let ((original-header (ed-header ed))
+        (td->xfer-info (td->xfer-info ohci)))
+    ;; The HC must not follow or update this TD chain while it is edited.
+    (setf (ed-header ed) (dpb +endpt-inactive+ +endpt-skip+
+                               original-header))
+    (sys.int::dma-write-barrier)
+    (unwind-protect
+         (progn
+           (wait-for-next-sof ohci)
+           (loop
+              with tail-phys-addr = (ed-tdq-tail ed)
+              for prev-td = nil then td
+              for td-phys-addr = (ed-tdq-head-tdq-addr ed)
+                then (td-next-td td)
+              until (= td-phys-addr tail-phys-addr)
+              for td = (phys-addr->array td-phys-addr)
+              for msg-xfer-info = (gethash td td->xfer-info)
+              when (and msg-xfer-info
+                        (eq buf (xfer-info-buf msg-xfer-info)))
+                do (if prev-td
+                       (setf (td-next-td prev-td) (td-next-td td))
+                       (advance-ed-head ed (td-next-td td)))
+                   (free-td ohci td)
+                   (sys.int::dma-write-barrier)
+                   (return t)
+              finally (return nil)))
+      (sys.int::dma-write-barrier)
+      (setf (ed-header ed) original-header))))
+
 (defmethod bulk-dequeue-buf ((ohci ohci) device endpt-num buf)
   (with-trace-level (1)
     (sup:debug-print-line "bulk-dequeue-buf"))
-  ;; TODO stop this queue ...
-  (let* ((endpoint (aref (usb-device-endpoints device) endpt-num))
-         (ed (ohci-endpoint-ed endpoint))
-         (td->xfer-info (td->xfer-info ohci)))
-    (loop
-       for prev-td = NIL then td
-       for td-phys-addr = (ed-tdq-head-tdq-addr ed) then (td-next-td td)
-       for td = (phys-addr->array td-phys-addr)
-       for msg-xfer-info = (gethash td td->xfer-info)
-       when (eq buf (xfer-info-buf msg-xfer-info)) do
-       ;; remove td from list
-         (if prev-td
-             (setf (td-next-td prev-td) (td-next-td td))
-             (setf (ed-tdq-head ed) (td-next-td td)))
-         (free-td ohci td)
-         (return T)
-       when (= td-phys-addr (ed-tdq-tail ed)) do
-         ;; td not found
-         (return NIL))))
+  (with-hcd-access (ohci)
+    (let* ((endpoint (aref (usb-device-endpoints device) endpt-num))
+           (ed (ohci-endpoint-ed endpoint)))
+      (dequeue-bulk-td ohci ed buf))))
 
 (defun handle-bulk-endpt (ohci xfer-info td)
   (with-trace-level (1)
@@ -1024,18 +1077,19 @@
 
   (with-hcd-access (ohci)
     (unwind-protect
-         (let ((status (aref +condition-codes+
-                             (ldb +td-condition-code+ (td-header td)))))
-
-           ;; TODO check condition code - handle errors
-           (let* ((endpoint (xfer-info-endpoint xfer-info)))
-             (transfer-complete (ohci-endpoint-driver endpoint)
-                                (xfer-info-event-type xfer-info)
-                                (ohci-endpoint-num endpoint)
-                                (ohci-endpoint-device endpoint)
-                                status
-                                (td-xfer-bytes td (xfer-info-buf-size xfer-info))
-                                (xfer-info-buf xfer-info))))
+         (let* ((condition-code (td-condition-code td))
+                (status (aref +condition-codes+ condition-code))
+                (endpoint (xfer-info-endpoint xfer-info)))
+           ;; Error retirement halts the ED. The failed transfer is reported to
+           ;; the client and removed below, so resume the remaining queue.
+           (recover-completed-ed (ohci-endpoint-ed endpoint) condition-code)
+           (transfer-complete (ohci-endpoint-driver endpoint)
+                              (xfer-info-event-type xfer-info)
+                              (ohci-endpoint-num endpoint)
+                              (ohci-endpoint-device endpoint)
+                              status
+                              (td-xfer-bytes td (xfer-info-buf-size xfer-info))
+                              (xfer-info-buf xfer-info)))
       (free-td ohci td))))
 
 ;;======================================================================
@@ -1081,6 +1135,127 @@
 ;;
 ;;======================================================================
 
+(defconstant +control-transfer-timeout+ 5)
+
+(defstruct (control-completion
+             (:constructor %make-control-completion
+                 (semaphore lock owned-buffer)))
+  semaphore
+  lock
+  owned-buffer
+  (state :pending))
+
+(defun make-control-completion (&optional owned-buffer)
+  (%make-control-completion
+   (sync:make-semaphore :name "OHCI control completion")
+   (sup:make-mutex "OHCI control completion lock")
+   owned-buffer))
+
+(defun control-completion-wait (completion timeout)
+  "Wait for COMPLETION, atomically cancelling it when TIMEOUT expires."
+  (let ((semaphore (control-completion-semaphore completion)))
+    (when (and (sync:wait-for-objects-with-timeout timeout semaphore)
+               (sync:semaphore-down semaphore :wait-p nil))
+      (return-from control-completion-wait t))
+    ;; Resolve completion-at-deadline races while sharing the state lock with
+    ;; the done-list handler. Each stage has its own semaphore, so an abandoned
+    ;; completion can never credit a later transfer.
+    (sup:with-mutex ((control-completion-lock completion))
+      (case (control-completion-state completion)
+        (:completed
+         (sync:semaphore-down semaphore :wait-p nil)
+         t)
+        (:pending
+         (setf (control-completion-state completion) :cancelled)
+         nil)
+        (otherwise nil)))))
+
+(defun disown-control-buffer (completion)
+  (sup:with-mutex ((control-completion-lock completion))
+    (setf (control-completion-owned-buffer completion) nil)))
+
+(defun reclaim-control-completion (ohci completion td)
+  (let ((owned-buffer nil)
+        (reclaim-p nil))
+    (sup:with-mutex ((control-completion-lock completion))
+      (when (eq (control-completion-state completion) :cancelled)
+        (setf (control-completion-state completion) :reclaimed
+              owned-buffer (control-completion-owned-buffer completion)
+              (control-completion-owned-buffer completion) nil
+              reclaim-p t)))
+    (when owned-buffer
+      (free-buffer owned-buffer))
+    (when reclaim-p
+      (free-td ohci td)
+      t)))
+
+(defun complete-control-td (ohci xfer-info td)
+  "Complete TD's unique control-stage token or reclaim a cancelled TD."
+  (let ((completion (xfer-info-event-type xfer-info))
+        (signal-completion nil)
+        (reclaim nil))
+    (cond ((control-completion-p completion)
+           (sup:with-mutex ((control-completion-lock completion))
+             (case (control-completion-state completion)
+               (:pending
+                (setf (control-completion-state completion) :completed
+                      signal-completion t))
+               (:cancelled
+                (setf reclaim t))))
+           (cond (signal-completion
+                  (sync:semaphore-up
+                   (control-completion-semaphore completion)))
+                 (reclaim
+                  (reclaim-control-completion ohci completion td))))
+          (t
+           ;; Compatibility for control TDs created before per-stage tokens.
+           (sync:semaphore-up completion)))))
+
+(defun reset-dummy-td (td)
+  (setf (td-header td) 0
+        (td-buffer-pointer td) 0
+        (td-next-td td) 0
+        (td-buffer-end td) 0))
+
+(defun cancel-control-stage (ohci ed msg-td dummy-td completion)
+  "Quiesce ED and restore a one-dummy queue after a timed-out stage."
+  (let ((original-header (ed-header ed))
+        (msg-td-phys-addr (array->phys-addr msg-td))
+        (dummy-td-phys-addr (array->phys-addr dummy-td)))
+    (setf (ed-header ed)
+          (dpb +endpt-inactive+ +endpt-skip+ original-header))
+    (sys.int::dma-write-barrier)
+    (unwind-protect
+         (progn
+           (wait-for-next-sof ohci)
+           (let ((head-phys-addr (ed-tdq-head-tdq-addr ed)))
+             (cond ((= head-phys-addr msg-td-phys-addr)
+                    ;; The HC never retired MSG-TD. Detach and reclaim it now.
+                    (reset-dummy-td dummy-td)
+                    (setf (ed-tdq-head ed) dummy-td-phys-addr
+                          (ed-tdq-tail ed) dummy-td-phys-addr)
+                    (unless (reclaim-control-completion
+                             ohci completion msg-td)
+                      (error "OHCI control cancellation state changed")))
+                   ((= head-phys-addr dummy-td-phys-addr)
+                    ;; MSG-TD is already on a captured or pending done list.
+                    ;; Its unique cancelled token makes the handler reclaim it.
+                    (reset-dummy-td dummy-td)
+                    (setf (ed-tdq-head ed) dummy-td-phys-addr
+                          (ed-tdq-tail ed) dummy-td-phys-addr))
+                   (t
+                    (error "OHCI control queue changed during cancellation")))
+             (sys.int::dma-write-barrier)))
+      (sys.int::dma-write-barrier)
+      (setf (ed-header ed) original-header))))
+
+(defun wait-for-control-stage
+    (ohci ed msg-td dummy-td completion stage)
+  (unless (control-completion-wait completion +control-transfer-timeout+)
+    (cancel-control-stage ohci ed msg-td dummy-td completion)
+    (error "OHCI control ~A stage timed out after ~D seconds"
+           stage +control-transfer-timeout+)))
+
 (defmethod control-receive-data
     ((ohci ohci) device request-type request value index length buf)
   (with-trace-level (1)
@@ -1088,13 +1263,12 @@
 
   (with-hcd-access (ohci)
     (let* ((endpoint (aref (usb-device-endpoints device) 0))
-           (event-type (ohci-endpoint-event-type endpoint))
            (ed (ohci-endpoint-ed endpoint))
            (msg-td (phys-addr->array (ed-tdq-head-tdq-addr ed)))
            (msg-xfer-info (gethash msg-td (td->xfer-info ohci)))
            (msg-buf (alloc-buffer/8 (buf-pool ohci) 8))
            (dummy-td (alloc-td ohci))
-           (semaphore (device-semaphore device)))
+           (completion (make-control-completion msg-buf)))
 
       (encode-td msg-td +td-partial-buffer+ +pid-setup-token+ 3 +td-toggle-0+
                  msg-buf
@@ -1106,7 +1280,7 @@
                       value
                       index
                       length)
-      (setf (xfer-info-event-type msg-xfer-info) event-type
+      (setf (xfer-info-event-type msg-xfer-info) completion
             (xfer-info-endpoint msg-xfer-info) endpoint
             (xfer-info-buf-size msg-xfer-info) 8
             (xfer-info-buf msg-xfer-info) msg-buf
@@ -1120,9 +1294,9 @@
       (setf (pci:pci-io-region/32 (bar ohci) +ohci-command-status+)
             (dpb 1 +command-control-list-filled+ 0))
 
-      ;; TODO wait with timeout?
-      (sync:semaphore-down semaphore)
+      (wait-for-control-stage ohci ed msg-td dummy-td completion :setup)
 
+      (disown-control-buffer completion)
       (setf (xfer-info-buf msg-xfer-info) NIL)
       (free-buffer msg-buf)
 
@@ -1147,12 +1321,14 @@
             (td-next-td dummy-td) 0
             (td-buffer-end dummy-td) 0)
 
+      (setf completion (make-control-completion))
+
       (encode-td
        msg-td +td-partial-buffer+ +pid-in-token+ 3 +td-toggle-1+
        buf
        dummy-td)
 
-      (setf (xfer-info-event-type msg-xfer-info) event-type
+      (setf (xfer-info-event-type msg-xfer-info) completion
             (xfer-info-endpoint msg-xfer-info) endpoint
             (xfer-info-buf-size msg-xfer-info) length
             (xfer-info-buf msg-xfer-info) buf
@@ -1167,8 +1343,7 @@
       (setf (pci:pci-io-region/32 (bar ohci) +ohci-command-status+)
             (dpb 1 +command-control-list-filled+ 0))
 
-      ;; TODO wait with timeout?
-      (sync:semaphore-down semaphore)
+      (wait-for-control-stage ohci ed msg-td dummy-td completion :data-in)
 
       (when (/= (ldb +td-condition-code+ (td-header msg-td)) 0)
         ;; non-zero means error
@@ -1199,13 +1374,12 @@
 
   (with-hcd-access (ohci)
     (let* ((endpoint (aref (usb-device-endpoints device) 0))
-           (event-type (ohci-endpoint-event-type endpoint))
            (ed (ohci-endpoint-ed endpoint))
            (msg-td (phys-addr->array (ed-tdq-head-tdq-addr ed)))
            (msg-xfer-info (gethash msg-td (td->xfer-info ohci)))
            (msg-buf (alloc-buffer/8 (buf-pool ohci) 8))
            (dummy-td (alloc-td ohci))
-           (semaphore (device-semaphore device)))
+           (completion (make-control-completion msg-buf)))
 
       (encode-td msg-td +td-partial-buffer+ +pid-setup-token+ 3 +td-toggle-0+
                  msg-buf
@@ -1218,7 +1392,7 @@
                       index
                       length)
 
-      (setf (xfer-info-event-type msg-xfer-info) event-type
+      (setf (xfer-info-event-type msg-xfer-info) completion
             (xfer-info-endpoint msg-xfer-info) endpoint
             (xfer-info-buf-size msg-xfer-info) 8
             (xfer-info-buf msg-xfer-info) msg-buf
@@ -1233,9 +1407,9 @@
       (setf (pci:pci-io-region/32 (bar ohci) +ohci-command-status+)
             (dpb 1 +command-control-list-filled+ 0))
 
-      ;; TODO wait with timeout?
-      (sync:semaphore-down semaphore)
+      (wait-for-control-stage ohci ed msg-td dummy-td completion :setup)
 
+      (disown-control-buffer completion)
       (setf (xfer-info-buf msg-xfer-info) NIL)
       (free-buffer msg-buf)
 
@@ -1261,12 +1435,14 @@
             (td-next-td dummy-td) 0
             (td-buffer-end dummy-td) 0)
 
+      (setf completion (make-control-completion))
+
       (encode-td
        msg-td +td-partial-buffer+ +pid-out-token+ 3 +td-toggle-1+
        buf
        dummy-td)
 
-      (setf (xfer-info-event-type msg-xfer-info) event-type
+      (setf (xfer-info-event-type msg-xfer-info) completion
             (xfer-info-endpoint msg-xfer-info) endpoint
             (xfer-info-buf-size msg-xfer-info) length
             (xfer-info-buf msg-xfer-info) buf
@@ -1281,8 +1457,7 @@
       (setf (pci:pci-io-region/32 (bar ohci) +ohci-command-status+)
             (dpb 1 +command-control-list-filled+ 0))
 
-      ;; TODO wait with timeout?
-      (sync:semaphore-down semaphore)
+      (wait-for-control-stage ohci ed msg-td dummy-td completion :data-out)
 
       (when (/= (ldb +td-condition-code+ (td-header msg-td)) 0)
         (when *error-td*
@@ -1350,40 +1525,76 @@
             (dpb 1 +interrupt-root-hub-change+ 0)))))
 
 (defvar *done-heads* NIL) ;; for debug
+(defvar *done-errors* nil) ;; retained TD/error pairs for debug and recovery
+
+(defun collect-done-tds (done-head resolver)
+  "Return the hardware's newest-first done queue in oldest-first order."
+  (loop
+     with done-tds = nil
+     for td-phys-addr = done-head then next-td-phys-addr
+     while (/= td-phys-addr 0)
+     for td = (funcall resolver td-phys-addr)
+     for next-td-phys-addr = (td-next-td td)
+     do (push td done-tds)
+     finally (return done-tds)))
+
+(defun process-done-td (ohci td)
+  (let ((xfer-info (gethash td (td->xfer-info ohci))))
+    (cond ((null xfer-info)
+           ;; Internal error: no mapping from TD to transfer.
+           (format sys.int::*cold-stream* "No xfer-info for TD ~A~%" td))
+          (t
+           (let ((endpoint (xfer-info-endpoint xfer-info)))
+             (with-trace-level (6)
+               (format sys.int::*cold-stream*
+                       "td done: ~S~%" (type-of endpoint)))
+             (ecase (ohci-endpoint-type endpoint)
+               (:control
+                (complete-control-td ohci xfer-info td))
+               (:interrupt
+                (handle-interrupt-endpt ohci xfer-info td))
+               (:bulk
+                (handle-bulk-endpt ohci xfer-info td))
+               (:isochronous
+                (error "isochronous endpoint not implemented"))))))))
+
+(defun process-done-tds (done-tds processor error-recorder)
+  "Process every captured completion, isolating errors to their TD."
+  (dolist (td done-tds)
+    (handler-case (funcall processor td)
+      (error (condition)
+        (funcall error-recorder td condition)))))
+
+(defun record-done-error (td condition)
+  (push (list td condition) *done-errors*)
+  (format sys.int::*cold-stream*
+          "Error processing completed OHCI TD ~A: ~A~%" td condition))
+
+(defun service-done-list
+    (done-head resolver processor error-recorder acknowledger)
+  "Drain one captured done list before acknowledging writeback-done."
+  (process-done-tds
+   (collect-done-tds done-head resolver)
+   processor
+   error-recorder)
+  (funcall acknowledger))
 
 (defmethod handle-interrupt-event
     ((type (eql :writeback-done)) (ohci ohci) event)
   (with-hcd-access (ohci)
     (let ((done-head (logandc2 (hcca-done-head ohci) #x0F)))
-      (setf (get-interrupt-status ohci) (dpb 1 +interrupt-done-head+ 0))
-      (setf (get-interrupt-enable ohci) (dpb 1 +interrupt-done-head+ 0))
-
-      ;; TODO - need to reverse the list first
-      (loop
-         for td = (phys-addr->array done-head) then (phys-addr->array next-td)
-         for next-td = (td-next-td td) then (td-next-td td)
-         for xfer-info = (gethash td (td->xfer-info ohci)) then
-           (gethash td (td->xfer-info ohci))
-         do (with-trace-level (6)
-              (format sys.int::*cold-stream*
-                      "td done: ~S~%" (type-of (xfer-info-endpoint xfer-info))))
-           (cond ((null xfer-info)
-                  ;; internal error no mapping from td to xfer-info - log it
-                  (format sys.int::*cold-stream*
-                          "No xfer-info for TD ~A~%" td))
-                 (T
-                  (let ((endpoint (xfer-info-endpoint xfer-info)))
-                    (ecase (ohci-endpoint-type endpoint)
-                      (:control
-                       (sync:semaphore-up (ohci-endpoint-event-type endpoint)))
-                      (:interrupt
-                       (handle-interrupt-endpt ohci xfer-info td))
-                      (:bulk
-                       (handle-bulk-endpt ohci xfer-info td))
-                      (:isochronous
-                       (error "isochronous endpoint not implemented"))))))
-
-         when (= next-td 0) do (return)))))
+      ;; COLLECT-DONE-TDS must succeed before WD is acknowledged. Individual
+      ;; callback failures are retained and cannot prevent later TD dispatch.
+      (service-done-list
+       done-head
+       #'phys-addr->array
+       (lambda (td) (process-done-td ohci td))
+       #'record-done-error
+       (lambda ()
+         (setf (get-interrupt-status ohci)
+               (dpb 1 +interrupt-done-head+ 0))
+         (setf (get-interrupt-enable ohci)
+               (dpb 1 +interrupt-done-head+ 0)))))))
 
 (defmethod handle-interrupt-event
     ((type (eql :controller-disconnect)) (ohci ohci) event)
@@ -1590,6 +1801,13 @@
     ( 2  2ms-interrupts)
     ( 1  1ms-interrupts)))
 
+(defun interrupt-bandwidth (ed buf-size)
+  "Return the periodic payload cost in full-speed USB bit times."
+  (* buf-size 8
+     (if (= (ldb +endpt-speed+ (ed-header ed)) +endpt-low-speed+)
+         8
+         1)))
+
 (defun %add-interrupt-ed (int-level ed bandwidth)
   (let ((int-node (find-minimum-int-node int-level)))
     (incf (int-node-bandwidth int-node) bandwidth)
@@ -1607,8 +1825,7 @@
           (%add-interrupt-ed
            (funcall int-level-func ohci)
            ed
-           ;; TODO is this reasonable for bandwidth calculation?
-           (/ (* buf-size 1000) step)))
+           (interrupt-bandwidth ed buf-size)))
        (return)))
 
 (defun %remove-interrupt-ed (int-level rem-ed bandwidth)
@@ -1636,8 +1853,7 @@
           (%remove-interrupt-ed
            (funcall int-level-func ohci)
            ed
-           ;; TODO is this reasonable for bandwidth calculation?
-           (- (/ (* buf-size 1000) step))))
+           (- (interrupt-bandwidth ed buf-size))))
        (return)))
 
 ;;======================================================================

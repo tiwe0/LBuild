@@ -40,7 +40,33 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun pow2p (x)
     "Test if X is a power of two."
-    (zerop (logand x (1- x))))
+    (and (plusp x)
+         (zerop (logand x (1- x)))))
+
+  (defun resolve-simd-integer-element-type (element-type)
+    "Resolve an integer SIMD ELEMENT-TYPE to its header kind and width."
+    ;; Preserve the type-equality semantics used by the old fixed-width
+    ;; branches (for example, aliases that SUBTYPEP considers equivalent).
+    (dolist (width '(8 16 32 64))
+      (dolist (kind '(unsigned-byte signed-byte))
+        (when (int::type-equal element-type (list kind width))
+          (return-from resolve-simd-integer-element-type
+            (values (if (eql kind 'unsigned-byte)
+                        +simd-pack-element-type-unsigned-byte+
+                        +simd-pack-element-type-signed-byte+)
+                    (1- (integer-length width)))))))
+    (when (and (consp element-type)
+               (consp (cdr element-type))
+               (null (cddr element-type))
+               (or (eql (car element-type) 'unsigned-byte)
+                   (eql (car element-type) 'signed-byte))
+               (integerp (cadr element-type)))
+      (let ((width (cadr element-type)))
+        (when (and (plusp width) (pow2p width))
+          (values (if (eql (car element-type) 'unsigned-byte)
+                      +simd-pack-element-type-unsigned-byte+
+                      +simd-pack-element-type-signed-byte+)
+                  (1- (integer-length width)))))))
 
   (defun encode-simd-pack-header (element-type element-count)
     (let ((header 0))
@@ -59,49 +85,13 @@
         ((int::type-equal element-type 'bit)
          (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
                (ldb +simd-pack-element-width+ header) 0))
-        ;; TODO: Make this a bit more clever resolving the element-type
-        ((int::type-equal element-type '(unsigned-byte 8))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
-               (ldb +simd-pack-element-width+ header) 3))
-        ((int::type-equal element-type '(unsigned-byte 16))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
-               (ldb +simd-pack-element-width+ header) 4))
-        ((int::type-equal element-type '(unsigned-byte 32))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
-               (ldb +simd-pack-element-width+ header) 5))
-        ((int::type-equal element-type '(unsigned-byte 64))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
-               (ldb +simd-pack-element-width+ header) 6))
-        ((int::type-equal element-type '(signed-byte 8))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-signed-byte+
-               (ldb +simd-pack-element-width+ header) 3))
-        ((int::type-equal element-type '(signed-byte 16))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-signed-byte+
-               (ldb +simd-pack-element-width+ header) 4))
-        ((int::type-equal element-type '(signed-byte 32))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-signed-byte+
-               (ldb +simd-pack-element-width+ header) 5))
-        ((int::type-equal element-type '(signed-byte 64))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-signed-byte+
-               (ldb +simd-pack-element-width+ header) 6))
-        ((and (consp element-type)
-              (eql (car element-type) 'unsigned-byte)
-              (consp (cdr element-type))
-              (integerp (cadr element-type))
-              (pow2p (cadr element-type))
-              (null (cddr element-type)))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-unsigned-byte+
-               (ldb +simd-pack-element-width+ header) (1- (integer-length (cadr element-type)))))
-        ((and (consp element-type)
-              (eql (car element-type) 'signed-byte)
-              (consp (cdr element-type))
-              (integerp (cadr element-type))
-              (pow2p (cadr element-type))
-              (null (cddr element-type)))
-         (setf (ldb +simd-pack-element-type+ header) +simd-pack-element-type-signed-byte+
-               (ldb +simd-pack-element-width+ header) (1- (integer-length (cadr element-type)))))
         (t
-         (error "Unsupported simd element type ~S" element-type)))
+         (multiple-value-bind (kind width)
+             (resolve-simd-integer-element-type element-type)
+           (unless kind
+             (error "Unsupported simd element type ~S" element-type))
+           (setf (ldb +simd-pack-element-type+ header) kind
+                 (ldb +simd-pack-element-width+ header) width))))
       header))
 
   (defun compile-simd-pack-type (object type)

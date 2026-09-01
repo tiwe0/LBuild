@@ -502,23 +502,29 @@ If it is, then its weight is returned as an integer; otherwise, nil is returned.
   (check-type name string-designator)
   (let ((start 0)
         (control nil) (meta nil) (super nil) (hyper nil))
-    ;; TODO: Allow prefixes in any order.
-    (when (and (> (- (length name) start) 2)
-               (string= "C-" name :start2 start :end2 (+ start 2)))
-      (setf control t)
-      (incf start 2))
-    (when (and (> (- (length name) start) 2)
-               (string= "M-" name :start2 start :end2 (+ start 2)))
-      (setf meta t)
-      (incf start 2))
-    (when (and (> (- (length name) start) 2)
-               (string= "S-" name :start2 start :end2 (+ start 2)))
-      (setf super t)
-      (incf start 2))
-    (when (and (> (- (length name) start) 2)
-               (string= "H-" name :start2 start :end2 (+ start 2)))
-      (setf hyper t)
-      (incf start 2))
+    ;; Modifier prefixes may occur in any order, but each is meaningful only
+    ;; once. Leave a trailing character (or a complete character name) for the
+    ;; normal lookup below.
+    (loop while (> (- (length name) start) 2)
+          for prefix = (char name start)
+          for separator = (char name (1+ start))
+          do (unless (char= separator #\-)
+               (return))
+             (case prefix
+               (#\C (if control
+                        (return-from name-char nil)
+                        (setf control t)))
+               (#\M (if meta
+                        (return-from name-char nil)
+                        (setf meta t)))
+               (#\S (if super
+                        (return-from name-char nil)
+                        (setf super t)))
+               (#\H (if hyper
+                        (return-from name-char nil)
+                        (setf hyper t)))
+               (t (return)))
+             (incf start 2))
     (when (= start (length name))
       (return-from name-char nil))
     (when (= start (1- (length name)))
@@ -529,18 +535,20 @@ If it is, then its weight is returned as an integer; otherwise, nil is returned.
                                              :hyper hyper)))
     ;; SBCL-style Unicode notation (Java style?)
     ;; #\uXXXX or #\uXXXXXXXX
-    ;; TODO: catch invalid Unicode codepoints
     (when (and (char-equal (char name start) #\U)
                (or (= (- (length name) start) 5) (= (- (length name) start) 9))
                (valid-codepoint-p name (1+ start)))
       (multiple-value-bind (value end)
           (parse-integer name :start (1+ start) :radix 16)
-        (when (and value (= end (length name)))
-          (return-from name-char (make-character value
-                                                 :control control
-                                                 :meta meta
-                                                 :super super
-                                                 :hyper hyper)))))
+        (let ((character (and (= end (length name))
+                              (< value char-code-limit)
+                              (make-character value
+                                              :control control
+                                              :meta meta
+                                              :super super
+                                              :hyper hyper))))
+          (when character
+            (return-from name-char character)))))
     (dolist (names *char-name-alist*)
       (dolist (ch (cdr names))
         (when (string-equal ch name :start2 start)

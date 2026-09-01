@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "dependencies": {
+      "type": "array"
+    },
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "size": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "role",
+          "mode",
+          "size",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "generated-at": {
+      "type": "string"
+    },
+    "product-source-manifest-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "generated-at",
+    "entries",
+    "dependencies",
+    "product-source-manifest-sha256"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 product source manifest",
+  "type": "object"
+}

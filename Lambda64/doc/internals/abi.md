@@ -138,7 +138,35 @@ They can be called directly using the `:named-call` assembly syntax.
 `<function-name>` will be resolved to an fref by the assembler, similar
 to `:function` syntax.
 
-TODO: Expand on the details of the fref fast & slow paths.
+#### x86-64 fast and full paths
+
+A named `call` or `jmp` contains a 32-bit PC-relative displacement to the
+fref's in-object code area. The assembler also records the fref in the calling
+function's constant pool so that the GC keeps it live. The fref code starts
+with a three-byte no-op followed by a five-byte relative jump. Keeping the jump
+displacement naturally aligned lets the runtime switch paths by replacing that
+single 32-bit field.
+
+For an ordinary compiled function, the fast-path displacement targets the
+function's entry point directly. The call therefore passes through the fref's
+initial jump but does not load the fref's `function` field or place a closure
+object in `RBX`.
+
+For an unbound fref, a closure, or another funcallable object, the runtime sets
+the displacement to zero. The initial jump then falls through to the full
+(slow) path embedded in the fref. That path loads the `function` field into
+`RBX` and jumps indirectly through the object's function entry-point slot. An
+unbound fref stores itself in the `function` field; its first word points at the
+undefined-function trampoline, so the same full path preserves the original
+arguments while reporting the fref's name.
+
+The GC scans both the fref's ordinary pointer fields and, when the direct jump
+is active, the compiled function reconstructed from the embedded relative
+target. Retargeting is not a synchronization primitive: the current
+`(setf function-reference-function)` implementation updates the function field
+and branch displacement without an fref lock, explicit fences, or cross-CPU
+instruction synchronization. Code that changes definitions concurrently must
+not assume an atomic handover between the two paths.
 
 #### arm64
 
@@ -384,15 +412,25 @@ Defaults to `nil`.
 
 ### :MULTIPLE-VALUES
 
-This can be `nil` or [0,14]. It is ignored when `nil`.
-When non-`nil`, this means that the multiple-value calling convention is active
-and that there `:rcx + N` values live. If there are more than 5 values, then the
-GC will scan the thread's multiple value save area as required.
+Current metadata producers use `nil`, `0`, or `1`. It is ignored when `nil`.
+When non-`nil`, the multiple-value calling convention is active and the live
+value count is the saved `RCX` fixnum plus this adjustment. If that count is
+greater than five, the GC scans exactly `count - 5` consecutive entries from
+the start of the current thread's multiple-value save area. The adjustment
+changes only the live count; it does not change the save-area base or layout.
+
+`0` means that `RCX` already contains the exact live count. `1` covers the
+instruction window after an additional value has been stored in the save area
+but before `RCX` has been incremented. The compiler emits `:multiple-values 1`
+for that window and returns to `:multiple-values 0` immediately after updating
+`RCX`. Both x86-64 and arm64 backends follow this invariant.
 
 This is ignored unless the function has been interrupted.
 
-TODO: The flexibility here is unnecessary. It only needs to be able to represent
-`nil`, `rcx+0` or `rcx+1`.
+The encoded field is four bits wide: value 15 represents `nil`, while the
+decoder can represent adjustments 0 through 14. Values 2 through 14 are an
+encoding capability, not supported producer states; current compiler and LAP
+sources must emit only 0 or 1.
 
 `:rcx` holds a fixnum.
 

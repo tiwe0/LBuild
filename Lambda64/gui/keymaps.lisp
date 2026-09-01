@@ -14,6 +14,7 @@
     (format stream "~A" (name obj))))
 
 (defvar *keymap-list* '())
+(defvar *current-keymap*)
 
 (defmethod initialize-instance :after ((map simple-keymap) &key)
   (let ((existing (find (name map) *keymap-list*

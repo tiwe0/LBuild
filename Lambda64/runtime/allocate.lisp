@@ -16,6 +16,8 @@
 (sys.int::defglobal sys.int::*bytes-allocated-to-stacks*)
 (sys.int::defglobal sys.int::*wired-stack-area-bump*)
 (sys.int::defglobal sys.int::*stack-area-bump*)
+(sys.int::defglobal sys.int::*wired-stack-free-regions*)
+(sys.int::defglobal sys.int::*stack-free-regions*)
 
 (sys.int::defglobal sys.int::*general-area-young-gen-bump*)
 (sys.int::defglobal sys.int::*general-area-young-gen-limit*)
@@ -75,6 +77,9 @@
 (defvar *maximum-allocation-attempts* 5
   "GC this many times before giving up on an allocation.")
 
+(defvar *maximum-young-generation-size* (* 512 1024 1024)
+  "Maximum combined committed young-generation bytes before forcing a GC.")
+
 (sys.int::defglobal *enable-allocation-profiling*)
 (defvar *allocation-profile-hook* nil)
 
@@ -107,6 +112,8 @@
         *enable-allocation-profiling* nil
         *general-area-expansion-granularity* sys.int::+allocation-minimum-alignment+
         *cons-area-expansion-granularity* sys.int::+allocation-minimum-alignment+
+        sys.int::*wired-stack-free-regions* nil
+        sys.int::*stack-free-regions* nil
         *allocator-lock* (mezzano.supervisor:make-mutex "Allocator")
         *allocation-fudge* (* 8 1024 1024)
         sys.int::*generation-size-ratio* 2)
@@ -118,6 +125,18 @@
   (setf (sys.int::memref-unsigned-byte-32 address 0) (logior (ash tag sys.int::+object-type-shift+)
                                                              (ash (ldb (byte (- 32 sys.int::+object-data-shift+) 0) data) sys.int::+object-data-shift+))
         (sys.int::memref-unsigned-byte-32 address 1) (ldb (byte 32 (- 32 sys.int::+object-data-shift+)) data)))
+
+(defun update-freelist-card-offsets (start end)
+  "Point every card boundary in [START, END) back at the freelist entry at START."
+  (let ((minimum-offset
+          (- (* (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+)))
+                16))))
+    (loop
+       for card from (mezzano.supervisor::align-up start sys.int::+card-size+)
+         below end by sys.int::+card-size+
+       for delta = (- start card) then (- delta sys.int::+card-size+)
+       do (setf (sys.int::card-table-offset card)
+                (and (> delta minimum-offset) delta)))))
 
 (defun %freelist-allocate-internal (freelist prev size log2-len tag data words bins)
   ;; Remove it from the bin.
@@ -134,16 +153,7 @@
                                                               (ash (- size words) sys.int::+object-data-shift+))
             (sys.int::memref-t next 1) (svref bins new-bin))
       (setf (svref bins new-bin) next)
-      ;; Update the card table starts for any pages
-      ;; that this new freelist entry crosses.
-      ;; TODO: Make this more efficient.
-      (loop
-         for card from (mezzano.supervisor::align-up next sys.int::+card-size+) below (+ next (* new-size 8)) by sys.int::+card-size+
-         for delta = (- next card)
-         do (setf (sys.int::card-table-offset card)
-                  (if (<= delta (- (* (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+))) 16)))
-                      nil
-                      delta)))))
+      (update-freelist-card-offsets next (+ next (* new-size 8)))))
   ;; Write object header.
   (set-allocated-object-header freelist tag data)
   ;; Clear data.
@@ -218,14 +228,7 @@
              (setf (sys.int::memref-unsigned-byte-64 new-address 0) (sys.int::make-freelist-header len)
                    (sys.int::memref-t new-address 1) (svref bins bin))
              (setf (svref bins bin) new-address))))
-    ;; Update card table pointers for the new free cards
-    (loop
-       for card from (sys.int::align-up new-address sys.int::+card-size+) below (+ new-address grow-by) by sys.int::+card-size+
-       for delta = (- new-address card)
-       do (setf (sys.int::card-table-offset card)
-                (if (<= delta (- (* (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+))) 16)))
-                    nil
-                    delta)))
+    (update-freelist-card-offsets new-address (+ new-address grow-by))
     (incf (sys.int::symbol-global-value limit-sym) grow-by)))
 
 (defun update-allocation-time (start-time)
@@ -367,6 +370,10 @@
      sys.int::*cons-area-young-gen-limit*
      sys.int::*cons-area-old-gen-limit*))
 
+(defun young-generation-size ()
+  (+ sys.int::*general-area-young-gen-limit*
+     sys.int::*cons-area-young-gen-limit*))
+
 (defun static-area-size ()
   (+ (- sys.int::*wired-area-bump* sys.int::*wired-area-base*)
      (- sys.int::*pinned-area-bump* sys.int::*pinned-area-base*)
@@ -411,23 +418,26 @@
   ;; If it wasn't then dynamic-area-size would need to be multiplied by 2.
   (- (store-free-bytes) (additional-memory-required-for-gc)))
 
-;; TODO: Might be worth collecting more frequently to reduce the amount of work
-;; each gc needs to do. Shorter pauses, but more overall gc time.
+(defun allocation-area-growth-permitted-p (current-size expansion remaining)
+  (and (<= (+ current-size expansion) *maximum-young-generation-size*)
+       (>= remaining (* expansion 2))))
+
 (defun expand-allocation-area (name required-minimum-expansion granularity-symbol limit-symbol address-tag)
   (setf required-minimum-expansion (sys.int::align-up required-minimum-expansion sys.int::+allocation-minimum-alignment+))
   (let* ((current-limit (sys.int::symbol-global-value limit-symbol))
          (remaining (sys.int::align-down (bytes-remaining) sys.int::+allocation-minimum-alignment+))
          (expansion (max required-minimum-expansion
-                         (sys.int::symbol-global-value granularity-symbol)))
-         ;; Dynamic areas need twice the space for collection.
-         (effective-expansion (* expansion 2)))
-    (when (< remaining effective-expansion)
+                         (sys.int::symbol-global-value granularity-symbol))))
+    ;; Dynamic areas need twice the space for collection.
+    (when (< remaining (* expansion 2))
       ;; Expansion exceeds remaining, reset it.
-      (setf expansion (max required-minimum-expansion sys.int::+allocation-minimum-alignment+)
-            effective-expansion (* expansion 2)))
+      (setf expansion
+            (max required-minimum-expansion
+                 sys.int::+allocation-minimum-alignment+)))
     (when sys.int::*gc-enable-logging*
       (mezzano.supervisor:debug-print-line "Expanding " name " area by " expansion " [remaining " remaining "]"))
-    (cond ((and (>= remaining effective-expansion)
+    (cond ((and (allocation-area-growth-permitted-p
+                 (young-generation-size) expansion remaining)
                 (mezzano.supervisor:allocate-memory-range
                  (logior sys.int::*young-gen-newspace-bit*
                          (ash address-tag sys.int::+address-tag-shift+)
@@ -639,11 +649,18 @@
      (sys.int::%object-ref-t closure 2) environment)
     closure))
 
+(defun copy-symbol-name-to-wired-area (name)
+  "Make an immutable-lifetime copy of NAME for storage in a wired symbol."
+  (copy-string-in-area name :wired))
+
 (defun make-symbol (name)
   (check-type name string)
-  ;; FIXME: Copy name into the wired area and unicode normalize it.
-  (let* ((symbol (%allocate-object sys.int::+object-tag-symbol+ 0 5 nil)))
-    (setf (sys.int::%object-ref-t symbol sys.int::+symbol-name+) name)
+  ;; Common Lisp symbol identity is defined by the exact sequence of
+  ;; characters supplied to MAKE-SYMBOL, so preserve those code points while
+  ;; moving the name into non-moving storage.
+  (let* ((wired-name (copy-symbol-name-to-wired-area name))
+         (symbol (%allocate-object sys.int::+object-tag-symbol+ 0 5 nil)))
+    (setf (sys.int::%object-ref-t symbol sys.int::+symbol-name+) wired-name)
     (setf (sys.int::%object-ref-t symbol sys.int::+symbol-value+) nil)
     (setf (sys.int::%object-ref-t symbol sys.int::+symbol-function+) nil
           (symbol-plist symbol) '()
@@ -692,11 +709,20 @@
                   (incf sys.int::*function-area-usage* words))
               (sys.int::%%assemble-value address sys.int::+tag-object+))))))))
 
+(defun finish-expand-wired-function-area (new-limit grow-by)
+  "Publish a newly mapped range below the current wired-function limit."
+  (let* ((len (truncate grow-by 8))
+         (bin (integer-length len)))
+    (setf (sys.int::memref-unsigned-byte-64 new-limit 0)
+          (sys.int::make-freelist-header len)
+          (sys.int::memref-t new-limit 1)
+          (svref sys.int::*wired-function-area-free-bins* bin)
+          (svref sys.int::*wired-function-area-free-bins* bin) new-limit)
+    (update-freelist-card-offsets new-limit (+ new-limit grow-by))
+    (setf sys.int::*wired-function-area-limit* new-limit)))
+
 (defun expand-function-area (words wiredp)
-  "Returns true if the area was successfully expanded."
-  (when wiredp
-    ;; TODO: Implement expanding the wired function area.
-    (error 'storage-condition))
+  "Returns true if the selected function area was successfully expanded."
   ;; Try enlarging the area.
   (let ((grow-by (* words 8)))
     (incf grow-by (1- sys.int::+allocation-minimum-alignment+))
@@ -704,23 +730,33 @@
                           grow-by))
     (when sys.int::*gc-enable-logging*
       (mezzano.supervisor:debug-print-line
-       "Expanding FUNCTION area by " grow-by))
+       "Expanding " (if wiredp "WIRED-FUNCTION" "FUNCTION")
+       " area by " grow-by))
     (mezzano.supervisor:without-footholds
       (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
         (mezzano.supervisor:with-mutex (*allocator-lock*)
           (mezzano.supervisor:with-pseudo-atomic
-            (when (mezzano.supervisor:allocate-memory-range
-                   sys.int::*function-area-limit*
+            (let ((range-base (if wiredp
+                                  (- sys.int::*wired-function-area-limit* grow-by)
+                                  sys.int::*function-area-limit*)))
+              (when (mezzano.supervisor:allocate-memory-range
+                   range-base
                    grow-by
                    (logior sys.int::+block-map-present+
                            sys.int::+block-map-writable+
                            sys.int::+block-map-zero-fill+
                            sys.int::+block-map-track-dirty+))
               (when sys.int::*gc-enable-logging*
-                (mezzano.supervisor:debug-print-line "Expanded function area by " grow-by))
+                (mezzano.supervisor:debug-print-line
+                 "Expanded " (if wiredp "wired-function" "function")
+                 " area by " grow-by))
               ;; Success.
-              (finish-expand-freelist-area grow-by 'sys.int::*function-area-limit* sys.int::*function-area-free-bins*)
-              t)))))))
+              (if wiredp
+                  (finish-expand-wired-function-area range-base grow-by)
+                  (finish-expand-freelist-area
+                   grow-by 'sys.int::*function-area-limit*
+                   sys.int::*function-area-free-bins*))
+              t))))))))
 
 ;; Also used for allocating function-references
 (defun %allocate-function (tag data words wiredp)
@@ -758,8 +794,7 @@
                                                 8))
                      (words-avail (- words-committed words-used))
                      (bytes-avail (* words-avail 8)))
-                (when (and (< bytes-avail sys.int::+allocation-minimum-alignment+) ; chosen arbitrarily
-                           (not wiredp)) ; todo.
+                (when (< bytes-avail sys.int::+allocation-minimum-alignment+)
                   (when (expand-function-area words wiredp)
                     (setf inhibit-gc t))))))))
 
@@ -833,22 +868,40 @@
 
 (declaim (special sys.int::*funcallable-instance-trampoline*))
 
+(defun valid-funcallable-instance-layout-p (layout)
+  (and (typep layout 'sys.int::layout)
+       (typep (sys.int::layout-heap-size layout) '(integer 2))
+       (let ((heap-layout (sys.int::layout-heap-layout layout)))
+         (and (bit-vector-p heap-layout)
+              (>= (length heap-layout)
+                  (sys.int::layout-heap-size layout))
+              ;; Slot zero is a raw entry address; slot one is the boxed
+              ;; function that keeps that target alive.
+              (zerop (bit heap-layout sys.int::+function-entry-point+))
+              (= (bit heap-layout sys.int::+funcallable-instance-function+) 1)))
+       (member (sys.int::layout-area layout) '(nil :pinned :wired))))
+
+(defun funcallable-instance-entry-point (function)
+  (sys.int::%object-ref-unsigned-byte-64
+   (if (eql (sys.int::%object-tag function) sys.int::+object-tag-function+)
+       function
+       sys.int::*funcallable-instance-trampoline*)
+   sys.int::+function-entry-point+))
+
 (defun sys.int::%allocate-funcallable-instance (function layout)
   "Allocate a funcallable instance."
   (check-type function function)
-  ;; Layout heap size must be at least 2, to hold the entry point and function.
-  ;; TODO: Verify that LAYOUT more thoroughly.
-  (assert (>= (sys.int::layout-heap-size layout) 2))
+  (assert (valid-funcallable-instance-layout-p layout) (layout)
+          "Invalid funcallable-instance layout ~S." layout)
   (let ((object (%allocate-object sys.int::+object-tag-funcallable-instance+
                                   (sys.int::lisp-object-address layout)
                                   (sys.int::layout-heap-size layout)
                                   (sys.int::layout-area layout)))
-        (entry-point (sys.int::%object-ref-unsigned-byte-64
-                      sys.int::*funcallable-instance-trampoline*
-                      sys.int::+function-entry-point+)))
+        (entry-point (funcallable-instance-entry-point function)))
     (setf
-     ;; Entry point. F-I trampoline.
-     ;; TODO: If FUNCTION is an +object-tag-function+, then the entry point could point directly at it.
+     ;; Compiled functions can be entered directly. Closures and nested
+     ;; funcallable instances still require the trampoline to load their
+     ;; environment or target function.
      (sys.int::%object-ref-unsigned-byte-64 object sys.int::+function-entry-point+) entry-point
      ;; Function
      (sys.int::%object-ref-t object sys.int::+funcallable-instance-function+) function)
@@ -915,12 +968,72 @@
 This area exists below the stack and is never allocated or mapped.")
 (defconstant +stack-region-alignment+ #x200000)
 
-;; TODO: Actually allocate virtual memory.
+(defun allocate-stack-virtual-region (size wired fresh-node)
+  "Reserve a reusable virtual stack slot and return its mapped stack address."
+  (let* ((span (align-up (+ +stack-guard-size+ size)
+                         +stack-region-alignment+))
+         (regions (if wired
+                      sys.int::*wired-stack-free-regions*
+                      sys.int::*stack-free-regions*))
+         (previous nil))
+    (loop
+       for region = regions then (cdr region)
+       while region
+       for reservation = (car region)
+       when (= (- (cdr reservation)) span)
+         do
+           (let ((base (car reservation)))
+             (if previous
+                 (setf (cdr previous) (cdr region))
+                 (if wired
+                     (setf sys.int::*wired-stack-free-regions* (cdr region))
+                     (setf sys.int::*stack-free-regions* (cdr region))))
+             (setf (cdr reservation) span
+                   (cdr region) nil)
+             (return-from allocate-stack-virtual-region
+               (values (logior (+ base +stack-guard-size+)
+                               (ash sys.int::+address-tag-stack+
+                                    sys.int::+address-tag-shift+))
+                       region)))
+       do (setf previous region))
+    (let* ((base (if wired
+                     sys.int::*wired-stack-area-bump*
+                     sys.int::*stack-area-bump*))
+           (next (+ base span)))
+      (if wired
+          (setf sys.int::*wired-stack-area-bump* next)
+          (setf sys.int::*stack-area-bump* next))
+      (setf (car (car fresh-node)) base
+            (cdr (car fresh-node)) span
+            (cdr fresh-node) nil)
+      (values (logior (+ base +stack-guard-size+)
+                      (ash sys.int::+address-tag-stack+
+                           sys.int::+address-tag-shift+))
+              fresh-node))))
+
+(defun release-stack-virtual-region (region-node wired &optional allocator-lock-held-p)
+  (flet ((release-region ()
+           (let ((reservation (car region-node)))
+             (when (plusp (cdr reservation))
+               (setf (cdr reservation) (- (cdr reservation)))
+               (if wired
+                   (setf (cdr region-node) sys.int::*wired-stack-free-regions*
+                         sys.int::*wired-stack-free-regions* region-node)
+                   (setf (cdr region-node) sys.int::*stack-free-regions*
+                         sys.int::*stack-free-regions* region-node))))))
+    (if allocator-lock-held-p
+        (release-region)
+        (mezzano.supervisor:with-mutex (mezzano.runtime::*allocator-lock*)
+          (release-region)))))
+
 (defun %allocate-stack (size &optional wired)
   (declare (mezzano.compiler::closure-allocation :wired))
   (setf size (align-up size #x1000))
   (let* ((gc-count 0)
          (stack-address nil)
+         ;; Allocate both cons cells before entering WITHOUT-FOOTHOLDS or the
+         ;; allocator mutex. RELEASE-STACK-VIRTUAL-REGION only relinks them.
+         (stack-region-node (cons (cons nil nil) nil))
          (stack (%make-stack nil size)))
     ;; Allocate the stack object & finalizer up-front to prevent any issues
     ;; if the system runs out of memory while allocating the stack.
@@ -928,7 +1041,13 @@ This area exists below the stack and is never allocated or mapped.")
      stack
      :finalizer (lambda ()
                   (when stack-address
-                    (release-memory-range stack-address size)
+                    ;; Clear the captured address before releasing anything so
+                    ;; an accidentally repeated finalizer invocation is a
+                    ;; no-op instead of returning the same reservation twice.
+                    (let ((address stack-address))
+                      (setf stack-address nil)
+                      (release-memory-range address size)
+                      (release-stack-virtual-region stack-region-node wired))
                     ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* (- size))
 		    ))
      :area :wired)
@@ -944,34 +1063,34 @@ This area exists below the stack and is never allocated or mapped.")
                     (acquire-mutex mezzano.runtime::*allocator-lock*))
                   (when (< (mezzano.runtime::bytes-remaining) size)
                     (go DO-GC))
-                  ;; This is where the stack starts in virtual memory.
-                  (let* ((bump (+ +stack-guard-size+
-                                  (if wired
-                                      sys.int::*wired-stack-area-bump*
-                                      sys.int::*stack-area-bump*)))
-                         (addr (logior bump
-                                       (ash sys.int::+address-tag-stack+ sys.int::+address-tag-shift+))))
-                    ;; Allocate backing mmory.
-                    (when (not (allocate-memory-range addr size
-                                                      (logior sys.int::+block-map-present+
-                                                              sys.int::+block-map-writable+
-                                                              sys.int::+block-map-zero-fill+
-                                                              (if wired
-                                                                  sys.int::+block-map-wired+
-                                                                  0))))
-                      (go DO-GC))
-                    ;; Memory actually allocated, now update bump pointers.
-                    (if wired
-                        (setf sys.int::*wired-stack-area-bump* (align-up (+ bump size) +stack-region-alignment+))
-                        (setf sys.int::*stack-area-bump* (align-up (+ bump size) +stack-region-alignment+)))
-                    ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* size)
-                    (setf (stack-base stack) addr
-                          ;; Notify the finalizer that the stack has been allocated & should be freed.
-                          stack-address addr)
-                    ;; Flush the stack object so it doesn't get held live by the finalizer closure.
-                    (let ((s stack))
-                      (setf stack nil)
-                      (return-from %allocate-stack s))))
+                  (multiple-value-bind (addr region-node)
+                      (allocate-stack-virtual-region size wired stack-region-node)
+                    ;; Commit backing memory only after reserving a unique
+                    ;; virtual slot. Failed commits return the reservation.
+                    (let ((committed-p nil))
+                      (unwind-protect
+                           (progn
+                             (when (not (allocate-memory-range
+                                         addr size
+                                         (logior sys.int::+block-map-present+
+                                                 sys.int::+block-map-writable+
+                                                 sys.int::+block-map-zero-fill+
+                                                 (if wired
+                                                     sys.int::+block-map-wired+
+                                                     0))))
+                               (go DO-GC))
+                             (setf committed-p t)
+                             ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* size)
+                             (setf (stack-base stack) addr
+                                   ;; Notify the finalizer that the stack has been allocated & should be freed.
+                                   stack-address addr
+                                   stack-region-node region-node)
+                             ;; Flush the stack object so it doesn't get held live by the finalizer closure.
+                             (let ((s stack))
+                               (setf stack nil)
+                               (return-from %allocate-stack s)))
+                        (unless committed-p
+                          (release-stack-virtual-region region-node wired t))))))
              (when (mutex-held-p mezzano.runtime::*allocator-lock*)
                (release-mutex mezzano.runtime::*allocator-lock*)))))
      DO-GC
@@ -1023,19 +1142,25 @@ This area exists below the stack and is never allocated or mapped.")
         nil
         (1- gen))))
 
+(defun atomic-update-card-table-dirty-gen (address entry)
+  "Atomically replace only the dirty-generation field of ADDRESS's card."
+  (let ((index (truncate address +card-size+)))
+    (loop
+       for original-cte = (memref-unsigned-byte-32 +card-table-base+ index)
+       for original-entry = (ldb +card-table-entry-dirty-gen+ original-cte)
+       when (= original-entry entry)
+         return original-cte
+       do
+         (let ((new-cte (dpb entry +card-table-entry-dirty-gen+ original-cte)))
+           (when (eq (cas (memref-unsigned-byte-32 +card-table-base+ index)
+                          original-cte
+                          new-cte)
+                     original-cte)
+             (return new-cte))))))
+
 (defun (setf card-table-dirty-gen) (value address)
   (assert (member value '(nil 0 1 2)))
-  (let ((index (truncate address +card-size+))
-        (entry (if value
-                   (1+ value)
-                   0)))
-    (loop
-       ;; TODO: Atomic or/and, instead of this cas loop.
-       (let* ((original-cte (memref-unsigned-byte-32 +card-table-base+ index))
-              (new-cte (dpb entry +card-table-entry-dirty-gen+ original-cte)))
-         (when (eq (cas (memref-unsigned-byte-32 +card-table-base+ index)
-                        original-cte
-                        new-cte)
-                    original-cte)
-           (return)))))
+  ;; A single compare/exchange is required here: separate atomic AND/OR
+  ;; operations can interleave and synthesize a generation no writer stored.
+  (atomic-update-card-table-dirty-gen address (if value (1+ value) 0))
   value)

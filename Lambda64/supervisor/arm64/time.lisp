@@ -74,7 +74,15 @@
     (%isb)))
 
 (defun get-high-precision-timer ()
-  ;; TODO
+  "Returns the current value of the platform's 'high precision' timer.
+This timer will generally run at a faster rate the the standard internal-run-time
+timer. However, this timer is non-monotonic. It may wrap at any time and can
+warp backwards and forwards over a snapshot.
+Returns the current value in high-precision time units.
+They can be converted to internal time units using
+HIGH-PRECISION-TIME-UNITS-TO-INTERNAL-TIME-UNITS."
+  ;; CNTVCT_EL0 is the architectural counter used for high-precision timing;
+  ;; ISB ensures the read is observed in program order.
   (prog1
       (%cntvct-el0)
     (%isb)))

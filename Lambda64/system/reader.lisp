@@ -23,8 +23,6 @@
   ;; FIXME: A full lock around the readtable would be better.
   (extended-characters (make-hash-table :synchronized t) :type hash-table))
 
-;;; TODO: At some point the init code must copy the standard readtable to create
-;;; the initial readtable.
 (defvar *protect-the-standard-readtable* nil)
 (setf *standard-readtable* (make-readtable)
       *readtable* *standard-readtable*)
@@ -148,12 +146,10 @@
   "Test if CHAR is a whitespace[2] character under READTABLE."
   (eql (readtable-syntax-type char readtable) :whitespace))
 
-;;; TODO: Unicode awareness.
 (defun invalidp (char &optional (readtable *readtable*))
   "Test if CHAR is an invalid character under READTABLE."
   (and (eql (readtable-syntax-type char readtable) nil)
-       (or (member char '(#\Backspace #\Tab #\Newline #\Linefeed #\Page
-                          #\Return #\Space #\Rubout)))))
+       (not (graphic-char-p char))))
 
 (defun decimal-point-p (char)
   "Test if CHAR is a decimal point character."
@@ -172,7 +168,7 @@
       (get-macro-character char readtable)
     (and fn (not non-terminating-p))))
 
-(defun read-token (stream first)
+(defun read-token (stream first &optional (intern-keyword t))
   "Read a normal Lisp token from STREAM with FIRST as the initial character."
   (when *read-suppress*
     ;; Read characters until EOF or a whitespace character or terminating macro character is seen.
@@ -279,14 +275,19 @@
          (read stream t nil t)))
       ;; Return a symbol immediately if a package marker was seen.
       (package-name
-       (if (or intern-symbol (string= "KEYWORD" package-name))
-           (intern token package-name)
-           (multiple-value-bind (symbol status) (find-symbol token package-name)
-             (unless (eql status :external)
-               (error 'simple-reader-error :stream stream
-                      :format-control "Symbol ~S is internal to package ~S."
-                      :format-arguments (list token package-name)))
-             symbol)))
+       (cond ((and (string= "KEYWORD" package-name)
+                   (not intern-keyword))
+              ;; #:-dispatch needs the spelling but must not intern it.
+              token)
+             ((or intern-symbol (string= "KEYWORD" package-name))
+              (intern token package-name))
+             (t
+              (multiple-value-bind (symbol status) (find-symbol token package-name)
+                (unless (eql status :external)
+                  (error 'simple-reader-error :stream stream
+                         :format-control "Symbol ~S is internal to package ~S."
+                         :format-arguments (list token package-name)))
+                symbol))))
       ;; If an escape character was seen, then do not try to parse the token as
       ;; an number, intern it and return it immediately.
       (seen-escape
@@ -364,8 +365,8 @@
   ;; exponent = exponent-marker [sign] decimal-digit+
   ;; exponent-marker = d | D | e | E | f | F | l | L | s | S
   (let ((integer-part 0)
-        ;; Work in double-precision.
-        (decimal-part 0.0d0)
+        ;; Keep the mantissa exact until it is coerced to the requested format.
+        (decimal-part 0)
         (saw-integer-digits nil)
         (saw-decimal-point nil)
         (exponent nil)
@@ -393,7 +394,7 @@
            (when (not weight) (return))
            (consume)
            (setf saw-integer-digits t)
-           (setf integer-part (+ (* integer-part 10.0d0) weight))))
+           (setf integer-part (+ (* integer-part 10) weight))))
       ;; Parse the decimal portion.
       (when (decimal-point-p (peek))
         (setf saw-decimal-point t)
@@ -440,12 +441,10 @@
       ;; Must have seen either a decimal point or exponent.
       (when (not (or saw-decimal-point exponent))
         (return-from read-float))
-      ;; TODO, deal with float type selection correctly.
       (coerce
        (* sign
           (+ integer-part decimal-part)
-          ;; ### 10.0 to work around a missing feature in FLOAT. No bignum support.
-          (expt 10.0d0 (* exponent-sign exponent-value)))
+          (expt 10 (* exponent-sign exponent-value)))
        (ecase (char-upcase (or exponent #\E))
          (#\S 'short-float)
          (#\F 'single-float)
@@ -708,13 +707,10 @@
   ;; Use read-token to read the symbol name as a keyword.
   ;; Reading it as a keyword suppresses the integer parsing code
   ;; and forces it to produce a symbol.
-  ;; FIXME: This causes a symbol with the same name to be added
-  ;; to the KEYWORD package as a side effect. It would be nice to
-  ;; avoid that.
-  (let ((token (read-token stream #\:)))
+  (let ((token (read-token stream #\: nil)))
     (if *read-suppress*
         nil
-        (make-symbol (symbol-name token)))))
+        (make-symbol (if (stringp token) token (symbol-name token))))))
 
 (defun read-#-dot (stream ch p)
   (ignore-#-argument ch p)
@@ -769,11 +765,8 @@
   (let ((number (read stream t nil t)))
     (when (or (not (listp number))
               (/= (length number) 2)
-              ;; TODO: Clean this up, cross compiler hack.
-              (not (or (short-float-p (first number))
-                       (realp (first number))))
-              (not (or (short-float-p (second number))
-                       (realp (second number)))))
+              (not (realp (first number)))
+              (not (realp (second number))))
       (error "Invalid complex number ~S" number))
     (complex (first number) (second number))))
 

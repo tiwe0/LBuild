@@ -209,9 +209,21 @@
   (check-type symbol symbol)
   (values (gethash symbol *symbol-plists*)))
 
-;; TODO: What kind of type-checking should be done here?
+(defun %property-list-p (object)
+  "Return true when OBJECT is a proper, even-length property list."
+  (do ((slow object (cdr slow))
+       (fast object (cddr fast))
+       (firstp t nil))
+      ((null fast) t)
+    (unless (and (consp fast) (consp (cdr fast)))
+      (return nil))
+    (when (and (not firstp) (eq fast slow))
+      (return nil))))
+
 (defun (setf symbol-plist) (value symbol)
   (check-type symbol symbol)
+  (unless (%property-list-p value)
+    (error "Invalid property list ~S." value))
   (if (endp value)
       (remhash symbol *symbol-plists*)
       (setf (gethash symbol *symbol-plists*) value))

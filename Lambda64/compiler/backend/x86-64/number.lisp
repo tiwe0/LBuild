@@ -101,6 +101,31 @@
                               :lhs lhs
                               :rhs rhs)))))
 
+(define-builtin mezzano.compiler::%wrapping-fixnum-+ ((lhs rhs) result)
+  (cond ((constant-value-p rhs '(eql 0))
+         (emit (make-instance 'ir:move-instruction
+                              :source lhs
+                              :destination result))
+         (finish))
+        ((constant-value-p lhs '(eql 0))
+         (emit (make-instance 'ir:move-instruction
+                              :source rhs
+                              :destination result))
+         (finish))
+        ((constant-value-p rhs '(signed-byte 31))
+         (emit (make-instance 'x86-fake-three-operand-instruction
+                              :opcode 'lap:add64
+                              :result result
+                              :lhs lhs
+                              :rhs (ash (fetch-constant-value rhs)
+                                        sys.int::+n-fixnum-bits+))))
+        (t
+         (emit (make-instance 'x86-fake-three-operand-instruction
+                              :opcode 'lap:add64
+                              :result result
+                              :lhs lhs
+                              :rhs rhs)))))
+
 (define-builtin mezzano.runtime::%fixnum-- ((lhs rhs) result)
   (let ((out (make-instance 'ir:label :phis (list result)))
         (no-overflow (make-instance 'ir:label :name :--no-overflow))

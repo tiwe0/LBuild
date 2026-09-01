@@ -198,3 +198,7 @@
   (:use :cl)
   (:local-nicknames (:i8042 :mezzano.supervisor.intel-8042)
                     (:ps/2-mouse :mezzano.supervisor.ps/2-mouse)))
+
+;; THEME is compiled before IPL creates the desktop event queue.  Declare the
+;; special here so those setters compile against the startup-state contract.
+(defvar mezzano.internals::*desktop*)

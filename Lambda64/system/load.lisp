@@ -22,6 +22,8 @@
     (#.+llf-backlink+ 'backlink)
     (#.+llf-function+ 'function)
     (#.+llf-cons+ 'cons)
+    (#.+llf-allocate-cons+ 'allocate-cons)
+    (#.+llf-initialize-cons+ 'initialize-cons)
     (#.+llf-symbol+ 'symbol)
     (#.+llf-uninterned-symbol+ 'uninterned-symbol)
     (#.+llf-string+ 'string)
@@ -263,6 +265,15 @@
      (let* ((car (vector-pop stack))
             (cdr (vector-pop stack)))
        (cons-in-area car cdr (if *load-wired* :wired nil))))
+    (#.+llf-allocate-cons+
+     (cons-in-area nil nil (if *load-wired* :wired nil)))
+    (#.+llf-initialize-cons+
+     (let ((cdr (vector-pop stack))
+           (car (vector-pop stack))
+           (cons (vector-pop stack)))
+       (setf (car cons) car
+             (cdr cons) cdr)
+       cons))
     (#.+llf-symbol+
      (let* ((name (load-string stream))
             (package (load-string stream)))

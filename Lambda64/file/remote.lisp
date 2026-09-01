@@ -76,8 +76,7 @@ the server instead of reconnecting for each operation.")
                        :port port)))
 
 (defmethod parse-namestring-using-host ((host remote-file-host) namestring junk-allowed)
-  (when junk-allowed
-    (error "TODO: Junk-allowed"))
+  (declare (ignore junk-allowed))
   (let ((start 0)
         (end (length namestring))
         (directory '())
@@ -85,7 +84,8 @@ the server instead of reconnecting for each operation.")
         (type nil)
         (version nil))
     (when (eql start end)
-      (return-from parse-namestring-using-host (make-pathname :host host)))
+      (return-from parse-namestring-using-host
+        (values (make-pathname :host host) end)))
     (cond ((eql (char namestring start) #\/)
            (push :absolute directory)
            (incf start))
@@ -117,14 +117,15 @@ the server instead of reconnecting for each operation.")
               ((string= "**" dir)
                (push :wild-inferiors directory))
               (t (push dir directory)))))
-    (when (string= name "*") (setf name :wild))
-    (when (string= type "*") (setf type :wild))
-    (when (string= version "*") (setf version :wild))
-    (make-pathname :host host
-                   :directory (nreverse directory)
-                   :name name
-                   :type type
-                   :version version)))
+    (when (and (stringp name) (string= name "*")) (setf name :wild))
+    (when (and (stringp type) (string= type "*")) (setf type :wild))
+    (when (and (stringp version) (string= version "*")) (setf version :wild))
+    (values (make-pathname :host host
+                           :directory (nreverse directory)
+                           :name name
+                           :type type
+                           :version version)
+            end)))
 
 (defun unparse-remote-file-path (pathname)
   (when (pathname-device pathname)

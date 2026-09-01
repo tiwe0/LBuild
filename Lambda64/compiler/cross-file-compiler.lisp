@@ -128,8 +128,20 @@
      (sys.int::add-to-llf sys.int::+llf-drop+))))
 
 (defun x-compile-for-value (form env)
-  ;; FIXME: This should probably use compiler-macroexpand.
-  (let ((expansion (macroexpand form env)))
+  (let ((expansion
+          (loop
+            with expansion = form
+            do (multiple-value-bind (next expandedp)
+                   (macroexpand expansion env)
+                 (when expandedp
+                   (setf expansion next)))
+               (when (not (consp expansion))
+                 (return expansion))
+               (multiple-value-bind (next expandedp)
+                   (compiler-macroexpand-1 expansion env)
+                 (if expandedp
+                     (setf expansion next)
+                     (return expansion))))))
     (cond
       ((symbolp expansion)
        (if (or (keywordp expansion) (member expansion '(nil t)))

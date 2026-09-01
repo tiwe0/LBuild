@@ -18,6 +18,9 @@
 (defgeneric dispatch-event (viewer event)
   (:method (viewer event) nil))
 
+(defgeneric play-audio-stream (container))
+(defgeneric play-video-stream (container))
+
 (defmethod dispatch-event (window (event null)))
 
 (defmethod dispatch-event (window (event mezzano.gui.compositor:window-activation-event))

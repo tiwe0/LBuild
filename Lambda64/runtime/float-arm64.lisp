@@ -40,12 +40,9 @@
 (macrolet ((def (name op)
              `(sys.int::define-lap-function ,name ((x y))
                 (:gc :no-frame :layout #*)
-                ;; Unbox the floats.
-                ;; FIXME: LDR should support loads directly into d0
-                (mezzano.lap.arm64:ldr :x9 (:object :x0 0))
-                (mezzano.lap.arm64:fmov :d0 :x9)
-                (mezzano.lap.arm64:ldr :x9 (:object :x1 0))
-                (mezzano.lap.arm64:fmov :d1 :x9)
+                ;; Load double-float slots directly into FP registers.
+                (mezzano.lap.arm64:ldr :d0 (:object :x0 0))
+                (mezzano.lap.arm64:ldr :d1 (:object :x1 0))
                 ;; Operate.
                 (,op :d0 :d0 :d1)
                 ;; Box result & return.
@@ -112,10 +109,8 @@
 
 (sys.int::define-lap-function sys.int::%%double-float-sqrt ()
   (:gc :no-frame :layout #*)
-  ;; Unbox the float.
-  ;; FIXME: LDR should support loads directly into d0
-  (mezzano.lap.arm64:ldr :x9 (:object :x0 0))
-  (mezzano.lap.arm64:fmov :d0 :x9)
+  ;; Load the double-float slot directly into an FP register.
+  (mezzano.lap.arm64:ldr :d0 (:object :x0 0))
   ;; Operate.
   (mezzano.lap.arm64:fsqrt :d0 :d0)
   ;; Box result & return.

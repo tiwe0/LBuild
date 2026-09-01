@@ -110,8 +110,16 @@
     (logior (logand integer (lognot mask))
             (logand newbyte mask))))
 
-;; TODO: The binary- and generic- variants should be exported
-;; from this package too.
+;; Make the optimized binary and generic entry points available from this
+;; package as well as the internals package used by the compiler.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (import '(int::binary-logand int::generic-logand
+            int::binary-logior int::generic-logior
+            int::binary-logxor int::generic-logxor))
+  (export '(binary-logand generic-logand
+            binary-logior generic-logior
+            binary-logxor generic-logxor)))
+
 (macrolet ((def (name bignum-name)
              `(defun ,name (x y)
                 (cond ((and (int::fixnump x)

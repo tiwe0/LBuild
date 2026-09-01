@@ -142,17 +142,17 @@
 ;; end of the port uses UTF-8 with CRLF newlines.
 
 (defun debug-serial-write-char (char)
-  (setf *serial-at-line-start* nil)
-  ;; FIXME: Should write all the bytes to the buffer in one go.
-  ;; Other processes may interfere.
-  (cond ((eql char #\Newline)
-         (setf *serial-at-line-start* t)
-         ;; Turn #\Newline into CRLF
-         (debug-serial-write-byte #x0D)
-         (debug-serial-write-byte #x0A))
-        (t
-         (with-utf-8-bytes (char byte)
-           (debug-serial-write-byte byte)))))
+  (safe-without-interrupts (char)
+    (with-symbol-spinlock (*debug-serial-lock*)
+      (setf *serial-at-line-start* nil)
+      (cond ((eql char #\Newline)
+             (setf *serial-at-line-start* t)
+             ;; Turn #\Newline into CRLF.
+             (debug-serial-write-byte-1 #x0D)
+             (debug-serial-write-byte-1 #x0A))
+            (t
+             (with-utf-8-bytes (char byte)
+               (debug-serial-write-byte-1 byte)))))))
 
 (defun debug-serial-write-string (string)
   (safe-without-interrupts (string)

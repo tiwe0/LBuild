@@ -112,6 +112,30 @@
   (check-type string string)
   (setf (char string index) value))
 
+(defun copy-non-character-array-string-in-area (string area)
+  "Copy a displaced character vector into an independent simple string."
+  (check-type string string)
+  (let* ((len (or (sys.int::%complex-array-fill-pointer string)
+                  (sys.int::%complex-array-dimension string 0)))
+         (new-data (mezzano.runtime::%allocate-object
+                    sys.int::+object-tag-array-unsigned-byte-8+
+                    len
+                    (ceiling len 8)
+                    area))
+         (new-header (mezzano.runtime::%allocate-object
+                      sys.int::+object-tag-simple-string+
+                      1
+                      (+ 3 1)
+                      area)))
+    (setf (sys.int::%complex-array-storage new-header) new-data
+          (sys.int::%complex-array-fill-pointer new-header) nil
+          (sys.int::%complex-array-info new-header) nil
+          (sys.int::%complex-array-dimension new-header 0) len)
+    (dotimes (i len)
+      ;; CHAR on the destination promotes its backing storage when needed.
+      (setf (char new-header i) (char string i)))
+    new-header))
+
 (defun copy-string-in-area (string &optional area)
   (cond ((sys.int::character-array-p string)
          (let* ((data (sys.int::%complex-array-storage string))
@@ -156,7 +180,7 @@
                   (setf (sys.int::%object-ref-unsigned-byte-32 new-data i) val)))))
            new-header))
         (t
-         (error "TODO: copy non-character-array strings"))))
+         (copy-non-character-array-string-in-area string area))))
 
 (defun make-wired-string (len &key fullwidth)
   (let* ((tag (if fullwidth

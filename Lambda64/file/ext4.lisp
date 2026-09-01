@@ -225,11 +225,11 @@
            (feature-incompat (sys.int::ub32ref/le superblock 96)))
       (when (and (= magic #xEF53) (check-feature-incompat feature-incompat))
         (make-superblock :inodes-count (sys.int::ub32ref/le superblock 0)
-                         :blocks-count (logior (ash (sys.int::ub32ref/le superblock 336) 64)
+                         :blocks-count (logior (ash (sys.int::ub32ref/le superblock 336) 32)
                                                (sys.int::ub32ref/le superblock 4))
-                         :r-blocks-count (logior (ash (sys.int::ub32ref/le superblock 340) 64)
+                         :r-blocks-count (logior (ash (sys.int::ub32ref/le superblock 340) 32)
                                                  (sys.int::ub32ref/le superblock 8))
-                         :free-blocks-count (logior (ash (sys.int::ub32ref/le superblock 344) 64)
+                         :free-blocks-count (logior (ash (sys.int::ub32ref/le superblock 344) 32)
                                                     (sys.int::ub32ref/le superblock 12))
                          :free-inodes-count (sys.int::ub32ref/le superblock 16)
                          :first-data-block (sys.int::ub32ref/le superblock 20)
@@ -514,27 +514,131 @@
   (depth nil :type (unsigned-byte 16)))
 
 (defun read-extent-header (inode-block)
-  (let ((magic (sys.int::ub16ref/le inode-block 0)))
-    (assert (= #xF30A magic))
+  (when (< (length inode-block) 12)
+    (error "Truncated ext4 extent header"))
+  (let ((magic (sys.int::ub16ref/le inode-block 0))
+        (entries (sys.int::ub16ref/le inode-block 2))
+        (max (sys.int::ub16ref/le inode-block 4))
+        (depth (sys.int::ub16ref/le inode-block 6)))
+    (unless (= #xF30A magic)
+      (error "Invalid ext4 extent magic #x~4,'0X" magic))
+    (when (zerop max)
+      (error "Invalid zero-capacity ext4 extent node"))
+    (unless (<= entries max (floor (- (length inode-block) 12) 12))
+      (error "Invalid ext4 extent entry count ~D/~D" entries max))
+    (when (> depth 5)
+      (error "Invalid ext4 extent depth ~D" depth))
     (make-extent-header :magic magic
-                        :entries (sys.int::ub16ref/le inode-block 2)
-                        :max (sys.int::ub16ref/le inode-block 4)
-                        :depth (sys.int::ub16ref/le inode-block 6))))
+                        :entries entries
+                        :max max
+                        :depth depth)))
 
 (defstruct extent
   (n-block nil :type (unsigned-byte 32))
   (length nil :type (unsigned-byte 16))
-  (start-block nil :type (unsigned-byte 48)))
+  (start-block nil :type (unsigned-byte 48))
+  (initialized-p nil :type boolean))
 
 (defun read-extent (inode-block offset)
-  (let ((length (sys.int::ub16ref/le inode-block (+ 4 offset))))
-    (when (> length 32768)
-      ;; TODO: support uninitialized extent
-      (error "Uninitialized extent not suported"))
-    (make-extent :n-block (sys.int::ub16ref/le inode-block offset)
+  (let* ((raw-length (sys.int::ub16ref/le inode-block (+ 4 offset)))
+         (initialized-p (<= raw-length #x8000))
+         (length (if initialized-p raw-length (- raw-length #x8000))))
+    (when (zerop length)
+      (error "Invalid zero-length ext4 extent"))
+    (make-extent :n-block (sys.int::ub32ref/le inode-block offset)
                  :length length
                  :start-block (logior (ash (sys.int::ub16ref/le inode-block (+ 6 offset)) 32)
-                                      (sys.int::ub32ref/le inode-block (+ 8 offset))))))
+                                      (sys.int::ub32ref/le inode-block (+ 8 offset)))
+                 :initialized-p initialized-p)))
+
+(defstruct extent-index
+  (n-block nil :type (unsigned-byte 32))
+  (leaf-block nil :type (unsigned-byte 48)))
+
+(defun read-extent-index (inode-block offset)
+  (make-extent-index
+   :n-block (sys.int::ub32ref/le inode-block offset)
+   :leaf-block (logior (ash (sys.int::ub16ref/le inode-block (+ 8 offset)) 32)
+                       (sys.int::ub32ref/le inode-block (+ 4 offset)))))
+
+(defun walk-extent-node (disk superblock node expected-depth fn)
+  (let ((extents '()))
+    (labels ((visit (current-node current-depth lower-bound upper-bound)
+               (let ((header (read-extent-header current-node)))
+                 (unless (= (extent-header-depth header) current-depth)
+                   (error "Invalid ext4 extent depth ~D, expected ~D"
+                          (extent-header-depth header) current-depth))
+                 (when (and (plusp current-depth)
+                            (zerop (extent-header-entries header)))
+                   (error "Invalid empty non-leaf ext4 extent node"))
+                 (if (zerop current-depth)
+                     (let ((node-extents
+                             (loop :for offset :from 12 :by 12
+                                   :repeat (extent-header-entries header)
+                                   :collect (read-extent current-node offset))))
+                       (when (and lower-bound
+                                  (or (null node-extents)
+                                      (/= (extent-n-block (first node-extents))
+                                          lower-bound)))
+                         (error "Ext4 extent child does not begin at index key ~D"
+                                lower-bound))
+                       (loop :with previous-end := nil
+                             :for extent :in node-extents
+                             :for start := (extent-n-block extent)
+                             :for end := (+ start (extent-length extent))
+                             :do (when (> end #x100000000)
+                                   (error "Ext4 extent logical range exceeds 32-bit address space"))
+                                 (when (and previous-end (< start previous-end))
+                                   (error "Overlapping ext4 extent at logical block ~D"
+                                          start))
+                                 (when (and upper-bound (> end upper-bound))
+                                   (error "Ext4 extent crosses index boundary ~D"
+                                          upper-bound))
+                                 (when (> (+ (extent-start-block extent)
+                                             (extent-length extent))
+                                          (superblock-blocks-count superblock))
+                                   (error "Ext4 extent physical range exceeds filesystem"))
+                                 (setf previous-end end))
+                       (setf extents (nconc (nreverse node-extents) extents)))
+                     (let ((indexes
+                             (loop :for offset :from 12 :by 12
+                                   :repeat (extent-header-entries header)
+                                   :collect (read-extent-index current-node offset))))
+                       (when (and lower-bound
+                                  (/= (extent-index-n-block (first indexes))
+                                      lower-bound))
+                         (error "Ext4 extent child does not begin at index key ~D"
+                                lower-bound))
+                       (loop :with previous-key := nil
+                             :for index :in indexes
+                             :for key := (extent-index-n-block index)
+                             :do (when (and previous-key (<= key previous-key))
+                                   (error "Unordered ext4 extent index at logical block ~D"
+                                          key))
+                                 (when (and upper-bound (>= key upper-bound))
+                                   (error "Ext4 extent index crosses parent boundary ~D"
+                                          upper-bound))
+                                 (setf previous-key key))
+                       (loop :for remaining :on indexes
+                             :for index := (first remaining)
+                             :for next-index := (second remaining)
+                             :for key := (extent-index-n-block index)
+                             :for child-upper-bound :=
+                               (if next-index
+                                   (extent-index-n-block next-index)
+                                   upper-bound)
+                             :do (when (>= (extent-index-leaf-block index)
+                                           (superblock-blocks-count superblock))
+                                   (error "Ext4 extent index block exceeds filesystem"))
+                                 (visit (read-block
+                                         disk superblock
+                                         (extent-index-leaf-block index))
+                                        (1- current-depth)
+                                        key
+                                        child-upper-bound)))))))
+      (visit node expected-depth nil nil))
+    (dolist (extent (nreverse extents))
+      (funcall fn extent))))
 
 (defun follow-pointer (disk superblock block-n fn n-indirection)
   (if (zerop n-indirection)
@@ -550,18 +654,45 @@
          (inode-flags (inode-flags inode)))
     (cond ((and (logbitp +incompat-extents+ (superblock-feature-incompat superblock))
                 (logbitp +extents-flag+ inode-flags))
-           ;; TODO: Add support for extent-header-depth not equal to 0
-           (let ((extent-header (read-extent-header inode-block)))
-             (unless (zerop (extent-header-depth extent-header))
-               (error "Not 0 depth extents nodes not implemented"))
-             (iter (for offset :from 12 :by 12)
-                   (for extent := (read-extent inode-block offset))
-                   (repeat (extent-header-entries extent-header))
-                   (iter (for block-n :from (extent-start-block extent))
-                         (repeat (extent-length extent))
-                         (funcall fn (read-block disk superblock block-n))))))
-          ((logbitp +inline-data-flag+ inode-flags) ;; fixme: it need to return 1 block sized array
-           (funcall fn inode-block))
+           (let* ((block-size (bytes-per-block superblock))
+                  (file-blocks (ceiling (inode-size inode) block-size))
+                  (logical-block 0)
+                  (zero-block (make-array block-size
+                                          :element-type '(unsigned-byte 8)
+                                          :initial-element 0))
+                  (extent-header (read-extent-header inode-block)))
+             (flet ((emit-zero-block ()
+                      (funcall fn zero-block)
+                      (incf logical-block)))
+               (walk-extent-node
+                disk superblock inode-block (extent-header-depth extent-header)
+                (lambda (extent)
+                  (when (< (extent-n-block extent) logical-block)
+                    (error "Overlapping ext4 extent at logical block ~D"
+                           (extent-n-block extent)))
+                  (loop :while (and (< logical-block (extent-n-block extent))
+                                    (< logical-block file-blocks))
+                        :do (emit-zero-block))
+                  (loop :for block-offset :below (extent-length extent)
+                        :while (< logical-block file-blocks)
+                        :do (if (extent-initialized-p extent)
+                                (funcall fn
+                                         (read-block disk
+                                                     superblock
+                                                     (+ (extent-start-block extent)
+                                                        block-offset)))
+                                (funcall fn zero-block))
+                            (incf logical-block))))
+               (loop :while (< logical-block file-blocks)
+                     :do (emit-zero-block)))))
+          ((logbitp +inline-data-flag+ inode-flags)
+           (let ((block (make-array (bytes-per-block superblock)
+                                    :element-type '(unsigned-byte 8)
+                                    :initial-element 0)))
+             (when (> (length inode-block) (length block))
+               (error "Inline ext4 data exceeds the filesystem block size"))
+             (replace block inode-block)
+             (funcall fn block)))
           (t
            (iter (for offset :from 0 :below 48 :by 4)
                  (for block-n := (sys.int::ub32ref/le inode-block offset))

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "log-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "product-source-manifest-sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "resource-id": {
+      "type": "string"
+    },
+    "schema-version": {
+      "const": 1
+    },
+    "work-item-id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema-version",
+    "work-item-id",
+    "resource-id",
+    "product-source-manifest-sha256",
+    "command",
+    "log-sha256"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 hardware verification evidence",
+  "type": "object"
+}

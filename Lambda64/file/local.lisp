@@ -482,18 +482,24 @@
 (defmethod set-file-properties-using-stream ((stream local-stream) &rest properties &key &allow-other-keys)
   (set-file-properties (local-stream-file stream) properties))
 
+(defun local-directory-pathname (directory)
+  (let ((truename (file-truename directory)))
+    (make-pathname :directory (if (pathname-name truename)
+                                  (append (pathname-directory truename)
+                                          (list (pathname-name truename)))
+                                  (pathname-directory truename))
+                   :name nil :type nil :version :newest
+                   :defaults truename)))
+
 (defun match-version (container version)
   (let ((result '()))
     (flet ((accumulate (file exact-version)
              (let ((truename (file-truename file)))
                (cond ((string-equal (pathname-type truename) "directory")
                       ;; Add this as a directory, not a file entry.
-                      (let ((truename (file-truename (aref container (1- (length container))))))
-                        (push (make-pathname :directory (append (pathname-directory truename)
-                                                                (list (pathname-name truename)))
-                                             :name nil :type nil :version :newest
-                                             :defaults truename)
-                              result)))
+                      (push (local-directory-pathname
+                             (aref container (1- (length container))))
+                            result))
                      (exact-version
                       (push truename result))
                      (t (push (make-pathname :version :newest
@@ -510,26 +516,72 @@
                              (not (member version '(nil :newest :unspecific)))))))))
     result))
 
+(defun wildcard-string-match-p (pattern string)
+  "Return true when STRING matches PATTERN, treating * as a wildcard.
+Matching is case-insensitive, like local directory hash-table lookup."
+  (check-type pattern string)
+  (check-type string string)
+  (loop with pattern-length = (length pattern)
+        with string-length = (length string)
+        with pattern-index = 0
+        with string-index = 0
+        with wildcard-index = nil
+        with wildcard-string-index = 0
+        while (< string-index string-length)
+        do
+           (cond ((and (< pattern-index pattern-length)
+                       (char= (char pattern pattern-index) #\*))
+                  (setf wildcard-index pattern-index
+                        wildcard-string-index string-index)
+                  (incf pattern-index))
+                 ((and (< pattern-index pattern-length)
+                       (char-equal (char pattern pattern-index)
+                                   (char string string-index)))
+                  (incf pattern-index)
+                  (incf string-index))
+                 (wildcard-index
+                  (incf wildcard-string-index)
+                  (setf string-index wildcard-string-index
+                        pattern-index (1+ wildcard-index)))
+                 (t
+                  (return-from wildcard-string-match-p nil)))
+        finally
+           (loop while (and (< pattern-index pattern-length)
+                            (char= (char pattern pattern-index) #\*))
+                 do (incf pattern-index))
+           (return (= pattern-index pattern-length))))
+
+(defun pathname-component-match-p (pattern component)
+  (cond ((eql pattern :wild) t)
+        ((and (stringp pattern) (stringp component))
+         (wildcard-string-match-p pattern component))
+        (t
+         (equalp pattern component))))
+
 (defun match-in-directory (directory rest-of-dir-path pathname)
   (let ((dir (aref (file-storage directory) 0)))
     (cond ((null rest-of-dir-path)
            (when (and (not (pathname-name pathname))
                       (not (pathname-type pathname)))
-             (return-from match-in-directory (list pathname)))
+             (return-from match-in-directory
+               (list (local-directory-pathname directory))))
            ;; Match name and type.
            (let ((result '()))
              (maphash (lambda (name-and-type container)
-                        (when (and (or (eql (pathname-name pathname) :wild)
-                                       (equalp (pathname-name pathname) (car name-and-type)))
-                                   (or (eql (pathname-type pathname) :wild)
-                                       (equalp (pathname-type pathname) (cdr name-and-type))))
+                        (when (and (pathname-component-match-p
+                                    (pathname-name pathname)
+                                    (car name-and-type))
+                                   (pathname-component-match-p
+                                    (pathname-type pathname)
+                                    (cdr name-and-type)))
                           (setf result (append (match-version container (pathname-version pathname))
                                                result))))
                       dir)
              result))
           ((eql (car rest-of-dir-path) :wild)
            ;; Match all subdirectories.
-           (cond ((and (not (pathname-name pathname))
+           (cond ((and (null (rest rest-of-dir-path))
+                       (not (pathname-name pathname))
                        (or (not (pathname-type pathname))
                            (string-equal (pathname-type pathname) :directory)))
                   (match-in-directory directory '() (make-pathname :name :wild :type "directory" :defaults pathname)))
@@ -544,7 +596,9 @@
                       result))))
           ((eql (car rest-of-dir-path) :wild-inferiors)
            ;; WOOO! All subdirectories!!
-           (let ((result (match-in-directory directory '() pathname)))
+           (let ((result (match-in-directory directory
+                                             (rest rest-of-dir-path)
+                                             pathname)))
              (maphash (lambda (name-and-type container)
                         (when (string-equal (cdr name-and-type) "directory")
                           (setf result (append (match-in-directory (aref container (1- (length container)))
@@ -553,28 +607,44 @@
                                                result))))
                       dir)
              result))
-          (t ;; Exact match (TODO: Wild strings).
-           (let ((subdir (gethash (cons (first rest-of-dir-path) "directory") dir)))
-             (when subdir
-               (match-in-directory (aref subdir (1- (length subdir))) (rest rest-of-dir-path) pathname)))))))
+          (t
+           (let ((pattern (first rest-of-dir-path)))
+             (cond ((and (stringp pattern)
+                         (find #\* pattern))
+                    (let ((result '()))
+                      (maphash
+                       (lambda (name-and-type container)
+                         (when (and (string-equal (cdr name-and-type) "directory")
+                                    (wildcard-string-match-p pattern
+                                                             (car name-and-type)))
+                           (setf result
+                                 (append
+                                  (match-in-directory
+                                   (aref container (1- (length container)))
+                                   (rest rest-of-dir-path)
+                                   pathname)
+                                  result))))
+                       dir)
+                      result))
+                   (t
+                    (let ((subdir (gethash (cons pattern "directory") dir)))
+                      (when subdir
+                        (match-in-directory
+                         (aref subdir (1- (length subdir)))
+                         (rest rest-of-dir-path)
+                         pathname))))))))))
 
 (defmethod directory-using-host ((host local-file-host) pathname &key)
   (let ((dir (pathname-directory pathname)))
     (when (eql dir :wild)
       (setf dir '(:absolute :wild-inferiors)))
-    (when (not (typep (pathname-directory pathname) '(cons (eql :absolute))))
+    (when (not (typep dir '(cons (eql :absolute))))
       (error 'simple-file-error
              :pathname pathname
              :format-control "Non-absolute pathname."))
     (when (eql (pathname-device pathname) :wild)
       (setf pathname (make-pathname :device nil
                                     :defaults pathname)))
-    (let ((winf (member :wild-inferiors dir)))
-      (when (cdr winf)
-        ;; Implmentation limitation. FIXME...
-        (error 'simple-file-error
-               :pathname pathname
-               :format-control ":WILD-INFERIORS must be the final directory element.")))
     (with-host-locked (host)
       (remove-duplicates (match-in-directory (local-host-root host) (cdr dir) pathname)
                          :test #'equal))))
@@ -711,7 +781,17 @@ If ERRORP is true, then a file error will be signalled if any components are mis
         (setf (file-truename file) new-truename)
         (values old-truename new-truename)))))
 
-;; FIXME: Mark files deleted, let expunge actually delete them.
+(defun file-deleted-p (file)
+  (mezzano.supervisor:with-mutex ((file-lock file))
+    (not (null (getf (file-plist file) :deleted)))))
+
+(defun mark-file-deleted (file)
+  (mezzano.supervisor:with-mutex ((file-lock file))
+    (setf (getf (file-plist file) :deleted) t)))
+
+(defun expunge-file-container (container)
+  (remove-if #'file-deleted-p container))
+
 (defmethod delete-file-using-host ((host local-file-host) pathname &key)
   (with-host-locked (host)
     (setf pathname (canonicalize-directory-file-pathname pathname))
@@ -722,19 +802,40 @@ If ERRORP is true, then a file error will be signalled if any components are mis
            (container (gethash key name-table)))
       (cond ((and container
                   (eql version :wild))
-             ;; Delete everything.
-             (remhash key name-table))
+             (map nil #'mark-file-deleted container))
             (t
              (let ((index (version-position version container)))
                (when (not index)
                  (error 'simple-file-error
                         :pathname pathname
                         :format-control "File does not exist."))
-               (remove-specific-file name-table key container index)))))))
+               (mark-file-deleted (aref container index))))))))
 
-#|
-           #:expunge-directory-using-host
-|#
+(defmethod expunge-directory-using-host ((host local-file-host) pathname &key)
+  (with-host-locked (host)
+    (let* ((directory-components (pathname-directory pathname))
+           (dir (if (and (equal directory-components '(:absolute))
+                         (not (pathname-name pathname))
+                         (not (pathname-type pathname)))
+                    (local-host-root host)
+                    (resolve-path host pathname))))
+      (unless (or (eq dir (local-host-root host))
+                  (string-equal (pathname-type (file-truename dir)) "directory"))
+        (error 'simple-file-error
+               :pathname pathname
+               :format-control "Path is not a directory."))
+      (let ((name-table (aref (file-storage dir) 0))
+            (updates '()))
+        (maphash (lambda (key container)
+                   (let ((survivors (expunge-file-container container)))
+                     (unless (= (length survivors) (length container))
+                       (push (cons key survivors) updates))))
+                 name-table)
+        (dolist (update updates)
+          (if (zerop (length (cdr update)))
+              (remhash (car update) name-table)
+              (setf (gethash (car update) name-table) (cdr update))))
+        (not (null updates))))))
 
 (defmethod mezzano.gray:stream-write-char ((stream local-stream) character)
   (check-type (direction stream) (member :io :output))
@@ -864,16 +965,36 @@ If ERRORP is true, then a file error will be signalled if any components are mis
 (defmethod mezzano.gray:stream-force-output ((stream local-stream))
   nil)
 
+(defun merge-file-plists (primary secondary)
+  "Merge two property lists, with PRIMARY taking precedence.
+Duplicate indicators are discarded so the resulting plist has one effective
+value for every property."
+  (let ((result '())
+        (seen '()))
+    (dolist (plist (list primary secondary))
+      (loop for (indicator value) on plist by #'cddr
+            unless (member indicator seen :test #'eql)
+              do (setf result (nconc result (list indicator value)))
+                 (push indicator seen)))
+    result))
+
 (defmethod close ((stream local-stream) &key abort &allow-other-keys)
   (call-next-method)
   (when (and (not abort)
              (superseded-file stream))
     ;; Replace the superseded file's contents.
-    (let ((file (superseded-file stream))
-          (time (get-universal-time)))
+    (let* ((file (superseded-file stream))
+           (replacement (local-stream-file stream))
+           (time (get-universal-time))
+           (replacement-storage nil)
+           (replacement-plist nil))
+      (mezzano.supervisor:with-mutex ((file-lock replacement))
+        (setf replacement-storage (file-storage replacement)
+              replacement-plist (copy-list (file-plist replacement))))
       (mezzano.supervisor:with-mutex ((file-lock file))
-        (setf (file-storage file) (file-storage (local-stream-file stream)))
-        ;; FIXME: This needs to merge the two plists together.
+        (setf (file-storage file) replacement-storage
+              (file-plist file) (merge-file-plists replacement-plist
+                                                   (file-plist file)))
         (setf (getf (file-plist file) :creation-date) time
               (getf (file-plist file) :write-date) time))))
   t)

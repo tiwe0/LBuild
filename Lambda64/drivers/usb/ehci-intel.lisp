@@ -704,12 +704,8 @@
 ;;
 ;; Primary function for receiving data on the control endpoint.
 ;;
-;; TODO is this comment still valid:
-;;
-;; It is also used for USB commands that don't actually receive any
-;; data, such as, set address and set configuration. In these cases,
-;; the length should be 0 and the buf can be any length buffer,
-;; although the convention is to use a buffer of length 1.
+;; Control requests that do not receive data, such as set address and set
+;; configuration, use a zero length and a one-byte scratch buffer.
 ;;
 ;;======================================================================
 

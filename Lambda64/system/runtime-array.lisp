@@ -578,58 +578,99 @@
 
 (defun hash-simple-numeric-1d-array (array &optional (start 0) end)
   (declare (optimize speed (safety 0)))
-  ;; This is actually a huge pain to do because it involves shifting
-  ;; partial words around.
-  (assert (eql start 0) (start) "TODO: Non-zero start")
-  (let* ((length (the fixnum (%object-header-data array))))
+  (let* ((length (the fixnum (%object-header-data array)))
+         (tag (the fixnum (%object-tag array)))
+         (element-bits
+           (ecase tag
+             ((#.+object-tag-array-bit+
+               #.+object-tag-array-signed-byte-1+)
+              1)
+             ((#.+object-tag-array-unsigned-byte-2+
+               #.+object-tag-array-signed-byte-2+)
+              2)
+             ((#.+object-tag-array-unsigned-byte-4+
+               #.+object-tag-array-signed-byte-4+)
+              4)
+             ((#.+object-tag-array-unsigned-byte-8+
+               #.+object-tag-array-signed-byte-8+)
+              8)
+             ((#.+object-tag-array-unsigned-byte-16+
+               #.+object-tag-array-signed-byte-16+
+               #.+object-tag-array-short-float+)
+              16)
+             ((#.+object-tag-array-unsigned-byte-32+
+               #.+object-tag-array-signed-byte-32+
+               #.+object-tag-array-single-float+
+               #.+object-tag-array-complex-short-float+)
+              32)
+             ((#.+object-tag-array-fixnum+
+               #.+object-tag-array-unsigned-byte-64+
+               #.+object-tag-array-signed-byte-64+
+               #.+object-tag-array-double-float+
+               #.+object-tag-array-complex-single-float+)
+              64)
+             (#.+object-tag-array-complex-double-float+
+              128))))
     (setf end (or end length))
-    (multiple-value-bind (count end-mask)
-        (ecase (the fixnum (%object-tag array))
-          ((#.+object-tag-array-bit+
-            #.+object-tag-array-signed-byte-1+)
-           (values (ceiling end 32) -1))
-          ((#.+object-tag-array-unsigned-byte-2+
-            #.+object-tag-array-signed-byte-2+)
-           (values (ceiling end 16) -1))
-          ((#.+object-tag-array-unsigned-byte-4+
-            #.+object-tag-array-signed-byte-4+)
-           (values (ceiling end 8) -1))
-          ((#.+object-tag-array-unsigned-byte-8+
-            #.+object-tag-array-signed-byte-8+)
-           (values (ceiling end 4)
-                   (ecase (logand end 3)
-                     (0 #xFFFFFFFF)
-                     (1 #x000000FF)
-                     (2 #x0000FFFF)
-                     (3 #x00FFFFFF))))
-          ((#.+object-tag-array-unsigned-byte-16+
-            #.+object-tag-array-signed-byte-16+
-            #.+object-tag-array-short-float+)
-           (values (ceiling end 2)
-                   (ecase (logand end 1)
-                     (0 #xFFFFFFFF)
-                     (1 #x0000FFFF))))
-          ((#.+object-tag-array-unsigned-byte-32+
-            #.+object-tag-array-signed-byte-32+
-            #.+object-tag-array-single-float+
-            #.+object-tag-array-complex-short-float+)
-           (values end -1))
-          ((#.+object-tag-array-fixnum+
-            #.+object-tag-array-unsigned-byte-64+
-            #.+object-tag-array-signed-byte-64+
-            #.+object-tag-array-double-float+
-            #.+object-tag-array-complex-single-float+)
-           (values (* end 2) -1))
-          (#.+object-tag-array-complex-double-float+
-           (values (* end 4) -1)))
-      (loop with hash = (logxor (ldb (byte 32 0) (- end start))
-                                (ldb (byte 32 32) (- end start)))
-            for i below (1- count)
-            for hword = (%object-ref-unsigned-byte-32 array i)
-            do (setf hash (logxor hash hword))
-            finally (progn
-                      (when (plusp count)
-                        (setf hash (logxor hash
-                                           (logand (%object-ref-unsigned-byte-32 array (1- count))
-                                                   end-mask))))
-                      (return hash))))))
+    (check-type start (integer 0))
+    (check-type end (integer 0))
+    (unless (<= start end length)
+      (error "Invalid array hash range ~S through ~S for ~S." start end array))
+    ;; Keep the established zero-origin results exactly, including the full
+    ;; final word used by packed 1/2/4-bit arrays.
+    (if (zerop start)
+        (let* ((count (ceiling (* end element-bits) 32))
+               (end-mask (case element-bits
+                           ((1 2 4 32 64 128) -1)
+                           (8 (ecase (logand end 3)
+                                (0 #xFFFFFFFF)
+                                (1 #x000000FF)
+                                (2 #x0000FFFF)
+                                (3 #x00FFFFFF)))
+                           (16 (ecase (logand end 1)
+                                 (0 #xFFFFFFFF)
+                                 (1 #x0000FFFF)))))
+               (hash (logxor (ldb (byte 32 0) end)
+                             (ldb (byte 32 32) end))))
+          (loop for i below (1- count)
+                for hword = (%object-ref-unsigned-byte-32 array i)
+                do (setf hash (logxor hash hword))
+                finally (progn
+                          (when (plusp count)
+                            (setf hash (logxor hash
+                                               (logand (%object-ref-unsigned-byte-32 array (1- count))
+                                                       end-mask))))
+                          (return hash))))
+        (let* ((slice-length (- end start))
+               (slice-bits (* slice-length element-bits))
+               (slice-words (ceiling slice-bits 32))
+               (storage-words (ceiling (* length element-bits) 32))
+               (final-mask (let ((bits (mod slice-bits 32)))
+                             (if (zerop bits)
+                                 -1
+                                 (1- (ash 1 bits)))))
+               (hash (logxor (ldb (byte 32 0) slice-length)
+                             (ldb (byte 32 32) slice-length))))
+          (flet ((storage-word (index)
+                   ;; A partial final word may need zero-fill above the
+                   ;; logical array end when an unaligned slice is hashed.
+                   (if (< index storage-words)
+                       (%object-ref-unsigned-byte-32 array index)
+                       0)))
+            (loop for word-index below slice-words
+                  do (let* ((source-bit (+ (* start element-bits)
+                                            (* word-index 32)))
+                            (source-word-index (floor source-bit 32))
+                            (bit-offset (mod source-bit 32))
+                            (low (storage-word source-word-index))
+                            (hword (if (zerop bit-offset)
+                                       low
+                                       (logand #xFFFFFFFF
+                                               (logior (ash low (- bit-offset))
+                                                       (ash (storage-word (1+ source-word-index))
+                                                            (- 32 bit-offset))))))
+                            (mask (if (= word-index (1- slice-words))
+                                      final-mask
+                                      -1)))
+                       (setf hash (logxor hash (logand hword mask))))
+                  finally (return hash)))))))

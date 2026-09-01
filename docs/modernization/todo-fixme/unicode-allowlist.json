@@ -1,0 +1,153 @@
+{
+  "file-sha256": "90b45b777346bef027556f9c6cb3ea5d7d745bd60d6762855c08d8a22d34f771",
+  "path": "Lambda64/tools/UnicodeData.txt",
+  "record-count": 29,
+  "records": [
+    {
+      "codepoint": "1806",
+      "full-record": "1806;MONGOLIAN TODO SOFT HYPHEN;Pd;0;ON;;;;;N;;;;;",
+      "record-sha256": "8cda8eb3d3a64ed79bf098030b9f2fcfa66c34fccbb7e957c18bc0e33601f528"
+    },
+    {
+      "codepoint": "1843",
+      "full-record": "1843;MONGOLIAN LETTER TODO LONG VOWEL SIGN;Lm;0;L;;;;;N;;;;;",
+      "record-sha256": "ddbf773854818c357c17e3336d01a9b5c9295e898b3550f40a7255f0739f6e74"
+    },
+    {
+      "codepoint": "1844",
+      "full-record": "1844;MONGOLIAN LETTER TODO E;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "f7996ace71bfd35fd0b8017fb7890937f66a92ba4c597196f9f2fb04b1fada39"
+    },
+    {
+      "codepoint": "1845",
+      "full-record": "1845;MONGOLIAN LETTER TODO I;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "e77457d641cb57969db2250cebe18389e898493f79b5ca4781e5139be0cf4b5f"
+    },
+    {
+      "codepoint": "1846",
+      "full-record": "1846;MONGOLIAN LETTER TODO O;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "def726a7307caea901fc19cca989d8f6e6b9e5bf4d673aa948e65de339a6aa8e"
+    },
+    {
+      "codepoint": "1847",
+      "full-record": "1847;MONGOLIAN LETTER TODO U;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "b03c46280a1262613a4f2992231f39b373034b4cbe859f69811db16c71e1b994"
+    },
+    {
+      "codepoint": "1848",
+      "full-record": "1848;MONGOLIAN LETTER TODO OE;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "f796b2c051439f6263e74c4f567cb8ea0e6187b64d781c2ec869cf958af49713"
+    },
+    {
+      "codepoint": "1849",
+      "full-record": "1849;MONGOLIAN LETTER TODO UE;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "e413c0950c1886c855889a3e3fe7701bf950e01823067f0b48b3e9a15e1fbe0a"
+    },
+    {
+      "codepoint": "184A",
+      "full-record": "184A;MONGOLIAN LETTER TODO ANG;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "addfacb49c4bd55eedd83b1d9a9ffc2cfdce11a7ccd5e0ac27211cf026c2cf41"
+    },
+    {
+      "codepoint": "184B",
+      "full-record": "184B;MONGOLIAN LETTER TODO BA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "ad586f59a0a9a9a22579f2855430a28bdfdf4e6a817939c99a34e7ea1529a074"
+    },
+    {
+      "codepoint": "184C",
+      "full-record": "184C;MONGOLIAN LETTER TODO PA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "dc008ee0a498f364cd74f1af2c89d17a54548a03f2335abb9e2aa8a3839751d9"
+    },
+    {
+      "codepoint": "184D",
+      "full-record": "184D;MONGOLIAN LETTER TODO QA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "c96dc4ae5c65d27f59a75ebbecc7454af8c5add52bfbd35ae93d210a11c7479d"
+    },
+    {
+      "codepoint": "184E",
+      "full-record": "184E;MONGOLIAN LETTER TODO GA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "93c0621274f888f8547c51317f3a786456495f1f6f453474ed9fe752fbb632e3"
+    },
+    {
+      "codepoint": "184F",
+      "full-record": "184F;MONGOLIAN LETTER TODO MA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "00cceaf78a1f90ed73da5c61c535a845c9c29fccebd1f599657c953034ccf539"
+    },
+    {
+      "codepoint": "1850",
+      "full-record": "1850;MONGOLIAN LETTER TODO TA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "8c1a3b3402b1f4147f3e5764912ea98e87657c4ae7c76e182d79235dd773230b"
+    },
+    {
+      "codepoint": "1851",
+      "full-record": "1851;MONGOLIAN LETTER TODO DA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "d48c18177c1d2c2226ab8921e1c56e94d11d814859f78da5e873bd3205dc0aa2"
+    },
+    {
+      "codepoint": "1852",
+      "full-record": "1852;MONGOLIAN LETTER TODO CHA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "d411765309db1e56d87736f150adb8fb28238e01de7d894ee4ed06267ba0f77a"
+    },
+    {
+      "codepoint": "1853",
+      "full-record": "1853;MONGOLIAN LETTER TODO JA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "a525a79c90a0ca5a1d0a4ecab27ef703bdd52cbce1c025c9ca4dc4d24b5c19fa"
+    },
+    {
+      "codepoint": "1854",
+      "full-record": "1854;MONGOLIAN LETTER TODO TSA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "54f9ed7f15ef904e49d1d0a2911106c3cd454e1d4e79b5a2c2da70b731219519"
+    },
+    {
+      "codepoint": "1855",
+      "full-record": "1855;MONGOLIAN LETTER TODO YA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "ca74ca01fe8665a3e1faa3b8b2bff16e97164eb43614b8165f5693f1ed54cd08"
+    },
+    {
+      "codepoint": "1856",
+      "full-record": "1856;MONGOLIAN LETTER TODO WA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "ac83abd6d06c60ea37e305291fd362837ddf142877d14e330f72b0731ff53970"
+    },
+    {
+      "codepoint": "1857",
+      "full-record": "1857;MONGOLIAN LETTER TODO KA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "88e1966f2cd0bc0c4a949dcea2be401e0a7901ade6a6561536e488097993c29e"
+    },
+    {
+      "codepoint": "1858",
+      "full-record": "1858;MONGOLIAN LETTER TODO GAA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "dad4bc608b563150da6675a8c55449aa000fda9256a24e69662f5c980c0453dd"
+    },
+    {
+      "codepoint": "1859",
+      "full-record": "1859;MONGOLIAN LETTER TODO HAA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "20267cca9eb6d84c7c5e78e67066abe9a539e90c21df4dd8a167422afd492491"
+    },
+    {
+      "codepoint": "185A",
+      "full-record": "185A;MONGOLIAN LETTER TODO JIA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "7744325e89d0824bcb6205069f86624f6ecfc88115628b06ea74e62fa55d1c47"
+    },
+    {
+      "codepoint": "185B",
+      "full-record": "185B;MONGOLIAN LETTER TODO NIA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "c28f64f783b072c4d3e2c924cbcec4f545ac88148e32b96a6a9cf8e813060fce"
+    },
+    {
+      "codepoint": "185C",
+      "full-record": "185C;MONGOLIAN LETTER TODO DZA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "06ef6db149135e1923f23959b6ba3eeb53cfafb5ff05617c281aff7ac3768fbe"
+    },
+    {
+      "codepoint": "1898",
+      "full-record": "1898;MONGOLIAN LETTER TODO ALI GALI TA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "16440890ad858657545641f022ad65f65cc8bd643502e3aa0db1e2d2ef88bb80"
+    },
+    {
+      "codepoint": "1899",
+      "full-record": "1899;MONGOLIAN LETTER TODO ALI GALI ZHA;Lo;0;L;;;;;N;;;;;",
+      "record-sha256": "1ff677e996ecac04ab5682576d3ce5030189a142b4d6e26701aa0de5b268bf4e"
+    }
+  ],
+  "schema-version": 1
+}

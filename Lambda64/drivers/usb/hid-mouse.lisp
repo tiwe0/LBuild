@@ -194,8 +194,8 @@
           (when (/= bit-offset 0)
             #+mezzano
             (sup:debug-print-line
-             "HID mouse probe failed because report id came after first field")
-            ;; TODO - print error message
+             "HID mouse probe failed because report id came after first field; report id "
+             value)
             (throw :probe-failed :failed))
           (setf report-id value
                 bit-offset 8))

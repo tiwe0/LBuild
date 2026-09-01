@@ -379,7 +379,8 @@
 (defmethod optimize-qualities-in-environment ((environment null))
   '())
 
-(defun sys.int::%define-compiler-macro (name function)
+(defun sys.int::%define-compiler-macro (name function &optional documentation)
+  (declare (ignore documentation))
   (setf (compiler-macro-function name) function)
   name)
 

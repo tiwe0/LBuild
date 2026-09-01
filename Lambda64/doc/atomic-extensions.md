@@ -5,7 +5,7 @@
 The following places support atomic operations:
 
 * Special variables
-* Lexical variables (TODO)
+* Lexical variables are not supported; see [Lexical variables](#lexical-variables)
 * Structure slots
 * `car`
 * `cdr`
@@ -20,6 +20,20 @@ The following places support atomic operations:
 * `gethash`
 
 Further atomic places may be defined through cas functions.
+
+### Lexical variables
+
+Lexical variables are not atomic places. `get-cas-expansion` distinguishes a
+lexical binding from a special binding through the compiler environment and
+signals `CAS on lexical variable ... not implemented.` for the lexical case.
+This also applies to captured lexical variables: the compiler does not provide
+the `casq`-style operation that would be needed to update their storage
+atomically. Declare a variable special or place shared state in one of the
+supported aggregate places when it must be updated atomically. Use a special
+variable only when its dynamic/global binding semantics are appropriate.
+
+Symbol macros are macroexpanded before this check. Their expanded place, not
+the symbol-macro name, determines whether an atomic operation is supported.
 
 ## Functions & macros
 
@@ -75,17 +89,28 @@ similar to `get-setf-expansion`.
 
 ## Orderings
 
-FIXME: Atomic ordering is currently poorly defined. On arm64 all atomic ops are acqrel,
-x86-64 the are seqcst.
+The atomic API does not accept an ordering argument. Built-in atomic places use
+one fixed ordering per target architecture:
 
-Ideally we'd like to follow Rust's semantics and add success/failure orderings to cas
-& the other atomic operations.
+* On arm64, compiler-generated compare-and-swap, double compare-and-swap,
+  swap, add, bit-set (logical OR), and exclusive-or operations use the
+  acquire/release (`al`) instruction variants. A failed compare-and-swap
+  performs the acquire part of that instruction; no store occurs, so there is
+  no release store. Generic read-modify-write expansions that use a CAS loop
+  inherit this ordering at their successful CAS linearization point.
+* On x86-64, compare-and-swap, double compare-and-swap, add, and logical
+  read-modify-write operations use `lock`-prefixed instructions. Swap uses a
+  memory `xchg`, whose memory form is atomic. These are the backend's
+  sequentially consistent atomic operations.
 
-* `:seqcst` - Sequentially consistent
-* `:acqrel` - Acquire/release
-* `:acquire` - Acquire
-* `:release` - Release
-* `:relaxed` - Relaxed
+Callers cannot request `:seqcst`, `:acqrel`, `:acquire`, `:release`, or
+`:relaxed`, and compare-and-swap does not expose separate success and failure
+orderings. These names describe a possible future API, not accepted arguments
+to the current functions and macros.
+
+This contract applies to the built-in compiler and runtime implementations.
+A custom cas function is responsible for its own atomicity and memory ordering;
+the protocol described below does not add either property automatically.
 
 ## Custom cas functions
 

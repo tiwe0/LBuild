@@ -624,6 +624,10 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
 ;; Actually closer to 2^32, but lets not get that close.
 (defconstant +virgl-max-sub-contexts+ (1- (expt 2 31)))
 
+(defconstant +virtio-gpu-memory-entry-size+ 16)
+
+(defconstant +virtio-gpu-max-memory-entry-length+ #xFFFFFFFF)
+
 (defclass virgl ()
   ((%gpu :initarg :gpu :reader virgl-gpu)
    (%caps :initarg :caps :reader virgl-caps)
@@ -658,6 +662,37 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
          :context context
          :format-control format-control
          :format-arguments format-arguments))
+
+(defun update-virgl-scanout-1 (virgl gpu)
+  "Update VIRGL's stable scanout wrapper from the current GPU framebuffer."
+  (assert (sup:mutex-held-p (virgl-lock virgl)))
+  (let ((dma-buffer (gpu:virtio-gpu-framebuffer gpu))
+        (format (gpu:virtio-gpu-framebuffer-format gpu))
+        (width (gpu:virtio-gpu-width gpu))
+        (height (gpu:virtio-gpu-height gpu)))
+    (cond
+      ((slot-boundp virgl '%scanout)
+       (let ((scanout (virgl-%scanout virgl)))
+         (assert (typep scanout 'scanout))
+         (assert (= (resource-id scanout)
+                    gpu:+virtio-gpu-framebuffer-resource-id+))
+         (setf (slot-value scanout '%dma-buffer) dma-buffer
+               (slot-value scanout '%format) format
+               (slot-value scanout '%render-target) t
+               (slot-value scanout '%width) width
+               (slot-value scanout '%height) height)
+         scanout))
+      (t
+       (setf (slot-value virgl '%scanout)
+             (make-instance 'scanout
+                            :virgl virgl :context nil
+                            :name `(scanout 0)
+                            :id gpu:+virtio-gpu-framebuffer-resource-id+
+                            :dma-buffer dma-buffer
+                            :format format
+                            :render-target t
+                            :width width
+                            :height height))))))
 
 (defun get-virgl (&key flush-existing from)
   "Get the virgl object for the compositor's current display."
@@ -712,17 +747,7 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
         (setf (virgl-error-state virgl) error)
         (simple-virgl-error virgl nil "Unable to attach scanout to primary context: ~D" error)))
     (setf (slot-value virgl '%caps) (read-virgl-capset gpu))
-    ;; TODO: What to do when the scanout changes size?
-    (setf (slot-value virgl '%scanout)
-          (make-instance 'scanout
-                         :virgl virgl :context nil
-                         :name `(scanout 0)
-                         :id gpu:+virtio-gpu-framebuffer-resource-id+
-                         :dma-buffer (gpu:virtio-gpu-framebuffer gpu)
-                         :format (gpu:virtio-gpu-framebuffer-format gpu)
-                         :render-target t
-                         :width (gpu:virtio-gpu-width gpu)
-                         :height (gpu:virtio-gpu-height gpu)))
+    (update-virgl-scanout-1 virgl gpu)
     (setf (virgl-error-state virgl) nil))
   (values))
 
@@ -1138,6 +1163,70 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
 (defclass vertex-buffer (buffer) ())
 (defclass index-buffer (buffer) ())
 
+(defun virgl-dma-buffer-backing-entry-count (dma-buffer)
+  "Return the number of virtio-gpu memory entries needed for DMA-BUFFER."
+  (let ((count 0))
+    (dotimes (index (sup:dma-buffer-n-sg-entries dma-buffer))
+      (multiple-value-bind (address length)
+          (sup:dma-buffer-sg-entry dma-buffer index)
+        (declare (ignore address))
+        (assert (not (minusp length)))
+        (incf count
+              (max 1
+                   (ceiling length
+                            +virtio-gpu-max-memory-entry-length+)))))
+    (assert (plusp count))
+    (assert (<= count #xFFFFFFFF))
+    count))
+
+(defun virgl-attach-dma-buffer-backing-1 (virgl resource-id dma-buffer)
+  "Attach every physical extent of DMA-BUFFER to RESOURCE-ID."
+  (assert (sup:mutex-held-p (virgl-lock virgl)))
+  (let* ((entry-count
+           (virgl-dma-buffer-backing-entry-count dma-buffer))
+         (request-length
+           (+ 32 (* entry-count +virtio-gpu-memory-entry-size+)))
+         (request-dma-buffer
+           (sup:make-dma-buffer request-length
+                                :name `(virgl attach backing ,resource-id))))
+    (unwind-protect
+         (let ((request
+                 (make-array (sup:dma-buffer-length request-dma-buffer)
+                             :element-type '(unsigned-byte 8)
+                             :memory request-dma-buffer))
+               (entry-offset 32))
+           (labels ((emit-entry (address length)
+                      (setf (ext:ub64ref/le request entry-offset) address
+                            (ext:ub32ref/le request (+ entry-offset 8)) length
+                            (ext:ub32ref/le request (+ entry-offset 12)) 0)
+                      (incf entry-offset +virtio-gpu-memory-entry-size+)))
+             (setf (ext:ub32ref/le request gpu:+virtio-gpu-ctrl-hdr-type+)
+                   gpu:+virtio-gpu-cmd-resource-attach-backing+
+                   (ext:ub32ref/le request gpu:+virtio-gpu-ctrl-hdr-flags+) 0
+                   (ext:ub64ref/le request gpu:+virtio-gpu-ctrl-hdr-fence-id+) 0
+                   (ext:ub32ref/le request gpu:+virtio-gpu-ctrl-hdr-ctx-id+) 0
+                   (ext:ub32ref/le request 20) 0
+                   (ext:ub32ref/le request 24) resource-id
+                   (ext:ub32ref/le request 28) entry-count)
+             (dotimes (index (sup:dma-buffer-n-sg-entries dma-buffer))
+               (multiple-value-bind (address length)
+                   (sup:dma-buffer-sg-entry dma-buffer index)
+                 (cond
+                   ((zerop length)
+                    (emit-entry address 0))
+                   (t
+                    (loop
+                      while (plusp length)
+                      for chunk-length =
+                        (min length +virtio-gpu-max-memory-entry-length+)
+                      do (emit-entry address chunk-length)
+                         (incf address chunk-length)
+                         (decf length chunk-length))))))
+             (assert (= entry-offset request-length)))
+           (virgl-submit-dma-command-buffer-1
+            virgl request-dma-buffer request-length))
+      (sup:release-dma-buffer request-dma-buffer))))
+
 (defun make-buffer-1 (context class length bind initargs)
   (let* ((virgl (virgl context))
          (buffer (apply 'make-instance class
@@ -1155,11 +1244,7 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
           (setf (slot-value buffer '%dma-buffer) dma-buffer)
           ;; Attach it to the resource.
           (multiple-value-bind (successp error)
-              (gpu:virtio-gpu-resource-attach-backing
-               (virgl-gpu virgl) id
-               1
-               (sup:dma-buffer-physical-address dma-buffer)
-               length)
+              (virgl-attach-dma-buffer-backing-1 virgl id dma-buffer)
             (when (not successp)
               (simple-virgl-error
                virgl context
@@ -1334,18 +1419,14 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
         (cond (host-only
                (setf (slot-value texture '%dma-buffer) nil))
               (t
-               ;; TODO: Discontiguous buffers.
                (let ((dma-buffer (sup:make-dma-buffer
                                   (* total-size (texture-format-width format))
-                                  :name texture :contiguous t)))
+                                  :name texture)))
                  (setf (slot-value texture '%dma-buffer) dma-buffer)
                  ;; Attach it to the resource.
                  (multiple-value-bind (successp error)
-                     (gpu:virtio-gpu-resource-attach-backing
-                      (virgl-gpu virgl) id
-                      1
-                      (sup:dma-buffer-physical-address dma-buffer)
-                      (sup:dma-buffer-length dma-buffer))
+                     (virgl-attach-dma-buffer-backing-1
+                      virgl id dma-buffer)
                    (when (not successp)
                      (simple-virgl-error
                       virgl context
@@ -2093,11 +2174,15 @@ Avoid using context 0 because that's what the compositor and 2D rendering uses."
         (virgl-submit-simple-command-buffer-1 virgl cmd-buf)
         (setf (gethash id (context-objects context)) sampler-view)))))
 
+(defconstant +virtio-gpu-submit-3d-request-prefix-size+ 32
+  "Bytes before the virgl command stream in a VIRTIO_GPU_CMD_SUBMIT_3D request.")
+
 (defclass command-buffer ()
   ((%context :initarg :context :reader context)
    (%name :initarg :name :reader name)
    (%finalized :initform nil :reader command-buffer-finalized)
    (%dma-buffer :initform nil :reader command-buffer-dma-buffer)
+   (%dma-request-length :initform 0 :reader command-buffer-dma-request-length)
    (%data-array :initform (make-array 1024
                                       :element-type '(unsigned-byte 8)
                                       :fill-pointer 0
@@ -2127,19 +2212,32 @@ This should be set for command buffers that are likely to be used
 multiple times."
   (when (command-buffer-finalized command-buffer)
     (error "Command buffer ~D already finalized!" command-buffer))
-  (let ((data (command-buffer-data-array command-buffer)))
+  (let* ((data (command-buffer-data-array command-buffer))
+         (data-length (length data))
+         (existing-dma-buffer (command-buffer-dma-buffer command-buffer)))
     (when (or optimize
+              existing-dma-buffer
               ;; Limit of VIRTIO-GPU-SUBMIT-3D's internal command buffer.
-              (> (length data) 1024))
-      ;; Add extra for the GPU header and command size.
-      ;; TODO: Figure out how to do SG with virtio.
-      ;; FIXME: Reuse any existing dma buffer if it has the right size.
-      (let* ((dma-buffer (sup:make-dma-buffer (+ 24 4 (length data))
-                                              :name command-buffer
-                                              :contiguous t))
+              (> data-length 1024))
+      (let* ((request-length (+ +virtio-gpu-submit-3d-request-prefix-size+
+                                data-length))
+             (reuse-existing-p
+               (and existing-dma-buffer
+                    (not (sup:dma-buffer-expired-p existing-dma-buffer))
+                    (>= (sup:dma-buffer-length existing-dma-buffer)
+                        request-length)))
+             (dma-buffer
+               (if reuse-existing-p
+                   existing-dma-buffer
+                   (sup:make-dma-buffer request-length
+                                        :name command-buffer)))
              (buf-vec (make-array (sup:dma-buffer-length dma-buffer)
                                   :element-type '(unsigned-byte 8)
                                   :memory dma-buffer)))
+        ;; Allocate the replacement before retiring the old buffer. Allocation
+        ;; failure therefore leaves the command buffer's prior storage valid.
+        (when (and existing-dma-buffer (not reuse-existing-p))
+          (sup:release-dma-buffer existing-dma-buffer))
         ;; Configure the header.
         (setf (ext:ub32ref/le buf-vec gpu:+virtio-gpu-ctrl-hdr-type+)
               gpu:+virtio-gpu-cmd-submit-3d+)
@@ -2147,12 +2245,129 @@ multiple times."
         (setf (ext:ub64ref/le buf-vec gpu:+virtio-gpu-ctrl-hdr-fence-id+) 0)
         (setf (ext:ub32ref/le buf-vec gpu:+virtio-gpu-ctrl-hdr-ctx-id+)
               +virgl-gpu-context+)
-        ;; Command size.
-        (setf (ext:ub32ref/le data 28) (length data))
-        (replace buf-vec data :start1 32)
-        (setf (slot-value command-buffer '%dma-buffer) dma-buffer))))
+        ;; Both reserved words in the request must be zero. The first follows
+        ;; the control header and the second follows the command-stream size.
+        (setf (ext:ub32ref/le buf-vec 20) 0)
+        (setf (ext:ub32ref/le buf-vec 24) data-length)
+        (setf (ext:ub32ref/le buf-vec 28) 0)
+        (replace buf-vec data
+                 :start1 +virtio-gpu-submit-3d-request-prefix-size+)
+        (setf (slot-value command-buffer '%dma-buffer) dma-buffer
+              (slot-value command-buffer '%dma-request-length)
+              request-length))))
   (setf (slot-value command-buffer '%finalized) t)
   (values))
+
+(defun virgl-submit-dma-command-buffer-1 (virgl dma-buffer request-length)
+  "Submit REQUEST-LENGTH bytes from DMA-BUFFER as a virtio-gpu request.
+Each physical extent is represented by one chained virtqueue descriptor."
+  (assert (sup:mutex-held-p (virgl-lock virgl)))
+  (assert (<= request-length (sup:dma-buffer-length dma-buffer)))
+  (let* ((gpu (virgl-gpu virgl))
+         (device (gpu::virtio-gpu-virtio-device gpu))
+         (queue (mezzano.supervisor.virtio:virtio-virtqueue device 0))
+         (request-descriptor-count
+           (let ((remaining request-length)
+                 (count 0))
+             (dotimes (index (sup:dma-buffer-n-sg-entries dma-buffer))
+               (when (plusp remaining)
+                 (multiple-value-bind (address extent-length)
+                     (sup:dma-buffer-sg-entry dma-buffer index)
+                   (declare (ignore address))
+                   (assert (plusp extent-length))
+                   (decf remaining (min remaining extent-length))
+                   (incf count))))
+             (assert (zerop remaining))
+             count))
+         (descriptors (make-array (1+ request-descriptor-count)
+                                  :initial-element nil)))
+    (declare (dynamic-extent descriptors))
+    (sup:with-mutex ((gpu::virtio-gpu-command-lock gpu))
+      (unwind-protect
+           (let ((allocation-failed-p nil))
+             ;; Reserve the complete chain before publishing any descriptor.
+             (dotimes (index (length descriptors))
+               (let ((descriptor
+                       (mezzano.supervisor.virtio:virtio-ring-alloc-descriptor
+                        queue)))
+                 (cond (descriptor
+                        (setf (aref descriptors index) descriptor))
+                       (t
+                        (setf allocation-failed-p t)
+                        (return)))))
+             (cond
+               (allocation-failed-p
+                (values nil gpu:+virtio-gpu-resp-err-unspec+))
+               (t
+                (let ((remaining request-length))
+                  (dotimes (index request-descriptor-count)
+                    (multiple-value-bind (address extent-length)
+                        (sup:dma-buffer-sg-entry dma-buffer index)
+                      (assert (plusp extent-length))
+                      (let ((descriptor (aref descriptors index))
+                            (descriptor-length
+                              (min remaining extent-length)))
+                        (assert (plusp descriptor-length))
+                        (setf
+                         (mezzano.supervisor.virtio:virtio-ring-desc-address
+                          queue descriptor)
+                         address
+                         (mezzano.supervisor.virtio:virtio-ring-desc-length
+                          queue descriptor)
+                         descriptor-length
+                         (mezzano.supervisor.virtio:virtio-ring-desc-flags
+                          queue descriptor)
+                         (ash
+                          1
+                          mezzano.supervisor.virtio:+virtio-ring-desc-f-next+)
+                         (mezzano.supervisor.virtio:virtio-ring-desc-next
+                          queue descriptor)
+                         (aref descriptors (1+ index)))
+                        (decf remaining descriptor-length))))
+                  (assert (zerop remaining)))
+                ;; Reuse the GPU driver's fixed response area. Its command
+                ;; mutex serializes this response with the copying path.
+                (let* ((response-descriptor
+                         (aref descriptors request-descriptor-count))
+                       (response-address
+                         (+ (gpu::virtio-gpu-request-phys gpu) 2048)))
+                  (setf
+                   (mezzano.supervisor.virtio:virtio-ring-desc-address
+                    queue response-descriptor)
+                   response-address
+                   (mezzano.supervisor.virtio:virtio-ring-desc-length
+                    queue response-descriptor)
+                   24
+                   (mezzano.supervisor.virtio:virtio-ring-desc-flags
+                    queue response-descriptor)
+                   (ash
+                    1 mezzano.supervisor.virtio:+virtio-ring-desc-f-write+)
+                   (mezzano.supervisor.virtio:virtio-ring-desc-next
+                    queue response-descriptor)
+                   0)
+                  (sup:dma-buffer-cache-flush dma-buffer 0 request-length)
+                  (let ((last-used
+                          (mezzano.supervisor.virtio:virtio-ring-used-idx
+                           queue)))
+                    (mezzano.supervisor.virtio:virtio-ring-add-to-avail-ring
+                     queue (aref descriptors 0))
+                    (mezzano.supervisor.virtio:virtio-kick device 0)
+                    (loop until
+                      (not
+                       (eql last-used
+                            (mezzano.supervisor.virtio:virtio-ring-used-idx
+                             queue)))))
+                  (let ((response-type
+                          (sup::physical-memref-unsigned-byte-32
+                           (+ response-address
+                              gpu:+virtio-gpu-ctrl-hdr-type+))))
+                    (if (eql response-type gpu:+virtio-gpu-resp-ok-nodata+)
+                        (values t nil)
+                        (values nil response-type)))))))
+        (dotimes (index (length descriptors))
+          (when (aref descriptors index)
+            (mezzano.supervisor.virtio:virtio-ring-free-descriptor
+             queue (aref descriptors index))))))))
 
 (defun command-buffer-submit (command-buffer)
   (assert (command-buffer-finalized command-buffer))
@@ -2160,7 +2375,14 @@ multiple times."
     (sup:with-mutex ((virgl-lock virgl) :resignal-errors virgl-error)
       (let ((dma-buf (command-buffer-dma-buffer command-buffer)))
         (cond (dma-buf
-               (error "TODO"))
+               (multiple-value-bind (successp error)
+                   (virgl-submit-dma-command-buffer-1
+                    virgl dma-buf
+                    (command-buffer-dma-request-length command-buffer))
+                 (when (not successp)
+                   (simple-virgl-error
+                    virgl (context command-buffer)
+                    "Command buffer submission failed: ~D" error))))
               (t
                (virgl-submit-simple-command-buffer-1 virgl (command-buffer-data-array command-buffer)))))))
   (values))
@@ -2176,7 +2398,9 @@ reused without consing."
 
 (defmethod destroy ((command-buffer command-buffer))
   (when (command-buffer-dma-buffer command-buffer)
-    (sup:release-dma-buffer (command-buffer-dma-buffer command-buffer))))
+    (sup:release-dma-buffer (command-buffer-dma-buffer command-buffer))
+    (setf (slot-value command-buffer '%dma-buffer) nil
+          (slot-value command-buffer '%dma-request-length) 0)))
 
 (defconstant +max-framebuffer-color-buffers+ 8)
 

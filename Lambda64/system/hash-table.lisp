@@ -51,12 +51,25 @@
          (numberp object)
          (symbolp object)))
     (equal
-     (labels ((frob (object depth)
+     (labels ((frob-list (list depth)
+                ;; Chase the cdr chain completely while using a tortoise and
+                ;; hare to reject circular lists.  Nested CAR values remain
+                ;; bounded by DEPTH in FROB below.
+                (do ((slow list)
+                     (fast list))
+                    ((atom slow) (frob slow depth))
+                  (unless (frob (car slow) (1- depth))
+                    (return nil))
+                  (setf slow (cdr slow))
+                  (when (consp fast)
+                    (setf fast (cdr fast))
+                    (when (consp fast)
+                      (setf fast (cddr fast))
+                      (when (eq slow fast)
+                        (return nil))))))
+              (frob (object depth)
                 (when (zerop depth)
-                  ;; Hard limit on recursion limit for conses, to avoid more complicated
-                  ;; circularity checks.
-                  ;; TODO: Do the normal fast/slow circularity check and chase
-                  ;; all the way down the cdr.
+                  ;; Bound nested CAR traversal to avoid unbounded recursion.
                   (return-from frob nil))
                 (or (immediatep object)
                     (and (eql (ldb +address-tag+ (lisp-object-address object))
@@ -69,8 +82,7 @@
                     (bit-vector-p object)
                     (pathnamep object)
                     (and (consp object)
-                         (frob (car object) (1- depth))
-                         (frob (cdr object) (1- depth))))))
+                         (frob-list object depth)))))
        (frob object 10)))
     (equalp
      ;; Don't allow arbitrary pinned heap objects. EQUALP gets really hairy.
@@ -649,11 +661,20 @@ is below the rehash-threshold."
          ;; can be safely hashed by their "address".
          (eq-hash object))))
 
+(defun hash-bit-vector (vector)
+  "Hash the logical bits of VECTOR independently of its storage."
+  (check-type vector bit-vector)
+  (let ((hash (logxor 5381 (length vector))))
+    (dotimes (i (length vector) hash)
+      (setf hash (logand #xFFFFFFFF
+                          (+ (logand #xFFFFFFFF (* hash 33))
+                             (bit vector i)))))))
+
 (defun sxhash-1 (object depth)
   (if (zerop depth)
       #x12345678
       (typecase object
-        (bit-vector 0) ; TODO. could copy the bitvector, then munge it into a bignum. nasty.
+        (bit-vector (hash-bit-vector object))
         (cons (logxor (sxhash-1 (car object) (1- depth))
                       (sxhash-1 (cdr object) (1- depth))))
         (string

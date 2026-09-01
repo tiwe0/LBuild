@@ -188,11 +188,20 @@
                         new-entry))))
     entry))
 
+(defun %require-global-macro-definition-environment (environment operator)
+  "Reject SETF operations on lexical macro environments.
+
+The Common Lisp environment argument is available for macro lookup, but SETF
+of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
+  (when environment
+    (error 'simple-program-error
+           :format-control "~S only supports definitions in the global environment."
+           :format-arguments (list operator))))
+
 (defun (setf macro-function) (value symbol &optional env)
   (check-type value (or null function))
   (check-type symbol symbol)
-  (when env
-    (error "TODO: (Setf Macro-function) in environment."))
+  (%require-global-macro-definition-environment env 'macro-function)
   (cond (value
          (setf (symbol-function symbol) (lambda (&rest r)
                                           (declare (ignore r))
@@ -225,8 +234,7 @@
 
 (defun (setf compiler-macro-function) (value name &optional environment)
   (check-type value (or function null))
-  (when environment
-    (error "TODO: (Setf Compiler-Macro-function) in environment."))
+  (%require-global-macro-definition-environment environment 'compiler-macro-function)
   (setf (function-info-compiler-macro (function-info-for name)) value)
   value)
 

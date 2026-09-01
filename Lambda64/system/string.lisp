@@ -144,22 +144,12 @@ the seperator character."
       (push (subseq string elt-start i) elements)
       (setf elt-start (1+ i)))))
 
-;; FIXME: This doesn't hash nicely across different encodings - wide strings
-;; don't hash to the same value as narrow strings. Need to effectively promote
-;; each element to 32-bits or something first.
 (defun hash-string (string)
-  (cond ((sys.int::character-array-p string)
-         (hash-simple-numeric-1d-array
-          (sys.int::%complex-array-storage string)
-          0
-          (length string)))
-        (t
-         ;; Possibly a displaced string, fall back on the old hash function.
-         (check-type string string)
-         ;; djb2 string hash
-         ;; We use 25-bit characters (unicode+bucky bits), instead of 8-bit chars.
-         ;; I'm unsure how that'll change the behaviour of the hash function
-         (let ((hash 5381))
-           (dotimes (i (length string) hash)
-             (setf hash (logand #xFFFFFFFF (+ (logand #xFFFFFFFF (* hash 33))
-                                              (char-int (char string i))))))))))
+  (check-type string string)
+  ;; Hash the logical character sequence, not the backing storage. Simple
+  ;; strings can widen from 8 to 16 or 32-bit code units, while displaced
+  ;; strings already use this representation-independent path.
+  (let ((hash 5381))
+    (dotimes (i (length string) hash)
+      (setf hash (logand #xFFFFFFFF (+ (logand #xFFFFFFFF (* hash 33))
+                                       (char-int (char string i))))))))

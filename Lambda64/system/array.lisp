@@ -483,6 +483,14 @@
                  (initialize-from-initial-contents array initial-contents))
                array)))))
 
+(defun %copy-array-prefix (source destination)
+  "Copy the row-major overlap of SOURCE into DESTINATION."
+  (dotimes (index (min (array-total-size source)
+                       (array-total-size destination))
+                   destination)
+    (setf (%row-major-aref destination index)
+          (%row-major-aref source index))))
+
 (defun adjust-array (array new-dimensions &key
                      (element-type (array-element-type array) element-type-p)
                      (initial-element nil initial-element-p)
@@ -508,8 +516,6 @@
       (error "Invalid :FILL-POINTER ~S." fill-pointer))
     (unless (<= 0 fill-pointer (first new-dimensions))
       (error "Fill-pointer ~S out of vector bounds. Should non-negative and <=~S." fill-pointer (first new-dimensions))))
-  (unless (vectorp array)
-    (error "TODO: adjust-array on non-vectors."))
   (when (and (array-has-fill-pointer-p array)
              (not fill-pointer)
              (< (first new-dimensions) (fill-pointer array)))
@@ -545,28 +551,55 @@
            new-array))
         ((and (null (%complex-array-info array))
               (character-array-p array))
-         (setf (%complex-array-storage array) (if initial-element-p
-                                                  (adjust-array (%complex-array-storage array) new-dimensions
-                                                                :initial-element (char-int initial-element))
-                                                  (adjust-array (%complex-array-storage array) new-dimensions))
-               (%complex-array-dimension array 0) (first new-dimensions))
+         (let ((new-total-size (apply #'* new-dimensions)))
+           (setf (%complex-array-storage array) (if initial-element-p
+                                                    (adjust-array (%complex-array-storage array) new-total-size
+                                                                  :initial-element (char-int initial-element))
+                                                    (adjust-array (%complex-array-storage array) new-total-size)))
+           (dotimes (axis (length new-dimensions))
+             (setf (%complex-array-dimension array axis)
+                   (nth axis new-dimensions))))
          (when initial-contents-p
            (initialize-from-initial-contents array initial-contents))
          (when fill-pointer
            (setf (fill-pointer array) fill-pointer))
          array)
         ((null (%complex-array-info array))
-         (setf (%complex-array-dimension array 0) (first new-dimensions)
-               (%complex-array-storage array) (if initial-element-p
-                                                  (adjust-array (%complex-array-storage array) new-dimensions
-                                                                :initial-element initial-element)
-                                                  (adjust-array (%complex-array-storage array) new-dimensions)))
+         (let ((new-total-size (apply #'* new-dimensions)))
+           (setf (%complex-array-storage array) (if initial-element-p
+                                                    (adjust-array (%complex-array-storage array) new-total-size
+                                                                  :initial-element initial-element)
+                                                    (adjust-array (%complex-array-storage array) new-total-size)))
+           (dotimes (axis (length new-dimensions))
+             (setf (%complex-array-dimension array axis)
+                   (nth axis new-dimensions))))
          (when fill-pointer
            (setf (fill-pointer array) fill-pointer))
          (when initial-contents-p
            (initialize-from-initial-contents array initial-contents))
          array)
-        (t (error "TODO: Adjusting unusual array ~S." array))))
+        ;; Displaced arrays and memory-backed arrays cannot resize their
+        ;; backing storage in place. Give the adjusted result independent
+        ;; storage, retaining only the visible row-major prefix.
+        (t (let* ((new-fill-pointer (or fill-pointer
+                                        (and (array-has-fill-pointer-p array)
+                                             (fill-pointer array))))
+                  (new-array (if initial-element-p
+                                 (make-array new-dimensions
+                                             :element-type (array-element-type array)
+                                             :initial-element initial-element
+                                             :adjustable t
+                                             :fill-pointer new-fill-pointer
+                                             :area area)
+                                 (make-array new-dimensions
+                                             :element-type (array-element-type array)
+                                             :adjustable t
+                                             :fill-pointer new-fill-pointer
+                                             :area area))))
+             (if initial-contents-p
+                 (initialize-from-initial-contents new-array initial-contents)
+                 (%copy-array-prefix array new-array))
+             new-array))))
 
 (defun array-rank (array)
   (cond ((%simple-1d-array-p array)

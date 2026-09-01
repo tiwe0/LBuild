@@ -35,6 +35,7 @@
 (defconstant +port-wildcard+ 0)
 
 (defparameter *tcp-connect-timeout* 10)
+(defparameter *tcp-syn-received-timeout* 10)
 (defparameter *tcp-initial-retransmit-time* 1)
 (defparameter *minimum-rto* 1) ;; in seconds
 (defparameter *maximum-rto* 60) ;; in seconds
@@ -78,9 +79,15 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
 (defun -u32 (x y)
   (ldb (byte 32 0) (- x y)))
 
-;; FIXME: Inbound connections need to timeout if state :syn-received don't change.
-;; TODO: Better locking on this is probably needed. It looks like it is accesed
-;; from the network serial queue and from user threads.
+(defun tcp-sequence< (x y)
+  "Compare two TCP sequence numbers in serial-number space."
+  (let ((distance (-u32 y x)))
+    (and (not (zerop distance))
+         (< distance #x80000000))))
+
+(defun tcp-sequence<= (x y)
+  (or (eql x y) (tcp-sequence< x y)))
+
 (defclass tcp-listener ()
   ((local-port :reader tcp-listener-local-port
                :initarg :local-port
@@ -98,8 +105,19 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                           :initarg :n-pending-connections
                           :type integer)
    (backlog :reader tcp-listener-backlog
-            :initarg :backlog))
+            :initarg :backlog)
+   (%lock :reader tcp-listener-lock)
+   (%closed-p :accessor tcp-listener-closed-p :initform nil))
   (:default-initargs :n-pending-connections 0))
+
+(defmethod initialize-instance :after ((instance tcp-listener) &key)
+  (setf (slot-value instance '%lock)
+        (mezzano.supervisor:make-mutex instance)))
+
+(defmacro with-tcp-listener-locked (listener &body body)
+  `(mezzano.supervisor:with-mutex ((tcp-listener-lock ,listener)
+                                   :resignal-errors t)
+     ,@body))
 
 (defmethod mezzano.sync:get-object-event ((object tcp-listener))
   (mezzano.sync:get-object-event (tcp-listener-connections object)))
@@ -157,22 +175,70 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
   (let ((connection (mezzano.sync:mailbox-receive
                      (tcp-listener-connections listener)
                      :wait-p wait-p)))
-    (cond (connection
-           (when (tcp-listener-backlog listener)
-             (decf (tcp-listener-n-pending-connections listener)))
-           (tcp4-accept-connection connection :element-type element-type :external-format external-format))
-          (t
-           nil))))
+    (when connection
+      (if (tcp-listener-complete-accept listener connection)
+          (return-from tcp-accept
+            (tcp4-accept-connection connection
+                                    :element-type element-type
+                                    :external-format external-format))
+          ;; CLOSE won the listener lock after the mailbox receive. Do not
+          ;; leak a live, no-longer-owned connection to the caller.
+          (abort-connection connection)))
+    nil))
+
+(defun tcp-listener-complete-accept (listener connection)
+  "Linearize a mailbox receive against listener close."
+  (declare (ignore connection))
+  (with-tcp-listener-locked listener
+    (when (not (tcp-listener-closed-p listener))
+      (when (and (tcp-listener-backlog listener)
+                 (plusp (tcp-listener-n-pending-connections listener)))
+        (decf (tcp-listener-n-pending-connections listener)))
+      t)))
 
 (defun close-tcp-listener (listener)
   (mezzano.supervisor:with-mutex (*tcp-listener-lock*)
     (setf *tcp-listeners* (remove listener *tcp-listeners*)))
-  (loop :for connection :being :the :hash-values :of (tcp-listener-pending-connections listener)
-        :do (with-tcp-connection-locked connection
-              (abort-connection connection)))
-  (loop :for connection :in (mezzano.sync:mailbox-flush (tcp-listener-connections listener))
-        :do (with-tcp-connection-locked connection
-              (abort-connection connection))))
+  (let ((pending-connections nil)
+        (accepted-connections nil))
+    (with-tcp-listener-locked listener
+      (setf (tcp-listener-closed-p listener) t
+            pending-connections
+            (loop for connection being the hash-values
+                    of (tcp-listener-pending-connections listener)
+                  collect connection)
+            accepted-connections
+            (mezzano.sync:mailbox-flush
+             (tcp-listener-connections listener))
+            (tcp-listener-n-pending-connections listener) 0)
+      (clrhash (tcp-listener-pending-connections listener)))
+    (dolist (connection (append pending-connections accepted-connections))
+      (with-tcp-connection-locked connection
+        (abort-connection connection)))))
+
+(defun tcp-listener-remove-pending (listener connection &key accepted-p)
+  "Remove CONNECTION from LISTENER's half-open set exactly once."
+  (when listener
+    (with-tcp-listener-locked listener
+      (when (remhash connection
+                     (tcp-listener-pending-connections listener))
+        (when (and (not accepted-p)
+                   (tcp-listener-backlog listener)
+                   (plusp (tcp-listener-n-pending-connections listener)))
+          (decf (tcp-listener-n-pending-connections listener)))
+        (when (and accepted-p
+                   (not (tcp-listener-closed-p listener)))
+          (mezzano.sync:mailbox-send
+           connection
+           (tcp-listener-connections listener)))
+        t))))
+
+(defun tcp-listener-accepts-passive-open-p (listener)
+  "Return true when a locked listener may reserve another passive open."
+  (and (not (tcp-listener-closed-p listener))
+       (or (not (tcp-listener-backlog listener))
+           (< (tcp-listener-n-pending-connections listener)
+              (tcp-listener-backlog listener)))))
 
 (defclass tcp-connection ()
   ((%state :accessor tcp-connection-state
@@ -195,6 +261,12 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
              :type tcp-sequence-number)
    (%snd.una :accessor tcp-connection-snd.una
              :initarg :snd.una)
+   (%snd.wnd :accessor tcp-connection-snd.wnd
+             :initarg :snd.wnd)
+   (%snd.wl1 :accessor tcp-connection-snd.wl1
+             :initarg :snd.wl1)
+   (%snd.wl2 :accessor tcp-connection-snd.wl2
+             :initarg :snd.wl2)
    (%rcv.nxt :accessor tcp-connection-rcv.nxt
              :initarg :rcv.nxt
              :type tcp-sequence-number)
@@ -209,10 +281,19 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
    (%rttvar :accessor tcp-connection-rttvar :initarg :rttvar)
    (%rto :accessor tcp-connection-rto :initarg :rto)
    (%retransmit-queue :accessor tcp-connection-retransmit-queue :initform '())
+   (%tx-data :accessor tcp-connection-tx-data :initform '())
+   (%congestion-window :accessor tcp-connection-congestion-window
+                       :initarg :congestion-window)
+   (%slow-start-threshold :accessor tcp-connection-slow-start-threshold
+                          :initarg :slow-start-threshold)
+   (%duplicate-acks :accessor tcp-connection-duplicate-acks
+                    :initform 0)
+   (%listener :reader tcp-connection-listener :initarg :listener)
    (%lock :reader tcp-connection-lock)
    (%cvar :reader tcp-connection-cvar)
    (%receive-event :reader tcp-connection-receive-event)
    (%pending-error :accessor tcp-connection-pending-error :initform nil)
+   (%abort-pending-p :accessor tcp-connection-abort-pending-p :initform nil)
    (%retransmit-timer :reader tcp-connection-retransmit-timer)
    (%retransmit-source :reader tcp-connection-retransmit-source)
    (%timeout-timer :reader tcp-connection-timeout-timer)
@@ -222,6 +303,12 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
              :initarg :boot-id))
   (:default-initargs
    :max-seg-size 1000
+   :snd.wnd 0
+   :snd.wl1 0
+   :snd.wl2 0
+   :congestion-window nil
+   :slow-start-threshold #xFFFF
+   :listener nil
    :last-ack-time nil
    :srtt nil
    :rttvar nil
@@ -253,19 +340,38 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
   (mezzano.supervisor:with-mutex ((tcp-connection-lock connection))
     ;; Disarm it so it stops triggering the source
     (mezzano.supervisor:timer-disarm (tcp-connection-retransmit-timer connection))
+    (when (tcp-connection-abort-pending-p connection)
+      (return-from retransmit-timer-handler))
     ;; What're we retransmitting?
     (ecase (tcp-connection-state connection)
       (:syn-sent
        (let ((seq (-u32 (tcp-connection-snd.nxt connection) 1)))
          (tcp4-send-packet connection seq 0 nil :ack-p nil :syn-p t)
          (arm-retransmit-timer connection)))
+      (:syn-received
+       (tcp4-send-packet connection
+                         (-u32 (tcp-connection-snd.nxt connection) 1)
+                         (tcp-connection-rcv.nxt connection)
+                         nil
+                         :ack-p t
+                         :syn-p t)
+       (setf (tcp-connection-rto connection)
+             (min *maximum-rto* (* 2 (tcp-connection-rto connection))))
+       (arm-retransmit-timer connection))
       ((:established
         :close-wait
         :last-ack
         :fin-wait-1
         :fin-wait-2
-        :closing)
+       :closing)
        (let ((packet (first (tcp-connection-retransmit-queue connection))))
+         (let* ((mss (tcp-connection-max-seg-size connection))
+                (flight (-u32 (tcp-connection-snd.nxt connection)
+                              (tcp-connection-snd.una connection))))
+           (setf (tcp-connection-slow-start-threshold connection)
+                 (max (floor flight 2) (* 2 mss))
+                 (tcp-connection-congestion-window connection) mss
+                 (tcp-connection-duplicate-acks connection) 0))
          (apply #'tcp4-send-packet connection packet)
          (setf (tcp-connection-rto connection)
                (min *maximum-rto* (* 2 (tcp-connection-rto connection))))
@@ -296,7 +402,9 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                           :port (tcp-connection-remote-port connection)))
     (mezzano.supervisor:condition-notify (tcp-connection-cvar connection) t)
     (case (tcp-connection-state connection)
-      (:syn-sent
+      ((:syn-sent :syn-received)
+       (tcp-listener-remove-pending (tcp-connection-listener connection)
+                                    connection)
        (detach-tcp-connection connection))
       (:closed)
       (t
@@ -308,6 +416,10 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
         (slot-value instance '%receive-event) (mezzano.supervisor:make-event :name `(:data-available ,instance))
         (slot-value instance '%retransmit-timer) (mezzano.supervisor:make-timer :name `(:tcp-retransmit ,instance))
         (slot-value instance '%timeout-timer) (mezzano.supervisor:make-timer :name `(:tcp-timeout ,instance)))
+  (when (not (tcp-connection-congestion-window instance))
+    (let ((mss (tcp-connection-max-seg-size instance)))
+      (setf (tcp-connection-congestion-window instance)
+            (min (* 4 mss) (max (* 2 mss) 4380)))))
   (setf (slot-value instance '%retransmit-source)
         (mezzano.sync.dispatch:make-source (tcp-connection-retransmit-timer instance)
                                            (lambda ()
@@ -345,6 +457,50 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                  (eql (tcp-connection-local-port connection) local-port))
         (return connection)))))
 
+(defun tcp4-open-passive (listener packet start end
+                          local-ip local-port remote-ip remote-port)
+  "Create one half-open inbound connection while holding LISTENER's lock."
+  (declare (ignore end))
+  (with-tcp-listener-locked listener
+    (when (tcp-listener-accepts-passive-open-p listener)
+      (let* ((irs (ub32ref/be packet
+                             (+ start +tcp4-header-sequence-number+)))
+             (iss (or *netmangler-iss* (random #x100000000)))
+             (connection
+               (make-instance 'tcp-connection
+                              :state :syn-received
+                              :local-port local-port
+                              :local-ip local-ip
+                              :remote-port remote-port
+                              :remote-ip remote-ip
+                              :snd.nxt (+u32 iss 1)
+                              :snd.una iss
+                              :snd.wnd (ub16ref/be
+                                        packet
+                                        (+ start +tcp4-header-window-size+))
+                              :snd.wl1 irs
+                              :snd.wl2 iss
+                              :rcv.nxt (+u32 irs 1)
+                              :rcv.wnd *initial-window-size*
+                              :listener listener
+                              :boot-id
+                              (mezzano.supervisor:current-boot-id))))
+        (when (tcp-listener-backlog listener)
+          (incf (tcp-listener-n-pending-connections listener)))
+        (setf (gethash connection
+                       (tcp-listener-pending-connections listener))
+              connection)
+        (mezzano.supervisor:with-mutex (*tcp-connection-lock*)
+          (push connection *tcp-connections*))
+        (setf (tcp-connection-last-ack-time connection)
+              (get-internal-run-time))
+        (when (not *netmangler-force-local-retransmit*)
+          (tcp4-send-packet connection iss (+u32 irs 1) nil
+                            :ack-p t :syn-p t))
+        (arm-retransmit-timer connection)
+        (arm-timeout-timer *tcp-syn-received-timeout* connection)
+        connection))))
+
 (defmethod mezzano.network.ip:ipv4-receive ((protocol (eql mezzano.network.ip:+ip-protocol-tcp+)) packet local-ip remote-ip start end)
   (let* ((remote-port (ub16ref/be packet (+ start +tcp4-header-source-port+)))
          (local-port (ub16ref/be packet (+ start +tcp4-header-destination-port+)))
@@ -354,36 +510,10 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
          (listener (get-tcp-listener local-ip local-port)))
     (cond (connection
            (tcp4-connection-receive connection packet start end listener))
-          ;; Drop unestablished connections if they surpassed listener backlog
-          ((and listener
-                (eql flags +tcp4-flag-syn+)
-                (or (not (tcp-listener-backlog listener))
-                    (< (tcp-listener-n-pending-connections listener)
-                       (tcp-listener-backlog listener))))
-           (when (tcp-listener-backlog listener)
-             (incf (tcp-listener-n-pending-connections listener)))
-           (let* ((irs (ub32ref/be packet (+ start +tcp4-header-sequence-number+)))
-                  (iss (or *netmangler-iss*
-                           (random #x100000000)))
-                  (connection (make-instance 'tcp-connection
-                                             :state :syn-received
-                                             :local-port local-port
-                                             :local-ip local-ip
-                                             :remote-port remote-port
-                                             :remote-ip remote-ip
-                                             :snd.nxt (+u32 iss 1)
-                                             :snd.una iss
-                                             :rcv.nxt (+u32 irs 1)
-                                             :rcv.wnd *initial-window-size*
-                                             :boot-id (mezzano.supervisor:current-boot-id))))
-             (mezzano.supervisor:with-mutex (*tcp-connection-lock*)
-               (push connection *tcp-connections*))
-             (setf (gethash connection (tcp-listener-pending-connections listener))
-                   connection)
-             (setf (tcp-connection-last-ack-time connection)
-                   (get-internal-run-time))
-             (when (not *netmangler-force-local-retransmit*)
-               (tcp4-send-packet connection iss (+u32 irs 1) nil :ack-p t :syn-p t))))
+          ;; A listener serializes backlog accounting against ACCEPT and CLOSE.
+          ((and listener (eql flags +tcp4-flag-syn+))
+           (tcp4-open-passive listener packet start end
+                              local-ip local-port remote-ip remote-port))
           ((logtest flags +tcp4-flag-rst+)) ; Do nothing for resets addressed to nobody.
           (t
            (let* ((seq (if (logtest flags +tcp4-flag-ack+)
@@ -496,6 +626,10 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
 (defun tcp-packet-data-length (packet start end)
   (- end (+ start (tcp-packet-header-length packet start end))))
 
+(defun tcp-packet-window (packet start end)
+  (declare (ignore end))
+  (ub16ref/be packet (+ start +tcp4-header-window-size+)))
+
 (defun acceptable-segment-p (connection packet start end)
   (let ((rcv.wnd (tcp-connection-rcv.wnd connection))
         (rcv.nxt (tcp-connection-rcv.nxt connection))
@@ -504,20 +638,86 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
     (if (eql rcv.wnd 0)
         (and (eql seg.len 0)
              (eql seg.seq rcv.nxt))
-        ;; Arithmetic here is not wrapping, so as to avoid wrap-around problems.
-        (and (and (<= rcv.nxt seg.seq) (< seg.seq (+ rcv.nxt rcv.wnd)))
-             (or (eql seg.len 0)
-                 (let ((seq-end (+ seg.seq seg.len -1)))
-                   (and (<= rcv.nxt seq-end) (< seq-end (+ rcv.nxt rcv.wnd)))))))))
+        (flet ((in-window-p (sequence)
+                 (and (tcp-sequence<= rcv.nxt sequence)
+                      (tcp-sequence< sequence (+u32 rcv.nxt rcv.wnd)))))
+          (or (in-window-p seg.seq)
+              (and (plusp seg.len)
+                   (in-window-p (-u32 (+u32 seg.seq seg.len) 1))))))))
+
+(defun tcp-reset-acceptable-p (connection packet start end)
+  "Return true when PACKET's RST is valid for CONNECTION's current state."
+  (case (tcp-connection-state connection)
+    (:syn-sent
+     (and (logtest (tcp-packet-flags packet start end) +tcp4-flag-ack+)
+          (eql (tcp-packet-acknowledgment-number packet start end)
+               (tcp-connection-snd.nxt connection))))
+    (t
+     (acceptable-segment-p connection packet start end))))
+
+(defun tcp-update-send-window (connection seg.seq seg.ack seg.window)
+  "Apply RFC 793 SND.WL1/SND.WL2 ordering to an advertised window update."
+  (when (or (tcp-sequence< (tcp-connection-snd.wl1 connection) seg.seq)
+            (and (eql (tcp-connection-snd.wl1 connection) seg.seq)
+                 (tcp-sequence<= (tcp-connection-snd.wl2 connection)
+                                 seg.ack)))
+    (setf (tcp-connection-snd.wnd connection) seg.window
+          (tcp-connection-snd.wl1 connection) seg.seq
+          (tcp-connection-snd.wl2 connection) seg.ack)
+    t))
+
+(defun tcp-flight-size (connection)
+  (-u32 (tcp-connection-snd.nxt connection)
+        (tcp-connection-snd.una connection)))
+
+(defun tcp-note-new-ack (connection previous-una ack)
+  "Advance Reno congestion control after ACK moves SND.UNA forward."
+  (let* ((mss (tcp-connection-max-seg-size connection))
+         (acked (-u32 ack previous-una))
+         (cwnd (tcp-connection-congestion-window connection)))
+    (cond ((>= (tcp-connection-duplicate-acks connection) 3)
+           (setf (tcp-connection-congestion-window connection)
+                 (tcp-connection-slow-start-threshold connection)))
+          ((< cwnd (tcp-connection-slow-start-threshold connection))
+           (incf (tcp-connection-congestion-window connection)
+                 (min acked mss)))
+          (t
+           (incf (tcp-connection-congestion-window connection)
+                 (max 1 (floor (* mss mss) cwnd)))))
+    (setf (tcp-connection-duplicate-acks connection) 0)))
+
+(defun tcp-note-duplicate-ack (connection)
+  "Perform Reno duplicate-ACK accounting and fast retransmit."
+  (when (tcp-connection-retransmit-queue connection)
+    ;; This implementation does not implement per-duplicate transmission while
+    ;; in fast recovery. Cap the counter at the transition threshold instead of
+    ;; inflating CWND without sending the additional permitted segment.
+    (when (< (tcp-connection-duplicate-acks connection) 3)
+      (incf (tcp-connection-duplicate-acks connection))
+      (when (eql (tcp-connection-duplicate-acks connection) 3)
+        (let ((mss (tcp-connection-max-seg-size connection)))
+          (setf (tcp-connection-slow-start-threshold connection)
+                (max (floor (tcp-flight-size connection) 2) (* 2 mss))
+                (tcp-connection-congestion-window connection)
+                (+ (tcp-connection-slow-start-threshold connection)
+                   (* 3 mss)))
+          (apply #'tcp4-send-packet
+                 connection
+                 (first (tcp-connection-retransmit-queue connection))))))))
 
 (defun update-timeout-timer (connection)
-  (when (not (eql (tcp-connection-state connection) :syn-sent))
-    (disarm-timeout-timer connection)
-    (let ((timeout (tcp-connection-timeout connection)))
-      (when (and timeout
-                 (not (member (tcp-connection-state connection)
-                              '(:fin-wait-1 :fin-wait-2 :last-ack :closed))))
-        (arm-timeout-timer timeout connection)))))
+  (case (tcp-connection-state connection)
+    (:syn-sent)
+    (:syn-received
+     (disarm-timeout-timer connection)
+     (arm-timeout-timer *tcp-syn-received-timeout* connection))
+    (t
+     (disarm-timeout-timer connection)
+     (let ((timeout (tcp-connection-timeout connection)))
+       (when (and timeout
+                  (not (member (tcp-connection-state connection)
+                               '(:fin-wait-1 :fin-wait-2 :last-ack :closed))))
+         (arm-timeout-timer timeout connection))))))
 
 (defun initial-rtt-measurement (connection)
   (let ((delta-time (float (/ (- (get-internal-run-time) (tcp-connection-last-ack-time connection))
@@ -551,24 +751,33 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
   ;; Don't use WITH-TCP-CONNECTION-LOCKED here. No errors should occur
   ;; in here, so this avoids truncating the backtrace with :resignal-errors.
   (mezzano.supervisor:with-mutex ((tcp-connection-lock connection))
+    (when (tcp-connection-abort-pending-p connection)
+      (return-from tcp4-connection-receive))
     (let* ((seq (tcp-packet-sequence-number packet start end))
            (ack (tcp-packet-acknowledgment-number packet start end))
            (flags (tcp-packet-flags packet start end))
+           (window (tcp-packet-window packet start end))
            (header-length (tcp-packet-header-length packet start end))
            (data-length (tcp-packet-data-length packet start end)))
-      (when (and (not (eql (tcp-connection-state connection) :established))
-                 (logtest flags +tcp4-flag-rst+))
-        ;; FIXME: This code isn't correct, it needs to check the sequence numbers
-        ;; before accepting this packet and resetting the connection. This is
-        ;; currently only done correctly in the :ESTABLISHED state, but should
-        ;; be done for the other states too.
-        ;; Remote has sent RST, aborting connection
-        (setf (tcp-connection-pending-error connection)
-              (make-condition 'connection-reset
-                              :host (tcp-connection-remote-ip connection)
-                              :port (tcp-connection-remote-port connection)))
-        (detach-tcp-connection connection)
-        (mezzano.supervisor:condition-notify (tcp-connection-cvar connection) t)
+      (when (logtest flags +tcp4-flag-rst+)
+        (cond ((tcp-reset-acceptable-p connection packet start end)
+               (setf (tcp-connection-pending-error connection)
+                     (make-condition 'connection-reset
+                                     :host (tcp-connection-remote-ip connection)
+                                     :port (tcp-connection-remote-port connection)))
+               (tcp-listener-remove-pending
+                (tcp-connection-listener connection)
+                connection)
+               (detach-tcp-connection connection)
+               (mezzano.supervisor:condition-notify
+                (tcp-connection-cvar connection) t))
+              ((not (eql (tcp-connection-state connection) :syn-sent))
+               ;; Challenge an out-of-window reset without changing state.
+               (tcp4-send-packet connection
+                                 (tcp-connection-snd.nxt connection)
+                                 (tcp-connection-rcv.nxt connection)
+                                 nil
+                                 :ack-p t)))
         (return-from tcp4-connection-receive))
       ;; :CLOSED should never be seen here
       (ecase (tcp-connection-state connection)
@@ -581,7 +790,10 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                 (initial-rtt-measurement connection)
                 (setf (tcp-connection-state connection) :established)
                 (setf (tcp-connection-rcv.nxt connection) (+u32 seq 1))
-                (setf (tcp-connection-snd.una connection) ack)
+                (setf (tcp-connection-snd.una connection) ack
+                      (tcp-connection-snd.wnd connection) window
+                      (tcp-connection-snd.wl1 connection) seq
+                      (tcp-connection-snd.wl2 connection) ack)
                 (when (not *netmangler-force-local-retransmit*)
                   (tcp4-send-packet connection ack (tcp-connection-rcv.nxt connection) nil))
                 ;; Cancel retransmit
@@ -590,13 +802,16 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                ((logtest flags +tcp4-flag-syn+)
                 ;; Simultaneous open
                 (setf (tcp-connection-state connection) :syn-received
-                      (tcp-connection-rcv.nxt connection) (+u32 seq 1))
+                      (tcp-connection-rcv.nxt connection) (+u32 seq 1)
+                      (tcp-connection-snd.wnd connection) window
+                      (tcp-connection-snd.wl1 connection) seq
+                      (tcp-connection-snd.wl2 connection) ack)
                 (when (not *netmangler-force-local-retransmit*)
                   (tcp4-send-packet connection ack (tcp-connection-rcv.nxt connection) nil
                                     :ack-p t :syn-p t))
-                ;; Cancel retransmit
-                (disarm-retransmit-timer connection)
-                (disarm-timeout-timer connection))
+                ;; Await the final ACK with bounded retransmission.
+                (arm-retransmit-timer connection)
+                (arm-timeout-timer *tcp-syn-received-timeout* connection))
                (t
                 ;; Aborting connection
                 (tcp4-send-packet connection ack seq nil :rst-p t)
@@ -612,10 +827,15 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                      (eql ack (tcp-connection-snd.nxt connection)))
                 ;; Remote has sent ACK, connection established
                 (initial-rtt-measurement connection)
-                (setf (tcp-connection-state connection) :established)
+                (setf (tcp-connection-state connection) :established
+                      (tcp-connection-snd.wnd connection) window
+                      (tcp-connection-snd.wl1 connection) seq
+                      (tcp-connection-snd.wl2 connection) ack)
+                (disarm-retransmit-timer connection)
+                (disarm-timeout-timer connection)
                 (when listener
-                  (remhash connection (tcp-listener-pending-connections listener))
-                  (mezzano.sync:mailbox-send connection (tcp-listener-connections listener))))
+                  (tcp-listener-remove-pending listener connection
+                                               :accepted-p t)))
                ;; Ignore duplicated SYN packets
                ((and (logtest flags +tcp4-flag-syn+)
                      (eql seq (-u32 (tcp-connection-rcv.nxt connection) 1))))
@@ -627,10 +847,8 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                                       :host (tcp-connection-remote-ip connection)
                                       :port (tcp-connection-remote-port connection)))
                 (detach-tcp-connection connection)
-                (when (and listener
-                           (tcp-listener-backlog listener))
-                  (remhash connection (tcp-listener-pending-connections listener))
-                  (decf (tcp-listener-n-pending-connections listener))))))
+                (when listener
+                  (tcp-listener-remove-pending listener connection)))))
         (:established
          (cond ((not (acceptable-segment-p connection packet start end))
                 (when (not (logtest flags +tcp4-flag-rst+))
@@ -639,12 +857,6 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                                     (tcp-connection-rcv.nxt connection)
                                     nil
                                     :ack-p t)))
-               ((logtest flags +tcp4-flag-rst+)
-                (setf (tcp-connection-pending-error connection)
-                      (make-condition 'connection-reset
-                                      :host (tcp-connection-remote-ip connection)
-                                      :port (tcp-connection-remote-port connection)))
-                (detach-tcp-connection connection))
                ((logtest flags +tcp4-flag-syn+)
                 (setf (tcp-connection-pending-error connection)
                       (make-condition 'connection-reset
@@ -652,30 +864,25 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                                       :port (tcp-connection-remote-port connection)))
                 (detach-tcp-connection connection)
                 (tcp4-send-packet connection
-                                  (tcp-connection-snd.next connection)
+                                  (tcp-connection-snd.nxt connection)
                                   0 ; ???
                                   nil
                                   :ack-p nil
                                   :rst-p t))
                ((not (logtest flags +tcp4-flag-ack+))) ; Ignore packets without ACK set.
-               ((if (< (tcp-connection-snd.una connection) (tcp-connection-snd.nxt connection))
-                    (and (< (tcp-connection-snd.una connection) ack)
-                         (<= ack (tcp-connection-snd.nxt connection)))
-                    ;; In the middle of wraparound.
-                    (or (< (tcp-connection-snd.una connection) ack)
-                        (<= ack (tcp-connection-snd.nxt connection))))
+               ((and (tcp-sequence< (tcp-connection-snd.una connection) ack)
+                     (tcp-sequence<= ack
+                                    (tcp-connection-snd.nxt connection)))
+                (let ((previous-una (tcp-connection-snd.una connection)))
                 (when (tcp-connection-last-ack-time connection)
                   (subsequent-rtt-measurement connection))
-                ;; TODO: Update the send window.
+                (tcp-update-send-window connection seq ack window)
                 ;; Remove from the retransmit queue any segments that
                 ;; were fully acknowledged by this ACK.
                 (flet ((seq-cmp (x)
                          "Test SND.UNA =< X =< SEG.ACK"
-                         (if (< (tcp-connection-snd.una connection) ack)
-                             (<= (tcp-connection-snd.una connection) x ack)
-                             ;; Sequence numbers wrapped.
-                             (or (<= (tcp-connection-snd.una connection) x)
-                                 (<= x ack)))))
+                         (and (tcp-sequence<= previous-una x)
+                              (tcp-sequence<= x ack))))
                   (loop
                      (when (endp (tcp-connection-retransmit-queue connection))
                        (return))
@@ -690,6 +897,8 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                     (disarm-retransmit-timer connection)
                     (arm-retransmit-timer connection))
                 (setf (tcp-connection-snd.una connection) ack)
+                (tcp-note-new-ack connection previous-una ack)
+                (tcp-flush-send-buffer connection)
                 (if (zerop data-length)
                     (when (and (eql seq (tcp-connection-rcv.nxt connection))
                                (logtest flags +tcp4-flag-fin+))
@@ -701,9 +910,16 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                              (tcp-connection-receive-event connection))
                             t)
                       (tcp4-send-packet connection ack (+u32 seq 1) nil :ack-p t))
-                    (tcp4-receive-data connection data-length end header-length packet seq start)))
+                    (tcp4-receive-data connection data-length end header-length packet seq start))))
                ((eql (tcp-connection-snd.una connection) ack)
-                ;; TODO: slow start/duplicate ack detection/fast retransmit/etc.
+                (let ((previous-window (tcp-connection-snd.wnd connection)))
+                  (tcp-update-send-window connection seq ack window)
+                  (if (and (zerop data-length)
+                           (not (logtest flags +tcp4-flag-fin+))
+                           (eql previous-window window))
+                      (tcp-note-duplicate-ack connection)
+                      (setf (tcp-connection-duplicate-acks connection) 0))
+                  (tcp-flush-send-buffer connection))
                 (when (not (eql data-length 0))
                   (tcp4-receive-data connection data-length end header-length packet seq start)))))
         (:close-wait
@@ -760,6 +976,8 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
     (mezzano.supervisor:condition-notify (tcp-connection-cvar connection) t)))
 
 (defun tcp4-send-packet (connection seq ack data &key cwr-p ece-p urg-p (ack-p t) psh-p rst-p syn-p fin-p errors-escape)
+  (when (tcp-connection-abort-pending-p connection)
+    (return-from tcp4-send-packet))
   (let* ((source (tcp-connection-local-ip connection))
          (source-port (tcp-connection-local-port connection))
          (packet (assemble-tcp4-packet source source-port
@@ -941,7 +1159,47 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
     (replace result sequence :start2 start :end2 end)
     result))
 
+(defun tcp-queue-send-data (connection data start end)
+  "Copy DATA into MSS-sized connection-owned pending segments."
+  (let ((segments '())
+        (mss (tcp-connection-max-seg-size connection)))
+    (loop for offset from start below end by mss
+          for segment-end = (min end (+ offset mss))
+          do (push (list (subseq-ub8 data offset segment-end)
+                         (eql segment-end end))
+                   segments))
+    (setf (tcp-connection-tx-data connection)
+          (nconc (tcp-connection-tx-data connection)
+                 (nreverse segments)))))
+
+(defun tcp-flush-send-buffer (connection)
+  "Transmit queued bytes up to the peer and congestion-window limits."
+  (when (tcp-connection-abort-pending-p connection)
+    (return-from tcp-flush-send-buffer (values)))
+  (loop
+    for flight = (tcp-flight-size connection)
+    for limit = (min (tcp-connection-snd.wnd connection)
+                     (tcp-connection-congestion-window connection))
+    for available = (max 0 (- limit flight))
+    while (and (plusp available) (tcp-connection-tx-data connection))
+    do
+       (let* ((entry (first (tcp-connection-tx-data connection)))
+              (data (first entry))
+              (psh-p (second entry))
+              (count (min available
+                          (tcp-connection-max-seg-size connection)
+                          (length data))))
+         (tcp-send-1 connection data 0 count
+                     :psh-p (and psh-p (eql count (length data))))
+         (if (eql count (length data))
+             (pop (tcp-connection-tx-data connection))
+             (setf (first (tcp-connection-tx-data connection))
+                   (list (subseq-ub8 data count) psh-p)))))
+  (values))
+
 (defun tcp-send-1 (connection data start end &key psh-p)
+  (when (tcp-connection-abort-pending-p connection)
+    (return-from tcp-send-1))
   (let ((snd.nxt (tcp-connection-snd.nxt connection))
         (rcv.nxt (tcp-connection-rcv.nxt connection))
         (len (- end start))
@@ -962,11 +1220,14 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                         :psh-p psh-p
                         :errors-escape t))))
 
-;; TODO: Respect the send window, buffer data when it fills up.
 (defun tcp-send (connection data &optional (start 0) end)
   (setf end (or end (length data)))
   (with-tcp-connection-locked connection
     (check-connection-error connection)
+    (when (tcp-connection-abort-pending-p connection)
+      (error 'connection-aborted
+             :host (tcp-connection-remote-ip connection)
+             :port (tcp-connection-remote-port connection)))
     (update-timeout-timer connection)
     ;; No sending when the connection is closing.
     ;; Half-closed connections seem too weird to be worth dealing with.
@@ -977,20 +1238,9 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
     (unless (tcp-connection-last-ack-time connection)
       (setf (tcp-connection-last-ack-time connection)
             (get-internal-run-time)))
-    (let ((mss (tcp-connection-max-seg-size connection)))
-      (cond ((>= start end))
-            ((> (- end start) mss)
-             ;; Send multiple packets.
-             (loop
-                for offset from start by mss
-                while (> (- end offset) mss)
-                do
-                  (tcp-send-1 connection data offset (+ offset mss))
-                finally
-                  (tcp-send-1 connection data offset end :psh-p t)))
-            (t
-             ;; Send one packet.
-             (tcp-send-1 connection data start end :psh-p t))))))
+    (when (< start end)
+      (tcp-queue-send-data connection data start end)
+      (tcp-flush-send-buffer connection))))
 
 (defclass tcp-octet-stream (gray:fundamental-binary-input-stream
                             gray:fundamental-binary-output-stream)
@@ -1142,6 +1392,8 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
   (tcp-send (tcp-stream-connection stream) sequence start end))
 
 (defun close-connection (connection)
+  (when (tcp-connection-abort-pending-p connection)
+    (return-from close-connection))
   (ecase (tcp-connection-state connection)
     (:established
      (setf (tcp-connection-state connection) :fin-wait-1)
@@ -1178,13 +1430,29 @@ Set to a value near 2^32 to test SND sequence number wrapping.")
                          :errors-escape t)))
     ((:last-ack :fin-wait-1 :fin-wait-2 :closed))))
 
+(defun abort-stream-connection (connection)
+  "Detach a stream without transmitting additional segments."
+  ;; CLOSE holds the connection lock while calling this function. Publish the
+  ;; abort intent synchronously so already-queued network work cannot reopen a
+  ;; window and flush data before the asynchronous detach runs.
+  (setf (tcp-connection-abort-pending-p connection) t
+        (tcp-connection-tx-data connection) '()
+        (tcp-connection-retransmit-queue connection) '())
+  (disarm-retransmit-timer connection)
+  (disarm-timeout-timer connection)
+  (mezzano.sync.dispatch:dispatch-async
+   (lambda () (detach-tcp-connection connection))
+   net::*network-serial-queue*))
+
+(defun tcp-close-stream-connection (connection abort)
+  (if abort
+      (abort-stream-connection connection)
+      (close-connection connection)))
+
 (defmethod close ((stream tcp-octet-stream) &key abort)
-  ;; TODO: ABORT should abort the connection entirely.
-  ;; Don't even bother sending RST packets, just detatch the connection.
-  (declare (ignore abort))
   (let ((connection (tcp-stream-connection stream)))
     (with-tcp-connection-locked connection
-      (close-connection connection))))
+      (tcp-close-stream-connection connection abort))))
 
 (defmethod open-stream-p ((stream tcp-octet-stream))
   (with-tcp-connection-locked (tcp-stream-connection stream)

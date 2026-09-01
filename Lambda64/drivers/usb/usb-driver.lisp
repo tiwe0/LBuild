@@ -280,7 +280,12 @@
           (when (and device
                      (sup:mutex-held-p (usb-device-lock device)))
             (sup:release-mutex (usb-device-lock device)))))
-    ;; TODO - add error handling
+    (controller-disconnect (condition)
+      (sup:debug-print-line "USB port-connect aborted: controller disconnected ("
+                            condition
+                            ")"))
+    (error (condition)
+      (sup:debug-print-line "USB port-connect failed: " condition))
     ))
 
 (defmethod handle-interrupt-event ((type (eql :port-disconnect)) usbd event)
@@ -292,7 +297,12 @@
                (sup:with-mutex ((usb-device-lock device))
                  (delete-device usbd device))))
         (sup:debug-print-line "Disconnect complete - success"))
-    ;; TODO - add error handling
+    (controller-disconnect (condition)
+      (sup:debug-print-line "USB port-disconnect aborted: controller disconnected ("
+                            condition
+                            ")"))
+    (error (condition)
+      (sup:debug-print-line "USB port-disconnect failed: " condition))
     ))
 
 ;;======================================================================

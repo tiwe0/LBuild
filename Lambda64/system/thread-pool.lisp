@@ -43,7 +43,36 @@
 (defclass work-item ()
   ((%name :initarg :name :reader work-item-name)
    (%function :initarg :function :reader work-item-function)
+   (%priority :initarg :priority :initform :normal :reader work-item-priority)
    (%thread-pool :initarg :thread-pool :reader work-item-thread-pool)))
+
+(defun work-item-priority-rank (priority)
+  "Return the pending-queue rank for PRIORITY.
+
+Unknown priorities retain the previous default behavior and are queued as
+normal work."
+  (case priority
+    (:high 2)
+    (:low 0)
+    (otherwise 1)))
+
+(defun enqueue-thread-pool-work-item (thread-pool work-item)
+  "Insert WORK-ITEM ahead of lower-priority pending work.
+
+Items with the same priority retain insertion order. This only orders pending
+work; a worker that has already started an item is never preempted."
+  (let ((rank (work-item-priority-rank (work-item-priority work-item))))
+    (labels ((insert (pending)
+               (cond ((endp pending)
+                      (list work-item))
+                     ((> rank (work-item-priority-rank
+                               (work-item-priority (first pending))))
+                      (cons work-item pending))
+                     (t
+                      (cons (first pending) (insert (rest pending)))))))
+      (setf (thread-pool-pending thread-pool)
+            (insert (thread-pool-pending thread-pool)))))
+  work-item)
 
 (defun make-thread-pool (&key name initial-bindings (keepalive-time *default-keepalive-time*))
   "Create a new thread-pool."
@@ -127,13 +156,14 @@
 
 (defun thread-pool-add (function thread-pool &key name priority bindings)
   "Add a work item to the thread-pool.
-Functions are called concurrently and in FIFO order.
+Functions are called concurrently. Pending :HIGH work runs before normal work,
+which runs before :LOW work; each priority level is FIFO. Running work is not
+preempted. Unknown priorities are treated as normal work.
 A work item is returned, which can be passed to THREAD-POOL-CANCEL-ITEM
 to attempt cancel the work.
 BINDINGS is a list of (SYMBOL VALUE) pairs which specify special bindings
 that should be active when FUNCTION is called. These override the
 thread pool's initial-bindings."
-  (declare (ignore priority)) ; TODO
   (check-type function function)
   (let ((work (make-instance 'work-item
                              :function (if bindings
@@ -144,11 +174,12 @@ thread pool's initial-bindings."
                                                  (funcall function))))
                                            function)
                              :name name
+                             :priority priority
                              :thread-pool thread-pool)))
     (sup:with-mutex ((thread-pool-lock thread-pool) :resignal-errors t)
       (when (thread-pool-shutdown-p thread-pool)
         (error "Attempted to add work item to shut down thread pool ~S" thread-pool))
-      (setf (thread-pool-pending thread-pool) (append (thread-pool-pending thread-pool) (list work)))
+      (enqueue-thread-pool-work-item thread-pool work)
       (when (and (endp (thread-pool-idle-threads thread-pool))
                  (< (thread-pool-n-concurrent-threads thread-pool)
                     (sup:logical-core-count)))

@@ -28,6 +28,7 @@ Install the required Common Lisp systems with Quicklisp:
 ```text
 LBuild/
 ├── Lambda64/
+├── docs/
 ├── home/
 ├── scripts/
 └── Makefile
@@ -35,6 +36,11 @@ LBuild/
 
 `local.mk` remains available for machine-specific QEMU, network, or toolchain
 overrides, but normal development does not require a second checkout.
+
+The maintained engineering documentation starts at [`docs/README.md`](docs/README.md).
+It covers architecture, subsystem boundaries, testing, operations, security,
+and the staged modernization roadmap. Historical notes under `Lambda64/doc/`
+remain useful background but are not automatically current contracts.
 
 ## Local testing (primary workflow)
 
@@ -109,6 +115,11 @@ Start the file server in a second terminal:
 ```sh
 make run-file-server
 ```
+
+> **Security:** the current legacy file server binds all interfaces and parses
+> unauthenticated input with the Common Lisp reader. Run it only on a trusted,
+> isolated host until the documented Gate 0 hardening is complete. See
+> [`docs/security/host-file-server.md`](docs/security/host-file-server.md).
 
 Run Lambda64 with graphical VirtIO GPU, keyboard, and mouse devices:
 

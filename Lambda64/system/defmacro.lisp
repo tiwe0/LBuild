@@ -33,15 +33,16 @@
              (handle-one-level (ll current whole)
                (let ((required-count 0)
                      (optional-count 0))
-                 ;; Check for a whole-var.
-                 ;; [&whole var]
-                 ;; TODO: &WHOLE can destructure as well.
+                 ;; Check for a whole-var or destructuring pattern.
+                 ;; [&whole var-or-pattern]
                  (when (eq '&whole (car ll))
                    (when (null (cdr ll))
                      (error 'invalid-macro-lambda-list
                             :lambda-list lambda-list
                             :format-control "Missing variable name after &WHOLE"))
-                   (push (list (cadr ll) whole) bindings)
+                   (if (consp (cadr ll))
+                       (handle-sublist (cadr ll) whole)
+                       (push (list (cadr ll) whole) bindings))
                    (setf ll (cddr ll)))
                  ;; Required args.
                  (do ()
@@ -183,8 +184,8 @@
       (multiple-value-bind (req-count opt-count)
           (handle-one-level lambda-list current-value whole)
         (setf bindings (nreverse bindings))
-        ;; Pull declarations up and dump them in the LET.
-        ;; TODO: Docstrings.
+        ;; Pull declarations up and dump them in the generated LET. Global
+        ;; defining forms capture a docstring before calling this expander.
         (multiple-value-bind (body declares docstring)
             (parse-declares body :permit-docstring permit-docstring)
           (declare (ignore docstring))
@@ -207,8 +208,8 @@
 (defun fix-lambda-list-environment (lambda-list)
   "Return a lambda-list with the &ENVIRONMENT variable removed and also return the name of
 the environment variable (or a gensym if it was not specified)."
-  ;; &ENVIRONMENT followed by &WHOLE is illegal.
-  ;; FIXME: not general enough, &ENVIRONMENT should only be seen between variable sections.
+  ;; &WHOLE must precede every other macro lambda-list parameter.
+  ;; &ENVIRONMENT itself may appear once at any top-level section boundary.
   (when (and (eq (first lambda-list) '&environment)
              (eq (third lambda-list) '&whole))
     (error 'invalid-macro-lambda-list
@@ -229,12 +230,14 @@ the environment variable (or a gensym if it was not specified)."
             (error 'invalid-macro-lambda-list
                    :lambda-list lambda-list
                    :format-control "Multiple &ENVIRONMENT variables"))
-          ;; (&env nil) is disallowed.
-          (when (or (null (cdr i)) (null (cadr i)))
+          ;; &ENVIRONMENT requires a non-NIL symbol binding name.
+          (when (or (not (consp (cdr i)))
+                    (null (cadr i))
+                    (not (symbolp (cadr i))))
             (error 'invalid-macro-lambda-list
                    :lambda-list lambda-list
                    :format-control "Invalid or missing &ENVIRONMENT variable name"
-                   :format-arguments (list (cadr i))))
+                   :format-arguments (list (and (consp (cdr i)) (cadr i)))))
           ;; Skip past the &ENVIRONMENT and the variable name.
           (setf i (cdr i))
           (setf env (car i)))
@@ -245,7 +248,8 @@ the environment variable (or a gensym if it was not specified)."
 
 (defmacro defmacro (name lambda-list &body body)
   (let ((whole (gensym "WHOLE"))
-        (env (gensym "ENV")))
+        (env (gensym "ENV"))
+        (documentation (nth-value 2 (parse-declares body :permit-docstring t))))
     (multiple-value-bind (new-lambda-list env-binding)
         (fix-lambda-list-environment lambda-list)
       `(eval-when (:compile-toplevel :load-toplevel :execute)
@@ -258,12 +262,14 @@ the environment variable (or a gensym if it was not specified)."
                                                            (when env-binding
                                                              (list `(,env-binding ,env)))
                                                            :permit-docstring t))
-                    ',lambda-list)))))
+                    ',lambda-list
+                    ,documentation)))))
 
 (defmacro define-compiler-macro (name lambda-list &body body)
   (let ((whole (gensym "WHOLE"))
         (args (gensym))
-        (env (gensym "ENV")))
+        (env (gensym "ENV"))
+        (documentation (nth-value 2 (parse-declares body :permit-docstring t))))
     (multiple-value-bind (new-lambda-list env-binding)
         (fix-lambda-list-environment lambda-list)
       `(eval-when (:compile-toplevel :load-toplevel :execute)
@@ -282,7 +288,8 @@ the environment variable (or a gensym if it was not specified)."
                                                    body whole args
                                                    (when env-binding
                                                      (list `(,env-binding ,env)))
-                                                   :permit-docstring t))))))))
+                                                   :permit-docstring t)))
+          ,documentation)))))
 
 (defmacro destructuring-bind (lambda-list expression &body body)
   (let ((whole (gensym "WHOLE")))

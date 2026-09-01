@@ -6,6 +6,10 @@
   "An alist mapping lexical-variables to their values, if known.")
 
 (defparameter *constprop-lambda-copy-limit* 3)
+(defvar *constprop-allow-lambda-propagation* nil
+  "Whether the current call context may receive propagated lambda values.
+Only FUNCALL may receive an inlined lambda; passing one to an arbitrary
+function can change identity, allocation, or side-effect timing.")
 (defparameter *constant-fold-modes* (make-hash-table :test 'equal :enforce-gc-invariant-keys t))
 (defparameter *constant-fold-modes-lock* (mezzano.supervisor:make-rw-lock '*constant-fold-modes*))
 
@@ -274,6 +278,20 @@
   (cp-implicit-progn (targets form))
   form)
 
+(defun commutative-fold-safe-p (arg-list)
+  "Return true when reordering ARG-LIST cannot change floating-point semantics.
+Unknown argument types are treated conservatively; a fully constant form may
+still be folded in its original order by CONSTANT-FOLD."
+  (every (lambda (arg)
+           (let ((unwrapped (unwrap-the arg)))
+             (cond ((typep unwrapped 'ast-quote)
+                    (not (floatp (value unwrapped))))
+                   (t
+                    (let ((type (unwrapped-the-type arg)))
+                      (and (not (eql type 't))
+                           (compiler-valid-not-subtypep type 'float)))))))
+         arg-list))
+
 (defun constant-fold (form function arg-list)
   ;; Bail out in case of errors.
   (ignore-errors
@@ -306,30 +324,33 @@
                                       arg-list)))
               form))
         ((eql :commutative-arithmetic)
-         ;; Arguments can be freely re-ordered, assumed to be associative.
-         ;; Addition, multiplication and the logical operators use this.
-         ;; FIXME: Float arithemetic is non-commutative.
-         (let ((const-args '())
-               (nonconst-args '())
-               (value nil))
-           (dolist (arg arg-list)
-             (let ((unwrapped (unwrap-the arg)))
-               (if (typep unwrapped 'ast-quote)
-                   (push (value unwrapped) const-args)
-                   (push arg nonconst-args))))
-           (setf const-args (nreverse const-args)
-                 nonconst-args (nreverse nonconst-args))
-           (when (or const-args (not nonconst-args))
-             (setf value (apply folder const-args))
-             (if nonconst-args
-                 ;; Leave the constant value as the rightmost operand.
-                 ;; The rest of the compiler expects this.
-                 (ast `(call ,function
-                             ,@nonconst-args
-                             (quote ,value))
-                      form)
-                 (ast `(quote ,value)
-                      form)))))
+         ;; Addition and multiplication may be reordered only when every
+         ;; argument is known to be non-floating-point. Floating-point
+         ;; arithmetic is not associative because each step rounds.
+         (if (or (commutative-fold-safe-p arg-list)
+                 (every (lambda (arg) (typep (unwrap-the arg) 'ast-quote)) arg-list))
+             (let ((const-args '())
+                   (nonconst-args '())
+                   (value nil))
+               (dolist (arg arg-list)
+                 (let ((unwrapped (unwrap-the arg)))
+                   (if (typep unwrapped 'ast-quote)
+                       (push (value unwrapped) const-args)
+                       (push arg nonconst-args))))
+               (setf const-args (nreverse const-args)
+                     nonconst-args (nreverse nonconst-args))
+               (when (or const-args (not nonconst-args))
+                 (setf value (apply folder const-args))
+                 (if nonconst-args
+                     ;; Leave the constant value as the rightmost operand.
+                     ;; The rest of the compiler expects this.
+                     (ast `(call ,function
+                                 ,@nonconst-args
+                                 (quote ,value))
+                          form)
+                     (ast `(quote ,value)
+                          form))))
+             nil))
         ((eql :arithmetic)
          ;; Arguments cannot be re-ordered, assumed to be non-associative.
          (if arg-list
@@ -358,9 +379,12 @@
                   form)))
         ((eql nil) nil)))))
 
-;;; FIXME: should be careful to avoid propagating lambdas to functions other than funcall.
+;;; Lambda propagation is guarded by the dynamic call-context flag below; only
+;;; FUNCALL receives an inlined lambda value.
 (defmethod cp-form ((form ast-call))
-  (cp-implicit-progn (arguments form))
+  (let ((*constprop-allow-lambda-propagation*
+          (eql (name form) 'funcall)))
+    (cp-implicit-progn (arguments form)))
   (or (and (not (eql (second (assoc (name form) (ast-inline-declarations form))) 'notinline))
            (constant-fold form (name form) (arguments form)))
       form))
@@ -368,6 +392,9 @@
 (defmethod cp-form ((form lexical-variable))
   (let ((val (assoc form *known-variables*)))
     (cond (val
+           (when (and (lambda-information-p (unwrap-the (second val)))
+                      (not *constprop-allow-lambda-propagation*))
+             (return-from cp-form form))
            (change-made)
            (when (lambda-information-p (unwrap-the (second val)))
              (incf (getf (lambda-information-plist (unwrap-the (second val))) 'copy-count 0)))

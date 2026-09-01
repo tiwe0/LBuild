@@ -210,6 +210,13 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
 ;;           (sys.int::ub32ref/le sector 508) (fs-info-trail-signature fat32-info))
 ;;     (block-device-write-sector disk (fat-%fat-info fat) sector 1)))
 
+(defgeneric read-fat (disk filesystem &optional fat-array))
+(defgeneric write-fat (disk filesystem fat))
+(defgeneric (setf fat-value) (value filesystem fat index))
+(defgeneric root-dir-sectors (filesystem))
+(defgeneric last-cluster-value (filesystem))
+(defgeneric read-root-directory (disk filesystem fat))
+
 (defmethod read-fat (disk (fat12 fat12) &optional fat-array)
   (loop :with fat-offset := (fat-%n-reserved-sectors fat12)
         :with fat-sectors := (ceiling (* 3 (fat-%n-clusters fat12))
@@ -1573,6 +1580,46 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
                          :version NIL))
         pathname)))
 
+(defun wildcard-string-match-p (pattern string)
+  "Match STRING against PATTERN, treating * as a case-insensitive wildcard."
+  (check-type pattern string)
+  (check-type string string)
+  (loop :with pattern-length := (length pattern)
+        :with string-length := (length string)
+        :with pattern-index := 0
+        :with string-index := 0
+        :with wildcard-index := nil
+        :with wildcard-string-index := 0
+        :while (< string-index string-length)
+        :do (cond ((and (< pattern-index pattern-length)
+                        (char= (char pattern pattern-index) #\*))
+                   (setf wildcard-index pattern-index
+                         wildcard-string-index string-index)
+                   (incf pattern-index))
+                  ((and (< pattern-index pattern-length)
+                        (char-equal (char pattern pattern-index)
+                                    (char string string-index)))
+                   (incf pattern-index)
+                   (incf string-index))
+                  (wildcard-index
+                   (incf wildcard-string-index)
+                   (setf string-index wildcard-string-index
+                         pattern-index (1+ wildcard-index)))
+                  (t
+                   (return-from wildcard-string-match-p nil)))
+        :finally
+           (loop :while (and (< pattern-index pattern-length)
+                             (char= (char pattern pattern-index) #\*))
+                 :do (incf pattern-index))
+           (return (= pattern-index pattern-length))))
+
+(defun pathname-component-match-p (pattern component)
+  (cond ((eql pattern :wild) t)
+        ((and (stringp pattern) (stringp component))
+         (wildcard-string-match-p pattern component))
+        (t
+         (equalp pattern component))))
+
 (defmethod probe-using-host ((host fat-host) pathname)
   (let ((new-pathname (force-pathname-name pathname)))
     (multiple-value-bind (directory directory-cluster offset)
@@ -1599,10 +1646,8 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
                    (read-name-and-type dir-array offset)
                  (when (and (string/= name ".")
                             (string/= name "..")
-                            (or (eql match-name :wild)
-                                (equalp match-name name))
-                            (or (eql match-type :wild)
-                                (equalp match-type type)))
+                            (pathname-component-match-p match-name name)
+                            (pathname-component-match-p match-type type))
                    (let ((filename (make-pathname :name name
                                                   :type type
                                                   :defaults pathname)))
@@ -1696,23 +1741,34 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
                                          :defaults pathname))
                          result))
            result))
-        (T ;; Exact match (TODO: Wild strings).
-         (let ((match-name (car dir-list)))
+        (t
+         (let* ((pattern (car dir-list))
+                (directory (pathname-directory pathname))
+                (rest-of-dir-list (cdr dir-list))
+                (start-of-dir (butlast directory (length dir-list)))
+                (result '()))
            (do-files (offset) dir-array
                NIL
                (let ((name (read-file-name dir-array offset)))
                  (when (and (string/= name ".")
                             (string/= name "..")
-                            (string= match-name name)
+                            (pathname-component-match-p pattern name)
                             (directory-p dir-array offset))
-                   (return-from match-in-directory
-                     (match-in-directory
-                      disk ffs fat
-                      (read-file ffs disk
-                                 (read-first-cluster dir-array offset)
-                                 fat)
-                      (cdr dir-list)
-                      pathname)))))))))
+                   (setf result
+                         (append
+                          (match-in-directory
+                           disk ffs fat
+                           (read-file ffs disk
+                                      (read-first-cluster dir-array offset)
+                                      fat)
+                           rest-of-dir-list
+                           (make-pathname
+                            :directory (append start-of-dir
+                                               (list name)
+                                               rest-of-dir-list)
+                            :defaults pathname))
+                          result)))))
+           result))))
 
 (defmethod directory-using-host ((host fat-host) pathname &key)
   (let ((disk (file-host-mount-device host))
@@ -1740,8 +1796,6 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
        :test #'equal))))
 
 (defmethod ensure-directories-exist-using-host ((host fat-host) pathname &key verbose)
-  ;; TODO verbose
-  (declare (ignore verbose))
   (assert (eql (first (pathname-directory pathname)) :absolute) (pathname) "Absoute pathname required.")
   (loop :with created := NIL
         :with ffs := (fat-structure host)
@@ -1749,14 +1803,36 @@ Valid media-type ara 'FAT32   ' " fat-type-label)))
         :with disk := (file-host-mount-device host)
         :with directory-cluster := NIL
         :with directory := (read-root-directory disk ffs fat)
+        :with directory-path := '(:absolute)
         :for directory-name :in (rest (pathname-directory pathname))
-        :do (do-files (start) directory
-                (setf directory-cluster (create-file host directory directory-cluster directory-name nil
-                                                     (eql (pathname-version pathname) :previous)
-                                                     (ash 1 +attribute-directory+))
-                      directory (read-file ffs disk directory-cluster fat)
-                      created T)
-              (when (string= directory-name (read-file-name directory start))
+        :do (setf directory-path (append directory-path (list directory-name)))
+            (do-files (start) directory
+                (progn
+                  (setf directory-cluster
+                          (create-file host directory directory-cluster directory-name nil
+                                       (eql (pathname-version pathname) :previous)
+                                       (ash 1 +attribute-directory+))
+                        directory (read-file ffs disk directory-cluster fat)
+                        created T)
+                  (when verbose
+                    (format t "Created directory ~S~%"
+                            (make-pathname :directory directory-path
+                                           :name nil
+                                           :type nil
+                                           :version nil
+                                           :defaults pathname))))
+              (when (string-equal directory-name
+                                  (read-file-name directory start))
+                (when (not (directory-p directory start))
+                  (error 'simple-file-error
+                         :pathname pathname
+                         :format-control "~A is not a directory."
+                         :format-arguments
+                         (list (make-pathname :directory directory-path
+                                              :name nil
+                                              :type nil
+                                              :version nil
+                                              :defaults pathname))))
                 (setf directory-cluster (read-first-cluster directory start)
                       directory (read-file ffs disk (read-first-cluster directory start) fat))
                 (return t)))

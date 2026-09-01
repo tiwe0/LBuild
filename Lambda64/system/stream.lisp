@@ -173,8 +173,9 @@
         ((eql stream 't)
          *terminal-io*)
         (t
-         ;; TODO: check that the stream is open.
          (check-type stream stream)
+         (unless (open-stream-p stream)
+           (error 'stream-error :stream stream))
          stream)))
 
 (defun frob-input-stream (stream)

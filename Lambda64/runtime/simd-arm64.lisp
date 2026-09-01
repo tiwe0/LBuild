@@ -253,19 +253,33 @@
                                ,(box-instruction-fragment ty unboxed boxed))))))
        ;; A wrapper for the internal-name is needed so the compiler can do constant-folding through it.
        (defun ,internal-name ,value-names
-         ;; If there are immedates, then we need to switch on them.
-         ;; FIXME: Nested switches if there are multiple immediates.
-         ,(let* ((immediate-pos (position-if #'immediatep value-types))
-                 (imm-ty (and immediate-pos (elt value-types immediate-pos)))
-                 (imm-name (and immediate-pos (elt value-names immediate-pos))))
-            (if immediate-pos
-                `(ecase ,imm-name
-                   ,@(loop for i from (if shiftp 1 0) below (+ (immediate-max imm-ty) (if shiftp 1 0))
-                           collect `(,i (,internal-name ,@(loop for name in value-names
-                                                                collect (if (eql name imm-name)
-                                                                            i
-                                                                            name))))))
-                `(,internal-name ,@value-names))))
+         ;; If there are immediates, switch on each one in turn. The selected
+         ;; type is replaced with NIL for the recursive step, so operations
+         ;; with multiple immediates produce properly nested ECASE forms.
+         ,(labels ((emit-immediate-switch (names types)
+                     (let ((position (position-if #'immediatep types)))
+                       (if position
+                           (let ((imm-name (nth position names))
+                                 (imm-type (nth position types)))
+                             `(ecase ,imm-name
+                                ,@(loop for i from (if shiftp 1 0)
+                                        below (+ (immediate-max imm-type)
+                                                 (if shiftp 1 0))
+                                        collect
+                                        `(,i
+                                          ,(emit-immediate-switch
+                                            (loop for name in names
+                                                  for index from 0
+                                                  collect (if (= index position)
+                                                              i
+                                                              name))
+                                            (loop for type in types
+                                                  for index from 0
+                                                  collect (if (= index position)
+                                                              nil
+                                                              type)))))))
+                           `(,internal-name ,@names)))))
+            (emit-immediate-switch value-names value-types)))
        (defun ,name ,value-names
          (,internal-name
          ,@(loop for ty in value-types
@@ -282,7 +296,6 @@
                       (loop repeat count
                             collect (gensym "VALUE"))))))
     `(progn
-       ;; TODO: Support other non-1D arrays
        (eval-when (:compile-toplevel :load-toplevel :execute)
          ,@(loop for permute in (generate-permutation-list (loop repeat count collect vector-type))
                collect
@@ -303,21 +316,28 @@
                                               collect (if broadcast ``(c::call ,',broadcast ,,value) value))
                                      ,vector ,index))))))
        (defun ,aref (,@values array &rest subscripts)
-         ;; FIXME: Since we're loading N elements out of the array, we should check bounds
-         ;; on the last subscript.
+         ;; Route through the checked row-major wrapper: this operation loads
+         ;; N lanes and must reject a final subscript whose vector would cross
+         ;; the array boundary.
          (funcall #',row-major-aref ,@values array (apply #'array-row-major-index array subscripts)))
-       ;; TODO: Support arbitrary non-simple arrays.
        (defun ,row-major-aref (,@values array index)
-         (check-type array (simple-array ,scalar-type *))
+         (check-type array (array ,scalar-type *))
          (assert (<= 0 index))
          (assert (<= (+ index ,(* n-lanes count)) (array-total-size array)))
-         (funcall #',%row-major-aref
-                  ,@(loop for val in values collect `(,vector-type ,val))
-                  (if (typep array '(simple-array * (*)))
-                      array ; 1D simple array
-                      ;; Otherwise fetch the underlying 1D storage array
-                      (int::%object-ref-t array ,int::+complex-array-storage+))
-                  index)))))
+         ;; SIMD loads operate on a contiguous simple backing vector.  Keep
+         ;; the displacement offset when unwrapping a non-simple array, and
+         ;; reject memory arrays whose storage is not an array object.
+         (multiple-value-bind (storage offset)
+             (array-displacement array)
+           (unless storage
+             (setf storage (if (typep array '(simple-array * (*)))
+                               array
+                               (int::%object-ref-t array ,int::+complex-array-storage+))))
+           (check-type storage (simple-array ,scalar-type *))
+           (funcall #',%row-major-aref
+                    ,@(loop for val in values collect `(,vector-type ,val))
+                    storage
+                    (+ index offset))))))
 
 ;;; Generate aref accessors for the given type.
 

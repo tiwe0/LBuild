@@ -124,9 +124,10 @@ ADDRESS must be an ipv4-address designator."
            (push (list nic address prefix-length) *ipv4-interfaces*)))))
 
 (defun ifdown (nic)
-  (setf *outstanding-sends*
-        (remove nic *outstanding-sends*
-                :key #'second))
+  (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+    (setf *outstanding-sends*
+          (remove nic *outstanding-sends*
+                  :key #'second)))
   (setf *ipv4-interfaces* (remove nic *ipv4-interfaces* :key #'first)))
 
 (defun ipv4-interface-address (nic &optional (errorp t))
@@ -211,7 +212,7 @@ ADDRESS must be an ipv4-address designator."
 (defconstant +ipv4-header-total-length+ 2)
 (defconstant +ipv4-header-identification+ 4)
 (defconstant +ipv4-header-fragmentation-control+ 6)
-(defconstant +ipv4-header-fragment-offset-size+ 12)
+(defconstant +ipv4-header-fragment-offset-size+ 13)
 (defconstant +ipv4-header-fragment-offset-position+ 0)
 (defconstant +ipv4-header-flag-more-fragments+ 13)
 (defconstant +ipv4-header-flag-do-not-fragment+ 14)
@@ -224,9 +225,93 @@ ADDRESS must be an ipv4-address designator."
 
 (defgeneric transmit-ipv4-packet-on-interface (destination-host interface packet))
 
-;; TODO: These should time out after a while.
+(defparameter *outstanding-send-timeout* 30
+  "Seconds to retain an IPv4 packet while waiting for ARP resolution.")
+
 (defvar *outstanding-sends* '()
-  "Packets due to be transmitted, but are waiting for an ARP request to be resolved.")
+  "Packets waiting for ARP resolution.
+Each entry is (destination-host interface packet attempt expiration-time).")
+
+(defvar *outstanding-sends-lock*
+  (mezzano.supervisor:make-mutex "IPv4 outstanding sends"))
+
+(defvar *arp-update-generation* 0
+  "Incremented whenever an ARP update may make a pending send runnable.")
+
+(defun outstanding-send-expired-p (entry now)
+  (let ((expiration-time (fifth entry)))
+    ;; Entries restored from an older image do not have a deadline and must not
+    ;; become immortal after the representation change.
+    (or (null expiration-time)
+        (>= now expiration-time))))
+
+(defun expire-outstanding-sends (&optional (now (get-internal-real-time)))
+  (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+    (let ((old-count (length *outstanding-sends*)))
+      (setf *outstanding-sends*
+            (remove-if (lambda (entry)
+                         (outstanding-send-expired-p entry now))
+                       *outstanding-sends*))
+      (- old-count (length *outstanding-sends*)))))
+
+(defun schedule-outstanding-send-expiration ()
+  (mezzano.sync.dispatch:dispatch-delayed
+   #'expire-outstanding-sends
+   *outstanding-send-timeout*
+   net::*network-serial-queue*))
+
+(defun retry-outstanding-send (entry observed-generation)
+  "Try a claimed outstanding send without holding *OUTSTANDING-SENDS-LOCK*.
+If ARP changed while the entry was claimed, retry immediately; otherwise put
+the entry back on the pending list with its original deadline."
+  (loop
+     (when (outstanding-send-expired-p entry (get-internal-real-time))
+       (return nil))
+     (format t "Attempting retransmit to ~S on ~S.~%"
+             (first entry) (second entry))
+     (when (try-ethernet-transmit (first entry) (second entry) (third entry))
+       (return t))
+     (when (> (fourth entry) 5)
+       (return nil))
+     (incf (fourth entry))
+     (let ((retry-now nil))
+       (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+         (cond ((outstanding-send-expired-p entry (get-internal-real-time))
+                (return-from retry-outstanding-send nil))
+               ((not (= observed-generation *arp-update-generation*))
+                (setf observed-generation *arp-update-generation*
+                      retry-now t))
+               (t
+                (push entry *outstanding-sends*)
+                (return-from retry-outstanding-send nil))))
+       (unless retry-now
+         (return nil)))))
+
+(defun queue-outstanding-send (destination-host interface packet
+                               observed-generation
+                               &optional (now (get-internal-real-time)))
+  (let ((entry (list destination-host interface packet 0
+                     (+ now (* *outstanding-send-timeout*
+                               internal-time-units-per-second))))
+        (retry-now nil)
+        (current-generation nil))
+    (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+      (setf current-generation *arp-update-generation*)
+      (if (= observed-generation current-generation)
+          (push entry *outstanding-sends*)
+          (setf retry-now t)))
+    (schedule-outstanding-send-expiration)
+    (when retry-now
+      (retry-outstanding-send entry current-generation)))
+  (values))
+
+(defun transmit-or-queue-ipv4-packet (destination-host interface packet)
+  (let ((generation
+          (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+            *arp-update-generation*)))
+    (unless (try-ethernet-transmit destination-host interface packet)
+      (queue-outstanding-send destination-host interface packet generation)))
+  (values))
 
 (defun try-ethernet-transmit (destination-host interface packet)
   (let ((arp-result (mezzano.network.arp:arp-lookup interface
@@ -243,19 +328,21 @@ ADDRESS must be an ipv4-address designator."
            nil))))
 
 (defun arp-table-updated ()
-  (setf *outstanding-sends*
-        (loop
-           for (destination-host interface packet attempt) in *outstanding-sends*
-           do (format t "Attempting retransmit to ~S on ~S.~%"
-                      destination-host interface)
-           when (not (or (try-ethernet-transmit destination-host interface packet)
-                         (> attempt 5)))
-           collect (list destination-host interface packet (1+ attempt)))))
+  (let ((entries nil)
+        (generation nil)
+        (now (get-internal-real-time)))
+    (mezzano.supervisor:with-mutex (*outstanding-sends-lock*)
+      (incf *arp-update-generation*)
+      (setf generation *arp-update-generation*
+            entries (remove-if (lambda (entry)
+                                 (outstanding-send-expired-p entry now))
+                               *outstanding-sends*)
+            *outstanding-sends* nil))
+    (dolist (entry entries)
+      (retry-outstanding-send entry generation))))
 
 (defmethod transmit-ipv4-packet-on-interface (destination-host (interface mezzano.driver.network-card:network-card) packet)
-  (when (not (try-ethernet-transmit destination-host interface packet))
-    (push (list destination-host interface packet 0)
-          *outstanding-sends*)))
+  (transmit-or-queue-ipv4-packet destination-host interface packet))
 
 (defmethod transmit-ipv4-packet-on-interface (destination-host (interface net::loopback-interface) packet)
   ;; Bounce loopback packets out over the nic for testing as well.
@@ -290,7 +377,7 @@ ADDRESS must be an ipv4-address designator."
      (aref ip-header +ipv4-header-dsf+) #x00
      ;; Total length.
      (ub16ref/be ip-header +ipv4-header-total-length+) (net:packet-length packet)
-     ;; Packet ID. No fragmentation support yet, no ID needed.
+     ;; This packet is emitted whole, so it does not need a distinct ID.
      (ub16ref/be ip-header +ipv4-header-identification+) 0
      ;; Flags & fragment offset.
      (ub16ref/be ip-header +ipv4-header-fragmentation-control+) 0
@@ -329,6 +416,173 @@ ADDRESS must be an ipv4-address designator."
 (defparameter *print-discarded-packets* nil)
 (defparameter *discarded-packet-count* 0)
 
+(defparameter *ipv4-reassembly-timeout* 60
+  "Seconds to retain an incomplete IPv4 datagram.")
+
+(defconstant +maximum-ipv4-reassembled-payload-size+ (- #xFFFF 20))
+(defconstant +maximum-ipv4-reassemblies+ 64)
+(defconstant +maximum-ipv4-fragments-per-datagram+ 128)
+
+(defstruct (ipv4-fragment
+             (:constructor make-ipv4-fragment (start data)))
+  (start 0 :type (unsigned-byte 16))
+  (data #() :type vector))
+
+(defstruct (ipv4-reassembly
+             (:constructor make-ipv4-reassembly (updated-at)))
+  (updated-at 0 :type integer)
+  (fragments '() :type list)
+  (total-length nil :type (or null (unsigned-byte 16)))
+  (first-header-length nil :type (or null (integer 20 60))))
+
+(defvar *ipv4-reassemblies* (make-hash-table :test 'equal)
+  "Incomplete IPv4 datagrams keyed by source, destination, protocol, and ID.")
+
+(defvar *ipv4-reassembly-expiration-scheduled-p* nil
+  "True while the single reassembly expiration callback is pending.")
+
+(defun expire-ipv4-reassemblies (&optional (now (get-internal-real-time)))
+  (let ((expired-keys '())
+        (timeout (* *ipv4-reassembly-timeout*
+                    internal-time-units-per-second)))
+    (maphash (lambda (key reassembly)
+               (when (>= now (+ (ipv4-reassembly-updated-at reassembly)
+                                timeout))
+                 (push key expired-keys)))
+             *ipv4-reassemblies*)
+    (dolist (key expired-keys)
+      (remhash key *ipv4-reassemblies*))
+    (length expired-keys)))
+
+(defun ipv4-reassembly-expiration-handler ()
+  (setf *ipv4-reassembly-expiration-scheduled-p* nil)
+  (let ((now (get-internal-real-time)))
+    (expire-ipv4-reassemblies now)
+    (when (plusp (hash-table-count *ipv4-reassemblies*))
+      (let ((next-expiration nil)
+            (timeout (* *ipv4-reassembly-timeout*
+                        internal-time-units-per-second)))
+        (maphash (lambda (key reassembly)
+                   (declare (ignore key))
+                   (let ((expiration (+ (ipv4-reassembly-updated-at reassembly)
+                                        timeout)))
+                     (when (or (null next-expiration)
+                               (< expiration next-expiration))
+                       (setf next-expiration expiration))))
+                 *ipv4-reassemblies*)
+        (setf *ipv4-reassembly-expiration-scheduled-p* t)
+        (mezzano.sync.dispatch:dispatch-delayed
+         #'ipv4-reassembly-expiration-handler
+         (/ (max 0 (- next-expiration now))
+            internal-time-units-per-second)
+         net::*network-serial-queue*)))))
+
+(defun schedule-ipv4-reassembly-expiration ()
+  (unless *ipv4-reassembly-expiration-scheduled-p*
+    (setf *ipv4-reassembly-expiration-scheduled-p* t)
+    (mezzano.sync.dispatch:dispatch-delayed
+     #'ipv4-reassembly-expiration-handler
+     *ipv4-reassembly-timeout*
+     net::*network-serial-queue*)))
+
+(defun accept-ipv4-fragment (key packet start end fragment-offset
+                             more-fragments-p
+                             &optional (now (get-internal-real-time))
+                               (header-length 20))
+  "Accept one IPv4 fragment.
+Return the reconstructed payload and :COMPLETE, or NIL and a status keyword."
+  (let* ((payload-length (- end start))
+         (payload-start (* fragment-offset 8))
+         (payload-end (+ payload-start payload-length)))
+    (labels ((reject (status)
+               (remhash key *ipv4-reassemblies*)
+               (return-from accept-ipv4-fragment (values nil status))))
+      (when (or (<= payload-length 0)
+                (and more-fragments-p
+                     (not (zerop (mod payload-length 8)))))
+        (reject :invalid-length))
+      (when (> payload-end +maximum-ipv4-reassembled-payload-size+)
+        (reject :too-large))
+      (let ((reassembly (gethash key *ipv4-reassemblies*)))
+        (unless reassembly
+          (expire-ipv4-reassemblies now)
+          (when (>= (hash-table-count *ipv4-reassemblies*)
+                    +maximum-ipv4-reassemblies+)
+            (return-from accept-ipv4-fragment (values nil :resource-limit)))
+          (setf reassembly (make-ipv4-reassembly now)
+                (gethash key *ipv4-reassemblies*) reassembly))
+        (when (>= (length (ipv4-reassembly-fragments reassembly))
+                  +maximum-ipv4-fragments-per-datagram+)
+          (reject :resource-limit))
+        (when (zerop fragment-offset)
+          (when (or (< header-length 20)
+                    (> header-length 60)
+                    (not (zerop (mod header-length 4))))
+            (reject :invalid-header-length))
+          (let ((maximum-payload (- #xFFFF header-length)))
+            (when (or (> payload-end maximum-payload)
+                      (let ((known-total
+                              (ipv4-reassembly-total-length reassembly)))
+                        (and known-total (> known-total maximum-payload)))
+                      (some (lambda (fragment)
+                              (> (+ (ipv4-fragment-start fragment)
+                                    (length (ipv4-fragment-data fragment)))
+                                 maximum-payload))
+                            (ipv4-reassembly-fragments reassembly)))
+              (reject :too-large)))
+          (setf (ipv4-reassembly-first-header-length reassembly)
+                header-length))
+        (let ((known-total (ipv4-reassembly-total-length reassembly)))
+          (when (and known-total
+                     (or (> payload-end known-total)
+                         (and more-fragments-p
+                              (>= payload-end known-total))))
+            (reject :inconsistent-total))
+          (unless more-fragments-p
+            (when (and known-total (not (= known-total payload-end)))
+              (reject :inconsistent-total))
+            (dolist (fragment (ipv4-reassembly-fragments reassembly))
+              (when (> (+ (ipv4-fragment-start fragment)
+                          (length (ipv4-fragment-data fragment)))
+                       payload-end)
+                (reject :inconsistent-total))))
+          (dolist (fragment (ipv4-reassembly-fragments reassembly))
+            (let ((fragment-start (ipv4-fragment-start fragment))
+                  (fragment-end (+ (ipv4-fragment-start fragment)
+                                   (length (ipv4-fragment-data fragment)))))
+              (when (and (< payload-start fragment-end)
+                         (< fragment-start payload-end))
+                (reject :overlap))))
+          (unless more-fragments-p
+            (setf (ipv4-reassembly-total-length reassembly) payload-end)))
+        (let ((data (make-array payload-length
+                                :element-type '(unsigned-byte 8))))
+          (replace data packet :start2 start :end2 end)
+          (push (make-ipv4-fragment payload-start data)
+                (ipv4-reassembly-fragments reassembly)))
+        (setf (ipv4-reassembly-updated-at reassembly) now
+              (ipv4-reassembly-fragments reassembly)
+              (sort (ipv4-reassembly-fragments reassembly)
+                    #'< :key #'ipv4-fragment-start))
+        (let ((total-length (ipv4-reassembly-total-length reassembly))
+              (next-offset 0))
+          (when total-length
+            (dolist (fragment (ipv4-reassembly-fragments reassembly))
+              (unless (= (ipv4-fragment-start fragment) next-offset)
+                (return))
+              (incf next-offset (length (ipv4-fragment-data fragment))))
+            (when (= next-offset total-length)
+              (let ((payload (make-array total-length
+                                         :element-type '(unsigned-byte 8))))
+                (dolist (fragment (ipv4-reassembly-fragments reassembly))
+                  (replace payload (ipv4-fragment-data fragment)
+                           :start1 (ipv4-fragment-start fragment)))
+                (remhash key *ipv4-reassemblies*)
+                (return-from accept-ipv4-fragment
+                  (values payload :complete))))))
+        (schedule-ipv4-reassembly-expiration)
+        (values nil :pending)))))
+
 (defmethod mezzano.network.ethernet:ethernet-receive
     ((ethertype (eql mezzano.network.ethernet:+ethertype-ipv4+))
      interface packet start end)
@@ -346,6 +600,7 @@ ADDRESS must be an ipv4-address designator."
                                   version-and-ihl)
                              4))
            (total-length (ub16ref/be packet (+ start +ipv4-header-total-length+)))
+           (identification (ub16ref/be packet (+ start +ipv4-header-identification+)))
            (frag-control (ub16ref/be packet (+ start +ipv4-header-fragmentation-control+)))
            (frag-offset (ldb (byte +ipv4-header-fragment-offset-size+ +ipv4-header-fragment-offset-position+)
                              frag-control))
@@ -389,13 +644,6 @@ ADDRESS must be an ipv4-address designator."
           (format t "Discarding IPv4 packet with bad header checksum.~%"))
         (incf *discarded-packet-count*)
         (return-from mezzano.network.ethernet:ethernet-receive))
-      ;; TODO: Fragmentation support.
-      (when (or (not (eql frag-offset 0))
-                (logbitp +ipv4-header-flag-more-fragments+ frag-control))
-        (when t ;*print-discarded-packets*
-          (format t "Discarding fragmented IPv4 packet (not supported). ~X~%" frag-control))
-        (incf *discarded-packet-count*)
-        (return-from mezzano.network.ethernet:ethernet-receive))
       ;; Is it address to one of our interfaces?
       ;; If not, forward or reject it.
       (when (and (not (address-equal dest-ip +ipv4-broadcast-local-network+)) ; not broadcast
@@ -412,9 +660,35 @@ ADDRESS must be an ipv4-address designator."
           (format t "Discarding IPv4 packet addressed to someone else. ~A~%" dest-ip))
         (incf *discarded-packet-count*)
         (return-from mezzano.network.ethernet:ethernet-receive))
-      (ipv4-receive protocol packet
-                    dest-ip source-ip
-                    (+ start header-length) (+ start total-length)))))
+      (let ((more-fragments-p
+              (logbitp +ipv4-header-flag-more-fragments+ frag-control)))
+        (cond ((or (not (zerop frag-offset)) more-fragments-p)
+               (when (logbitp +ipv4-header-flag-do-not-fragment+ frag-control)
+                 (when *print-discarded-packets*
+                   (format t "Discarding fragmented IPv4 packet with DF set.~%"))
+                 (incf *discarded-packet-count*)
+                 (return-from mezzano.network.ethernet:ethernet-receive))
+               (multiple-value-bind (payload status)
+                   (accept-ipv4-fragment
+                    (list (ipv4-address-address source-ip)
+                          (ipv4-address-address dest-ip)
+                          protocol identification)
+                    packet (+ start header-length) (+ start total-length)
+                    frag-offset more-fragments-p
+                    (get-internal-real-time) header-length)
+                 (case status
+                   (:complete
+                    (ipv4-receive protocol payload dest-ip source-ip
+                                  0 (length payload)))
+                   (:pending)
+                   (t
+                    (when *print-discarded-packets*
+                      (format t "Discarding invalid IPv4 fragment (~A).~%" status))
+                    (incf *discarded-packet-count*)))))
+              (t
+               (ipv4-receive protocol packet
+                             dest-ip source-ip
+                             (+ start header-length) (+ start total-length))))))))
 
 ;;; IP addresses.
 

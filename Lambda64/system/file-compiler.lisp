@@ -2,8 +2,6 @@
 
 (in-package :mezzano.internals)
 
-(defgeneric make-load-form (object &optional environment))
-
 (defmethod make-load-form (object &optional environment)
   (declare (ignore environment))
   (error "Cannot save ~S, no specialized MAKE-LOAD-FORM method" object))
@@ -37,11 +35,13 @@
 
 (defun make-macrolet-env (defs env)
   "Return a new environment containing the macro definitions."
-  ;; FIXME: Outer macrolets & symbol macrolets should be visible in the macrolet's body.
   (let ((macro-bindings (loop
                            for def in defs
                            collect (list (first def)
-                                         (eval (expand-macrolet-function def))))))
+                                         (eval-in-lexenv
+                                          (expand-macrolet-function def)
+                                          (mezzano.compiler::environment-macro-definitions-only
+                                           env))))))
     (mezzano.compiler::extend-environment env :functions macro-bindings)))
 
 (defun make-symbol-macrolet-env (defs env)
@@ -164,14 +164,21 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
     #+arm64 :arm64))
 
 (defun write-llf-header (output-stream input-file)
-  (declare (ignore input-file))
-  ;; TODO: write the source file name out as well.
   (write-sequence #(#x4C #x4C #x46 #x01) output-stream) ; LLF\x01
   (save-integer *llf-version* output-stream)
   (save-integer (ecase *llf-architecture*
                   (:x86-64 +llf-arch-x86-64+)
                   (:arm64 +llf-arch-arm64+))
-                output-stream))
+                output-stream)
+  ;; Record the source pathname as an ordinary discarded LLF object. This keeps
+  ;; the fixed header prefix compatible with existing loaders while making the
+  ;; producer visible to binary inspection and future metadata readers.
+  (let ((source-name (namestring (pathname input-file))))
+    (write-byte +llf-string+ output-stream)
+    (save-integer (length source-name) output-stream)
+    (dotimes (i (length source-name))
+      (save-character (char source-name i) output-stream))
+    (write-byte +llf-drop+ output-stream)))
 
 (defun save-integer (integer stream)
   (let ((negativep (minusp integer)))
@@ -183,31 +190,35 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
                   stream)
       (setf integer (ash integer -7)))))
 
-;;; FIXME: This should allow saving of all attributes and arbitrary codes.
 (defun save-character (character stream)
   (let ((code (char-code character)))
-    (assert (zerop (char-bits character)) (character))
-    (assert (and (<= 0 code #x1FFFFF)
-                 (not (<= #xD800 code #xDFFF)))
-            (character))
+    (check-type code (integer 0 #x1FFFFF))
     (cond ((<= code #x7F)
            (write-byte code stream))
           ((<= #x80 code #x7FF)
            (write-byte (logior (ash (logand code #x7C0) -6) #xC0) stream)
            (write-byte (logior (logand code #x3F) #x80) stream))
-          ((or (<= #x800 code #xD7FF)
-               (<= #xE000 code #xFFFF))
+          ((<= code #xFFFF)
            (write-byte (logior (ash (logand code #xF000) -12) #xE0) stream)
            (write-byte (logior (ash (logand code #xFC0) -6) #x80) stream)
            (write-byte (logior (logand code #x3F) #x80) stream))
-          ((<= #x10000 code #x10FFFF)
+          (t
            (write-byte (logior (ash (logand code #x1C0000) -18) #xF0) stream)
            (write-byte (logior (ash (logand code #x3F000) -12) #x80) stream)
            (write-byte (logior (ash (logand code #xFC0) -6) #x80) stream)
-           (write-byte (logior (logand code #x3F) #x80) stream))
-          (t (error "TODO character ~S." character)))))
+           (write-byte (logior (logand code #x3F) #x80) stream)))))
+
+(defun llf-unicode-scalar-code-p (code)
+  (and (<= 0 code #x10FFFF)
+       (code-char code)))
+
+(defun llf-compact-character-p (character)
+  (and (zerop (char-bits character))
+       (llf-unicode-scalar-code-p (char-code character))))
 
 (defgeneric save-one-object (object object-map stream))
+
+(defvar *compiling-make-load-form* nil)
 
 (defmethod save-one-object ((object function) omap stream)
   (when (not (eql (function-tag object) +object-tag-function+))
@@ -239,34 +250,16 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
           (setf (aref data (+ n-code-bytes i)) (function-gc-metadata-byte object i)))
         (write-sequence data stream)))))
 
-;;; From Alexandria.
-(defun proper-list-p (object)
-  "Returns true if OBJECT is a proper list."
-  (cond ((not object)
-         t)
-        ((consp object)
-         (do ((fast object (cddr fast))
-              (slow (cons (car object) (cdr object)) (cdr slow)))
-             (nil)
-           (unless (and (listp fast) (consp (cdr fast)))
-             (return (and (listp fast) (not (cdr fast)))))
-           (when (eq fast slow)
-             (return nil))))
-        (t
-         nil)))
-
 (defmethod save-one-object ((object cons) omap stream)
-  ;; FIXME: This has issues with circularities.
-  (cond ((proper-list-p object)
-         (let ((len 0))
-           (dolist (o object)
-             (save-object o omap stream)
-             (incf len))
-           (write-byte +llf-proper-list+ stream)
-           (save-integer len stream)))
-        (t (save-object (cdr object) omap stream)
-           (save-object (car object) omap stream)
-           (write-byte +llf-cons+ stream))))
+  ;; A cons can participate in an object cycle through any serializable
+  ;; container, not just through CAR/CDR links. Allocate it in LLF, install a
+  ;; backlink, then initialize both edges without recursively compiling a
+  ;; top-level form (which would re-serialize compiler AST conses).
+  (write-byte +llf-allocate-cons+ stream)
+  (write-object-backlink object omap stream :keep t)
+  (save-object (car object) omap stream)
+  (save-object (cdr object) omap stream)
+  (write-byte +llf-initialize-cons+ stream))
 
 (defmethod save-one-object ((object symbol) omap stream)
   (cond ((symbol-package object)
@@ -282,10 +275,26 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
            (write-byte +llf-uninterned-symbol+ stream))))
 
 (defmethod save-one-object ((object string) omap stream)
-  (write-byte +llf-string+ stream)
-  (save-integer (length object) stream)
-  (dotimes (i (length object))
-    (save-character (char object i) stream)))
+  (cond ((every #'llf-compact-character-p object)
+         (write-byte +llf-string+ stream)
+         (save-integer (length object) stream)
+         (dotimes (i (length object))
+           (save-character (char object i) stream)))
+        (t
+         ;; Compact LLF strings contain Unicode scalar values only. Allocate a
+         ;; string first and initialize it through the general character path
+         ;; when an element has attributes or an implementation-only code.
+         (let* ((*compiling-make-load-form* (cons omap stream))
+                (mezzano.compiler::*load-time-value-hook*
+                  'compile-file-load-time-value))
+           (compile-top-level-form-for-value `(make-string ,(length object)) nil)
+           (write-object-backlink object omap stream :keep t)
+           (compile-top-level-form
+            `(progn
+               ,@(loop
+                   for i below (length object)
+                   collect `(setf (char ',object ,i) ',(char object i))))
+            nil)))))
 
 (defmethod save-one-object ((object integer) omap stream)
   (write-byte +llf-integer+ stream)
@@ -324,13 +333,22 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
          (save-integer (length object) stream))))
 
 (defmethod save-one-object ((object character) omap stream)
-  (cond ((zerop (char-bits object))
+  (cond ((llf-compact-character-p object)
          (write-byte +llf-character+ stream)
          (save-character object stream))
-        (t
+        ((llf-unicode-scalar-code-p (char-code object))
          (write-byte +llf-character-with-bits+ stream)
-         (save-character (code-char (char-code object)) stream)
-         (save-integer (char-bits object) stream))))
+         (save-character object stream)
+         (save-integer (char-bits object) stream))
+        (t
+         ;; LOAD-CHARACTER deliberately applies CODE-CHAR validation. Preserve
+         ;; implementation characters outside that domain through the internal
+         ;; constructor instead of silently decoding them as NIL.
+         (save-object (char-code object) omap stream)
+         (save-object (char-bits object) omap stream)
+         (save-object '%%make-character omap stream)
+         (save-object 2 omap stream)
+         (write-byte +llf-funcall-n+ stream))))
 
 (defun convert-structure-class-to-structure-definition (class)
   (make-struct-definition
@@ -514,8 +532,6 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
                omap stream)
   (write-byte +llf-instance-header+ stream))
 
-(defvar *compiling-make-load-form* nil)
-
 (defclass load-time-value-proxy ()
   ((%form :initarg :form :reader load-time-value-proxy-form)
    (%read-only-p :initarg :read-only-p :reader load-time-value-proxy-read-only-p)))
@@ -692,8 +708,20 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
   (second form))
 
 (defun compile-top-level-form-for-value (form env)
-  ;; FIXME: This should probably use compiler-macroexpand.
-  (let ((expansion (macroexpand form env)))
+  (let ((expansion
+          (loop
+            with expansion = form
+            do (multiple-value-bind (next expandedp)
+                   (macroexpand expansion env)
+                 (when expandedp
+                   (setf expansion next)))
+               (when (not (consp expansion))
+                 (return expansion))
+               (multiple-value-bind (next expandedp)
+                   (mezzano.compiler::compiler-macroexpand-1 expansion env)
+                 (if expandedp
+                     (setf expansion next)
+                     (return expansion))))))
     (cond
       ((symbolp expansion)
        (if (or (keywordp expansion) (member expansion '(nil t)))
@@ -714,14 +742,14 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
       ((eql (first expansion) 'setq)
        (loop
           with first-iteration = t
-          for (symbol value) on (rest form) by #'cddr
+          for (symbol value) on (rest expansion) by #'cddr
           do
             (assert (typep symbol 'symbol))
             (cond (first-iteration
                    (setf first-iteration nil))
                   (t
                    (add-to-llf sys.int::+llf-drop+)))
-            (if (nth-value 1 (macroexpand-1 symbol))
+            (if (nth-value 1 (macroexpand-1 symbol env))
                 ;; This is a symbol macro, defer to SETF.
                 (compile-top-level-form-for-value `(setf ,symbol ,value) env)
                 ;; Regular symbol.
@@ -866,12 +894,17 @@ NOTE: Non-compound forms (after macro-expansion) are ignored."
                    (format t ";; ~A form ~S.~%"
                            (if *compile-parallel* "Processing" "Compiling")
                            form)))
-             ;; TODO: Deal with lexical environments.
-               (handle-top-level-form form
-                                      (lambda (f env)
-                                        (compile-top-level-form f env))
-                                      (lambda (f env)
-                                        (eval-in-lexenv f env)))
+               ;; HANDLE-TOP-LEVEL-FORM creates the lexical environments for
+               ;; LOCALLY, MACROLET, and SYMBOL-MACROLET and supplies the active
+               ;; one to both callbacks.
+               (handle-top-level-form
+                form
+                (lambda (f env)
+                  (compile-top-level-form f env))
+                (lambda (f env)
+                  (eval-in-lexenv f env))
+                :not-compile-time
+                nil)
                (incf *top-level-form-number*)))
         (when *deferred-functions*
           (let* ((n-functions (length *deferred-functions*))

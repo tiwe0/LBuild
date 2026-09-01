@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "leases": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "acquired-at": {
+            "type": "string"
+          },
+          "expires-at": {
+            "type": "string"
+          },
+          "holder": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "lease-id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "closed",
+              "expired"
+            ]
+          },
+          "target-files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "work-item-ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lease-id",
+          "holder",
+          "work-item-ids",
+          "target-files",
+          "state",
+          "acquired-at",
+          "expires-at"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema-version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schema-version",
+    "leases"
+  ],
+  "schema-version": 1,
+  "title": "Lambda64 work-item ownership leases",
+  "type": "object"
+}

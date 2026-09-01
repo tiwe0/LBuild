@@ -202,6 +202,8 @@
                                             :xid xid))))))))))
       (net:disconnect connection))))
 
+(defgeneric renew-lease (lease))
+
 (defmethod renew-lease ((lease dhcp-lease))
   (let* ((xid (xid lease))
 	 (options (list (make-dhcp-option +opt-dhcp-message-type+ +dhcp-request+)))
