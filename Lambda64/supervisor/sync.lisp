@@ -1087,12 +1087,12 @@ multiple threads."
   (lock (place-spinlock-initializer)))
 
 (defun make-irq-fifo (size &key (element-type 't) name)
-  ;; TODO: non-t element types.
-  (let ((fifo (%make-irq-fifo :size size
-                              :buffer (sys.int::make-simple-vector size :wired)
-                              :element-type 't
-                              :count 0
-                              :name name)))
+  (let* ((buffer (make-array size :element-type element-type :area :wired))
+         (fifo (%make-irq-fifo :size size
+                               :buffer buffer
+                               :element-type (array-element-type buffer)
+                               :count 0
+                               :name name)))
     (setf (irq-fifo-data-available fifo)
           (make-event :name (sys.int::cons-in-area
                              'irq-fifo-data-available-event
@@ -1115,7 +1115,7 @@ Safe to use from an interrupt handler."
           (setf next 0))
         ;; When next reaches head, the buffer is full.
         (unless (= next (irq-fifo-head fifo))
-          (setf (svref (irq-fifo-buffer fifo) (irq-fifo-tail fifo)) value
+                (setf (aref (irq-fifo-buffer fifo) (irq-fifo-tail fifo)) value
                 (irq-fifo-tail fifo) next)
           (incf (irq-fifo-count fifo))
           (setf (event-state (irq-fifo-data-available fifo)) t)
@@ -1134,8 +1134,7 @@ It is only possible for the second value to be false when wait-p is false."
                (cond ((zerop (irq-fifo-count fifo))
                       (values nil nil))
                      (t
-                      ;; Pop byte.
-                      (let ((value (svref (irq-fifo-buffer fifo) (irq-fifo-head fifo)))
+                      (let ((value (aref (irq-fifo-buffer fifo) (irq-fifo-head fifo)))
                             (next (1+ (irq-fifo-head fifo))))
                         (when (>= next (irq-fifo-size fifo))
                           (setf next 0))
