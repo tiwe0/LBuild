@@ -51,5 +51,5 @@ Returns the character position in *UNIFONT-BMP-DATA* and the character pixel wid
                     ;; Keep callers renderable for code points absent from
                     ;; the bundled Unifont table: use a blank 8-pixel cell.
                     (make-array (list 16 8) :initial-element 0)))
-          (setf (svref cache-row cell) glyph))))
+          (setf (svref cache-row cell) glyph)))
       glyph)))

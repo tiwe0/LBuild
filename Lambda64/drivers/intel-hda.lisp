@@ -886,7 +886,7 @@ One of :SINK, :SOURCE, :BIDIRECTIONAL, or :UNDIRECTED."))
           while (zerop (gctl-crst (global-reg/32 hda +gctl+))))
           do (sleep 0.000001)
           finally (when (zerop (gctl-crst (global-reg/32 hda +gctl+)))
-                    (error "Intel HDA controller did not enter reset-complete state.")))
+                    (error "Intel HDA controller did not enter reset-complete state."))
     (format t "Waiting for codecs.~%")
     ;; Wait for the codecs to report in. 521µs.
     (sleep 0.000521)
