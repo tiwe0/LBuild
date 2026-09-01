@@ -69,7 +69,10 @@
         (debug-print-line "invalid simple-bus. missing ranges")
         (return-from register-fdt-simple-bus))
       (when (not (eql (fdt-property-length ranges) 0))
-        ;; TODO.
+        ;; Non-empty ranges require translating child bus addresses into the
+        ;; parent address space before probing MMIO.  This walker has no
+        ;; translation context/API, so ignoring such buses is safer than
+        ;; registering devices at the untranslated address.
         (debug-print-line "simple-bus with non-simple parent-child mapping, ignoring.")
         (return-from register-fdt-simple-bus)))
     ;; Walk children, looking for thing.
