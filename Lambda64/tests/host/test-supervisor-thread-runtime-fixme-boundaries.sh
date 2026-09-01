@@ -98,14 +98,18 @@ if boot_smp < 0 or post_worker < 0 or boot_smp > post_worker:
 if "(sup::add-deferred-boot-action 'virtio-late-probe)" not in virtio:
     raise SystemExit("Virtio late probe must remain deferred until after SMP boot")
 
+# The publication fence is now implemented in every setter branch.  Keep the
+# unresolved lock/quiescence constraints as boundary markers while asserting
+# the concrete barrier contract separately.
 required_runtime = (
     "FREF should be locked for the duration",
-    "Fences.",
     "Cross-CPU synchronization.",
 )
 for marker in required_runtime:
     if marker not in runtime:
         raise SystemExit(f"missing function-reference boundary marker: {marker}")
+if runtime.count("sys.int::dma-write-barrier") < 3:
+    raise SystemExit("function-reference publication must retain per-branch barriers")
 
 spec_dir = root.parent / "docs/modernization/todo-fixme/specs"
 for spec, phrase in (
