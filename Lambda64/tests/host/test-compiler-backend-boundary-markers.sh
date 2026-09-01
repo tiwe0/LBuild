@@ -15,10 +15,17 @@ checks={
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
  '0014':('compiler/backend/arm64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
  '0032':('compiler/backend/x86-64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
+ '0033':('compiler/backend/x86-64/codegen.lisp','FIXME: Emit jump table as trailer.'),
+ '0034':('compiler/backend/x86-64/codegen.lisp',"FIXME: Don't recompute contours for each save instruction."),
+ '0035':('compiler/backend/x86-64/codegen.lisp','TODO: Do this without a temporary integer register.'),
+ '0040':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
+ '0041':('compiler/backend/x86-64/object.lisp','TODO: Use an integer vreg instead of rax here. x86-instruction must be extended to support converting allocated pregs to their 8-bit counterparts.'),
 }
 for ident,(rel,marker) in checks.items():
  src=(root/rel).read_text()
  if marker not in src: raise SystemExit(f'TF-WI-{ident} marker unexpectedly missing')
+ if ident in {'0040','0041'} and src.count(marker) != 2:
+  raise SystemExit('TF-WI-0040/0041 expected two distinct 8-bit preg markers')
  spec=(root.parent/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
  for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
   if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
