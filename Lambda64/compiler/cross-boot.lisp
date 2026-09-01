@@ -212,8 +212,18 @@
 (defun sys.int::%defstruct (def &key location)
   (declare (ignore location))
   (when (gethash (sys.int::structure-definition-name def) *structure-types*)
-    ;; FIXME: Check compatibility here.
-    (return-from sys.int::%defstruct def))
+    ;; Definitions may be replayed while bootstrapping.  Reusing an existing
+    ;; definition is safe only when its externally visible shape agrees with
+    ;; the incoming one; reject stale/incompatible metadata early.
+    (let ((old (gethash (sys.int::structure-definition-name def)
+                        *structure-types*)))
+      (assert (equal (sys.int::structure-definition-parent old)
+                     (sys.int::structure-definition-parent def)))
+      (assert (equal (sys.int::structure-definition-slots old)
+                     (sys.int::structure-definition-slots def)))
+      (assert (eql (sys.int::structure-definition-size old)
+                   (sys.int::structure-definition-size def)))
+      (return-from sys.int::%defstruct old)))
   (unless (member (sys.int::structure-definition-name def)
                   '(sys.int::structure-definition
                     sys.int::structure-slot-definition
