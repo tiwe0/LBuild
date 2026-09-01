@@ -458,8 +458,9 @@
 (defstruct (function-reference (:constructor make-cross-fref (name)))
   name)
 
-;; FIXME: Should be a weak hash table. How to deal with setf/cas names?
-(defvar *fref-table* (make-hash-table :test #'equal))
+;; Keep names strongly reachable (including freshly consed SETF/CAS names), but
+;; allow unused function-reference objects to be reclaimed by the GC.
+(defvar *fref-table* (make-hash-table :test #'equal :weakness :value))
 (defparameter *function-reference-hook-hack* nil)
 
 (defun resolve-fref (name)
