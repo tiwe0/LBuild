@@ -1695,11 +1695,13 @@ Additionally update the card table offset fields and clear the mark bits."
             (heap-size (layout-heap-size layout)))
        (cond ((eql heap-layout 't)
               ;; All slots boxed
-              (verify-generic object (1+ heap-size)))
+             (verify-generic object (1+ heap-size)))
              (heap-layout
               ;; Bit vector of slot boxedness.
-              ;; TODO: Not implemented.
-              nil))))
+              (dotimes (i heap-size)
+                (when (eql (bit heap-layout i) 1)
+                  (verify-one (object-base-address object)
+                              (+ (object-base-address object) (* (1+ i) 8))))))))
     (#.+object-tag-function-reference+
      ;; Only the first 4 words. The remaining words are code words.
      (verify-generic object 4))
