@@ -219,11 +219,13 @@
 
 (defun call-with-mutex (thunk mutex wait-p)
   ;; During bootstrap the BSP has no scheduler or competing threads yet, and
-  ;; BOOT-ID is intentionally still unbound.  Allocation may nevertheless
-  ;; nest mutex-using helpers while interrupts are disabled.  Entering the
-  ;; normal contended path here calls ENSURE-INTERRUPTS-ENABLED and panics;
-  ;; execute the critical section directly until the first boot epoch exists.
-  (if (not (boundp '*boot-id*))
+  ;; initialization keeps IRQs masked.  BOOT-ID is bound before all bootstrap
+  ;; work is complete, so it is not by itself a completion marker.  Allocation
+  ;; may nest mutex helpers while interrupts are disabled; entering the normal
+  ;; contended path would call ENSURE-INTERRUPTS-ENABLED and panic.  Execute
+  ;; directly until the first boot epoch exists and interrupts are enabled.
+  (if (or (not (boundp '*boot-id*))
+          (not (sys.int::%interrupt-state)))
       (funcall thunk)
       (unwind-protect
            (when (acquire-mutex mutex wait-p)
@@ -240,7 +242,7 @@ will be resignalled (via ERROR) with the lock released.
 If RESIGNAL-ERRORS is T, then it will be treated as though it were ERROR."
   (let ((call-with-mutex-thunk (gensym "CALL-WITH-MUTEX-THUNK")))
     (flet ((emit-body ()
-             `(flet ((,call-with-mutex-thunk () ,@body))
+            `(flet ((,call-with-mutex-thunk () ,@body))
                 (declare (dynamic-extent #',call-with-mutex-thunk))
                 (call-with-mutex #',call-with-mutex-thunk
                                  ,mutex

@@ -172,6 +172,28 @@
       (setf (sys.int::symbol-global-value 'mezzano.runtime::*active-catch-handlers*) 'nil
             (sys.int::symbol-global-value '*pseudo-atomic*) nil
             sys.int::*known-finalizers* nil
+            ;; Paging setup uses WITH-SNAPSHOT-INHIBITED before
+            ;; INITIALIZE-SNAPSHOT runs.  Seed the counter with the boot-time
+            ;; inhibition held so its atomic fixnum updates see a valid value.
+            (sys.int::symbol-global-value '*snapshot-inhibit*) 1
+            ;; STORE-STATISTICS can be reached while the paging disk is being
+            ;; discovered, before INITIALIZE-STORE-FREELIST publishes its
+            ;; counters.  Seed them so an early read cannot signal an
+            ;; unbound-variable error; the real values replace these shortly.
+            ;; Keep early allocation-area growth from falling through to GC
+            ;; before the normal store freelist has been discovered.  The
+            ;; real counters replace this temporary upper bound below.
+            (sys.int::symbol-global-value '*store-freelist-n-free-blocks*) #x1000000
+            (sys.int::symbol-global-value '*store-freelist-n-deferred-free-blocks*) 0
+            (sys.int::symbol-global-value '*store-freelist-total-blocks*) #x1000000
+            ;; Freelist metadata allocation consults this before the hosted
+            ;; paging initializer computes its image-size based value.
+            (sys.int::symbol-global-value '*store-fudge-factor*) 0
+            ;; DEFVAR initializers are not materialized in a cold image.  The
+            ;; first allocation-area expansion reads these limits before the
+            ;; normal runtime initialization path has run.
+            (sys.int::symbol-global-value 'mezzano.runtime::*maximum-allocation-attempts*) 5
+            (sys.int::symbol-global-value 'mezzano.runtime::*maximum-young-generation-size*) #x20000000
             *big-wait-for-objects-lock* (place-spinlock-initializer)))
     (initialize-early-platform)
     (when (boundp '*boot-id*)
@@ -179,10 +201,30 @@
     (setf *boot-id* (if (and first-run-p (boundp '*initial-boot-event*))
                         *initial-boot-event*
                         (make-event :name 'boot-epoch)))
-    (initialize-threads)
+    ;; The first boot has no pager yet; defer the two contention-only wait
+    ;; queues until after paging is initialized.
+    (initialize-threads first-run-p)
     (initialize-sync first-run-p)
+    ;; Disk queue and request events allocate general-area vectors.  Defer
+    ;; those objects on the first boot until initialize-pager has established
+    ;; the paging path.
+    ;; The allocator can now grow during bootstrap, so publish the queue
+    ;; latch before any disk worker can enter POP-DISK-REQUEST.
     (initialize-disk)
-    (initialize-pager)
+    (initialize-pager first-run-p first-run-p)
+    (when (null *disk-request-queue-latch*)
+      (setf *disk-request-queue-latch*
+            (make-event :name "Disk request queue notifier")))
+    (when (and (boundp '*pager-disk-request*)
+               (null (disk-request-latch *pager-disk-request*)))
+      (setf (disk-request-latch *pager-disk-request*)
+            (make-event :name "Disk request notifier")))
+    (when (or (not (boundp '*vm-lock*))
+              (null *vm-lock*))
+      (setf *vm-lock* (make-rw-lock '*vm-lock*)))
+    (when (null *pending-world-stoppers*)
+      (setf *pending-world-stoppers* (make-wait-queue :name '*pending-world-stoppers*)
+            *pending-pseudo-atomics* (make-wait-queue :name '*pending-pseudo-atomics*)))
     (initialize-snapshot)
     (%enable-interrupts)
     ;;(debug-set-output-pseudostream #'debug-video-stream)

@@ -1117,7 +1117,7 @@ It will put the thread to sleep, while it waits for the page."
         (push-run-queue sys.int::*pager-thread*)))
     (%reschedule-via-interrupt interrupt-frame)))
 
-(defun initialize-pager ()
+(defun initialize-pager (&optional defer-request-latch-p defer-vm-lock-p)
   (setf *bml4* (sys.int::memref-signed-byte-64 (+ *boot-information-page* +boot-information-block-map+)))
   (when (not (boundp '*pager-waiting-threads*))
     (setf *pager-noisy* nil
@@ -1136,11 +1136,15 @@ It will put the thread to sleep, while it waits for the page."
     (setf (thread-queue-next *pager-current-thread*) *pager-waiting-threads*
           *pager-waiting-threads* *pager-current-thread*
           *pager-current-thread* nil))
-  (setf *pager-disk-request* (make-disk-request))
+  ;; The request latch is a general-area event.  On the first boot the
+  ;; allocator is not usable until pager setup has completed, so leave it
+  ;; empty and let the bootstrap entry point fill it afterwards.
+  (setf *pager-disk-request* (make-disk-request defer-request-latch-p))
   ;; The VM lock is recreated each boot because it is only held by
   ;; the ephemeral pager & snapshot threads or by threads that have
   ;; inhibited snapshot (just callers of MAP-PHYSICAL-MEMORY).
-  (setf *vm-lock* (make-rw-lock '*vm-lock*))
+  (unless defer-vm-lock-p
+    (setf *vm-lock* (make-rw-lock '*vm-lock*)))
   ;; Set all the dirty bits for wired pages. They were not saved over snapshot.
   (map-ptes
    sys.int::*wired-area-base* sys.int::*wired-area-bump*

@@ -398,10 +398,13 @@
   ;; requires this many bytes during the GC cycle.
   (+ (dynamic-area-size)
      ;; Plus card table mappings for it.
-     (* (truncate (dynamic-area-size) sys.int::+card-size+)
+     ;; Keep these divisions as shifts: this function is reached while the
+     ;; pager is still coming up, when the generic integer division function
+     ;; may reside in the unmapped normal function area.
+     (* (ash (dynamic-area-size) -12) ; +card-size+ = 2^12
         sys.int::+card-table-entry-size+)
      ;; And mark bits for static space.
-     (/ (static-area-size) sys.int::+octets-per-mark-bit+ 8)
+     (ash (static-area-size) -7) ; 16 octets/mark * 8 = 2^7
      ;; And some extra, just in case.
      *allocation-fudge*))
 
@@ -492,23 +495,28 @@
     (return-from %slow-allocate-from-general-area
       (%allocate-from-general-area tag data words)))
   (let ((gc-count 0)
-        (start-time (mezzano.supervisor:get-high-precision-timer)))
+        (start-time (mezzano.supervisor:get-high-precision-timer))
+        (result nil)
+        (allocation-succeeded-p nil)
+        (run-gc-p nil))
     (tagbody
      OUTER-LOOP
+       (setf allocation-succeeded-p nil
+             run-gc-p nil)
        (mezzano.supervisor:without-footholds
          (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
            (mezzano.supervisor:with-mutex (*allocator-lock*)
              (mezzano.supervisor:with-pseudo-atomic
                (tagbody
                 INNER-LOOP
-                  (multiple-value-bind (result ignore1 ignore2 failurep)
+                  (multiple-value-bind (allocation-result ignore1 ignore2 failurep)
                       (%do-slow-allocate-from-general-area tag data words)
                     (declare (ignore ignore1 ignore2))
                     (when (not failurep)
                       (update-allocation-time start-time)
-		      ;; (mezzano.supervisor::debug-print-line "what")
-                      (return-from %slow-allocate-from-general-area
-                        result)))
+                      (setf result allocation-result
+                            allocation-succeeded-p t)
+                      (go INNER-DONE)))
                   ;; No memory. If there's memory available, then expand the area, otherwise run the GC.
                   ;; Running the GC cannot be done when pseudo-atomic.
                   (cond ((expand-allocation-area :general
@@ -524,8 +532,13 @@
                      ;; This cannot be done when pseudo-atomic.
                      (when sys.int::*gc-enable-logging*
                        (mezzano.supervisor:debug-print-line "General area expansion failed, performing GC."))
-                     (go DO-GC))))))))
-     DO-GC
+                     (setf run-gc-p t)
+                     (go INNER-DONE)))
+                INNER-DONE)))))
+       (when allocation-succeeded-p
+         (return-from %slow-allocate-from-general-area result))
+       (when (not run-gc-p)
+         (go OUTER-LOOP))
        ;; Must occur outside the locks.
        (when (> gc-count *maximum-allocation-attempts*)
          (cerror "Retry allocation" 'storage-condition))

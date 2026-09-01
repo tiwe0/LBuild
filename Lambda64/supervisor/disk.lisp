@@ -38,7 +38,7 @@
   type)
 
 (defstruct (disk-request
-             (:constructor make-disk-request ())
+             (:constructor %make-disk-request ())
              (:area :wired))
   (state :error :type (member :setup :waiting :in-progress :complete :error))
   (error-reason :uninitialized)
@@ -48,8 +48,19 @@
   n-sectors
   buffer
   (lock (place-spinlock-initializer))
-  (latch (make-event :name "Disk request notifier"))
+  ;; Events allocate general-area vectors.  Keep the slot empty while the
+  ;; first boot is bringing up paging; MAKE-DISK-REQUEST fills it for normal
+  ;; callers, and the bootstrap path fills the pager request after paging is
+  ;; initialized.
+  (latch nil)
   next)
+
+(defun make-disk-request (&optional defer-latch-p)
+  (let ((request (%make-disk-request)))
+    (unless defer-latch-p
+      (setf (disk-request-latch request)
+            (make-event :name "Disk request notifier")))
+    request))
 
 (sys.int::defglobal *disks*)
 
@@ -79,13 +90,14 @@
     (debug-print-line "Registered new " (if writable-p "R/W" "R/O") " disk " disk " sectors:" n-sectors)
     (setf *disks* (sys.int::cons-in-area disk *disks* :wired))))
 
-(defun initialize-disk ()
+(defun initialize-disk (&optional defer-latch-p)
   (when (not (boundp '*disk-request-queue-head*))
     (setf *log-disk-requests* nil)
     (setf *disk-request-current* nil
           *disk-request-queue-head* nil
           *disk-request-queue-lock* (place-spinlock-initializer)
-          *disk-request-queue-latch* (make-event :name "Disk request queue notifier")
+          *disk-request-queue-latch* (unless defer-latch-p
+                                       (make-event :name "Disk request queue notifier"))
           *disks* '()))
   ;; Abort any queued or in-progress requests.
   (do ((request *disk-request-queue-head* (disk-request-next request)))

@@ -727,7 +727,7 @@ not and WAIT-P is false."
   (dotimes (i +thread-symbol-cache-size+)
     (setf (thread-symbol-cache thread i) (sys.int::%symbol-binding-cache-sentinel))))
 
-(defun initialize-threads ()
+(defun initialize-threads (&optional defer-pending-queues-p)
   (when (not (boundp '*global-thread-lock*))
     ;; First-run stuff.
     (setf *global-thread-lock* :unlocked)
@@ -739,8 +739,10 @@ not and WAIT-P is false."
     ;; Work at read-time to avoid floats at runtime.
     (setf *timeslice-length* #.(truncate (* 0.01 internal-time-units-per-second)))
     (setf *pseudo-atomic-thread-count* 0
-          *pending-world-stoppers* (make-wait-queue :name '*pending-world-stoppers*)
-          *pending-pseudo-atomics* (make-wait-queue :name '*pending-pseudo-atomics*))
+          *pending-world-stoppers* (unless defer-pending-queues-p
+                                     (make-wait-queue :name '*pending-world-stoppers*))
+          *pending-pseudo-atomics* (unless defer-pending-queues-p
+                                    (make-wait-queue :name '*pending-pseudo-atomics*)))
     (setf *all-threads* sys.int::*snapshot-thread*
           (thread-global-next sys.int::*snapshot-thread*) sys.int::*pager-thread*
           (thread-global-prev sys.int::*snapshot-thread*) nil
@@ -1087,13 +1089,14 @@ footholds will be reenabled, otherwise footholds will stay inhibited."
   (release-stw-locks))
 
 (defun call-with-pseudo-atomic (thunk)
-  ;; Before BOOT-ID is established there is no scheduler or competing thread,
-  ;; and boot code intentionally runs with interrupts masked.  Requiring the
-  ;; normal pseudo-atomic entry contract here would call ENSURE-INTERRUPTS-
-  ;; ENABLED and panic during first object allocation.  Execute the body
-  ;; directly until the first boot epoch exists; normal protection resumes
-  ;; immediately afterwards.
-  (if (not (boundp '*boot-id*))
+  ;; During bootstrap there is no scheduler or competing thread, and boot code
+  ;; intentionally runs with interrupts masked.  BOOT-ID is bound before the
+  ;; remaining initialization steps, so it is not by itself a completion
+  ;; marker.  Requiring the normal pseudo-atomic entry contract while IRQs are
+  ;; masked would call ENSURE-INTERRUPTS-ENABLED and panic.  Execute directly
+  ;; until both the first boot epoch exists and interrupts are enabled.
+  (if (or (not (boundp '*boot-id*))
+          (not (sys.int::%interrupt-state)))
       (funcall thunk)
       (progn
         (when (eql *world-stopper* (current-thread))
