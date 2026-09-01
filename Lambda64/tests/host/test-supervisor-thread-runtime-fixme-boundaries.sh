@@ -16,6 +16,8 @@ runtime_path = root / "system/runtime-support.lisp"
 thread = thread_path.read_text(encoding="utf-8")
 runtime = runtime_path.read_text(encoding="utf-8")
 sync = (root / "supervisor/sync.lisp").read_text(encoding="utf-8")
+entry = (root / "supervisor/entry.lisp").read_text(encoding="utf-8")
+virtio = (root / "supervisor/virtio.lisp").read_text(encoding="utf-8")
 x86_thread = (root / "supervisor/x86-64/thread.lisp").read_text(encoding="utf-8")
 arm64_thread = (root / "supervisor/arm64/thread.lisp").read_text(encoding="utf-8")
 if mutate:
@@ -72,6 +74,15 @@ if event_setter.find("with-place-spinlock (*big-wait-for-objects-lock*)") < 0:
     raise SystemExit("event-state lock graph lost big wait-object lock")
 if event_setter.find("with-wait-queue-lock") < 0 or event_setter.find("wake-thread") < 0:
     raise SystemExit("event-state must wake waiters under wait-queue lock")
+# Secondary ARM64 PEs are booted before the post-boot worker executes deferred
+# Virtio probing.  This confirms that the BSP restriction is exercised during
+# the real multi-PE window rather than being a dead boot-time branch.
+boot_smp = entry.find("(boot-secondary-cpus)")
+post_worker = entry.find("(setf *post-boot-worker-thread*")
+if boot_smp < 0 or post_worker < 0 or boot_smp > post_worker:
+    raise SystemExit("secondary CPUs must boot before post-boot worker creation")
+if "(sup::add-deferred-boot-action 'virtio-late-probe)" not in virtio:
+    raise SystemExit("Virtio late probe must remain deferred until after SMP boot")
 
 required_runtime = (
     "FREF should be locked for the duration",
