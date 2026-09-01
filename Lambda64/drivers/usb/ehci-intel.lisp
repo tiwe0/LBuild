@@ -673,16 +673,17 @@
       ;; Walk the controller-visible chain first.  A qTD is halted before the
       ;; async doorbell is rung, so the controller cannot fetch it while we
       ;; unlink and reclaim its storage.
-      (loop for address = (qh-next-qtd qh) then (aref qtd 0)
-            while (not (logbitp 0 address))
-            do (setf qtd (ehci-addr->array ehci address))
-               (when (= (aref qtd 3) buf-phys-addr)
-                 (setf found t)
-                 (setf (aref qtd 2)
-                       (logior (logandc2 (aref qtd 2) #x80) #x40))
-                 (sys.int::dma-write-barrier)
-                 (return))
-            do (setf prev-qtd qtd))
+      (sup:with-mutex ((usbd-lock ehci))
+        (loop for address = (qh-next-qtd qh) then (aref qtd 0)
+              while (not (logbitp 0 address))
+              do (setf qtd (ehci-addr->array ehci address))
+                 (when (= (aref qtd 3) buf-phys-addr)
+                   (setf found t)
+                   (setf (aref qtd 2)
+                         (logior (logandc2 (aref qtd 2) #x80) #x40))
+                   (sys.int::dma-write-barrier)
+                   (return))
+              do (setf prev-qtd qtd)))
       (when found
         ;; The doorbell acknowledges that the async schedule has observed the
         ;; halt.  Only then is it legal to unlink and free the qTD.
