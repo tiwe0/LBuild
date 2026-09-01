@@ -647,11 +647,22 @@
     (sys.int::structure-slot-definition-align slot-definition)))
 
 (defun mezzano.clos:ensure-class (name &rest initargs)
-  ;; SOURCE-LOCATION is consumed by the target CLOS implementation, but the
-  ;; host C2MOP does not define that initarg on STANDARD-CLASS.  Drop it at the
-  ;; cross-compiler boundary while retaining all class shape arguments.
-  (remf initargs :source-location)
-  (apply #'c2mop:ensure-class name initargs))
+  ;; Preserve source metadata for the cold CLOS bootstrap.  Hosts whose C2MOP
+  ;; class metaobjects do not accept SOURCE-LOCATION reject the first call;
+  ;; retry with only that host-incompatible keyword removed.
+  (labels ((without-source-location (arguments)
+             (loop for (key value) on arguments by #'cddr
+                   unless (eq key :source-location)
+                     append (list key value))))
+    (handler-case
+        (apply #'c2mop:ensure-class name initargs)
+      (program-error (condition)
+        (if (and (getf initargs :source-location)
+                 (search "SOURCE-LOCATION"
+                         (string-upcase (princ-to-string condition))))
+            (apply #'c2mop:ensure-class name
+                   (without-source-location initargs))
+            (error condition))))))
 
 (defun sys.int::known-declaration-p (declaration)
   ;; The normal version also checks type specifiers, but I don't like that style.
