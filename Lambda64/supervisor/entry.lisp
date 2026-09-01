@@ -248,7 +248,6 @@
                                          (make-wait-queue :name '*pending-world-stoppers*))
             *pending-pseudo-atomics* (or *pending-pseudo-atomics*
                                          (make-wait-queue :name '*pending-pseudo-atomics*))))
-    (%enable-interrupts)
     ;;(debug-set-output-pseudostream #'debug-video-stream)
     ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
     (debug-print-line "Hello, Debug World!")
@@ -282,4 +281,9 @@
                  *late-boot-hooks* '())
            (make-thread #'sys.int::initialize-lisp :name "Main thread"))
           (t (wake-thread *post-boot-worker-thread*)))
+    ;; Keep timer/device interrupts masked until the scheduler, pager, and
+    ;; initial runnable threads are fully published.  Enabling them earlier
+    ;; lets an ARM timer tick preempt this bootstrap thread while run queues
+    ;; are still being rebuilt, strand it, and leave the CPU in idle forever.
+    (%enable-interrupts)
     (finish-initial-thread)))
