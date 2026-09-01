@@ -1113,7 +1113,6 @@ the cold serializer without duplicating their definitions here."
       environment
       (env:translate-symbol environment 'sys.int::bootloader-entry-point))
      image environment)
-    (serialize-object nil image environment)
     (drain-initialization-queue image)
     ;; Tell the GC the area sizes.
     (finalize-areas image environment)

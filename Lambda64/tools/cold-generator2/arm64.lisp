@@ -106,6 +106,13 @@
    (env:cross-symbol-value environment 'mezzano.supervisor::*arm64-exception-vector*)
    image environment)
   (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
+                  ;; These two functions run before the normal Lisp roots are
+                  ;; reachable: kboot copies %%PE-BOOTSTRAP into executable
+                  ;; memory, and the bootloader entry invokes the data
+                  ;; initializer first.  Keep their function bodies alive,
+                  ;; not just their frefs.
+                  sys.int::%%pe-bootstrap
+                  sup::initialize-pe-bootstrap-data
                   sup::%el0-common
                   sup::%synchronous-el0-handler
                   sup::%irq-el0-handler
@@ -118,7 +125,14 @@
                   sup::%serror-elx-handler))
     (let* ((symbol (env:translate-symbol environment name))
            (fref (env:function-reference environment symbol)))
-      (ser:serialize-object symbol image environment)
+      ;; Only the exception-vector-base global needs its symbol cell before
+      ;; POST-SERIALIZE updates the value.  Function roots should not pull in
+      ;; every symbol/string reachable from the name; serialize their fref and
+      ;; concrete function body directly.
+      (if (eql name 'mezzano.supervisor::*arm64-exception-vector-base*)
+          (ser:serialize-object symbol image environment))
       (ser:serialize-object fref image environment)
-      (ser:serialize-object (env:function-reference-function fref) image environment)))
+      (let ((fn (env:function-reference-function fref)))
+        (when fn
+          (ser:serialize-object fn image environment)))))
   nil)

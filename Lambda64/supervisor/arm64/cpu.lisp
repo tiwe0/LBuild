@@ -463,6 +463,13 @@ Protected by the world stop lock."
   (mezzano.lap.arm64:isb)
   (mezzano.lap.arm64:eret)
   at-el1
+  ;; Install the image exception vector before enabling the MMU.  The kboot
+  ;; vector lives at an identity-mapped low address and becomes unreachable
+  ;; as soon as the transition tables are replaced; leaving VBAR_EL1 there
+  ;; would turn any early fault into a recursive instruction abort.
+  (mezzano.lap.arm64:ldr :x9 (:constant %%vbar-el1%%))
+  (mezzano.lap.arm64:msr :vbar-el1 :x9)
+  (mezzano.lap.arm64:isb)
   ;; Caches on
   (mezzano.lap.arm64:mrs :x9 :sctlr-el1)
   (mezzano.lap.arm64:orr :x9 :x9 #.(ash 1 12)) ; Enable icache
