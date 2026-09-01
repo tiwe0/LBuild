@@ -13,17 +13,23 @@ environment = (root / 'tools/cold-generator2/environment.lisp').read_text()
 serialize = (root / 'tools/cold-generator2/serialize.lisp').read_text()
 cross_compile = (root / 'compiler/cross-compile.lisp').read_text()
 assert '("supervisor/arm64/cpu.lisp" :arm64)' in cold
+# Interrupt dispatch intentionally follows the live FREF code slot so hot
+# replacement remains observable; a direct named call would bypass it.
 assert 'TODO: Turn this into a direct named call.' in x86
 assert '(:object :r13 ,sys.int::+fref-code+)' in x86
 assert '(lap:call :rax)' in x86
 # Dynamic FREF code may be hot-swapped; a static named call would bypass slot 0 publication.
 assert 'sys.int::+fref-code+' in x86 and ':r13' in x86
-assert 'FIXME: Source locations for these are lost.' in classes
+assert 'Source locations supplied by the reader/compiler are retained' in classes
 assert 'Preserve source metadata for the cold CLOS bootstrap.' in cross_compile
 assert '(remf initargs :source-location)' not in cross_compile
-assert "FIXME: This doesn't quite work with large bytes." in classes
-assert '(check-type size (integer 0 #x1FFF))' in environment
-assert '(check-type position (integer 0 #x1FFFFFFFFFFF))' in environment
+assert 'LARGE-BYTE structures' in classes
+assert '(check-type size (integer 0))' in environment
+assert '(check-type position (integer 0))' in environment
+assert '(<= size #x1FFF)' in environment
+assert '(<= position #x1FFF)' in environment
+assert "'mezzano.internals.numbers.logical::large-byte" in environment
+assert '(loader-environment loader)' in (root / 'tools/cold-generator2/load.lisp').read_text()
 # Mirror the immediate BYTE packing contract to catch accidental field-width
 # regressions even when a full cold-image build is unavailable.
 size, position = 0x1FFF, 0x1FFFFFFFFFFF
