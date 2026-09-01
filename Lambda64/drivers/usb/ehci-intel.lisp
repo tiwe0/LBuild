@@ -276,7 +276,7 @@
 
    ;; physical address of memory used for buffers
    (%phys-addr        :initarg :phys-addr        :accessor phys-addr)
-   (%phys-addr-free   :initarg :phys-addr-free   :accessor phys-free-free)
+   (%phys-addr-free   :initarg :phys-addr-free   :accessor phys-addr-free)
    (%phys-addr-end    :initarg :phys-addr-end    :accessor phys-phys-end)
    (%phys-addr-high   :initarg :phys-addr-high   :accessor phys-addr-high)
 
@@ -349,9 +349,10 @@
 ;;======================================================================
 
 (defmethod get-buffer-memory ((ehci ehci-intel) num-bytes)
+  (check-type num-bytes (integer 0 *))
   (with-slots (%phys-addr-free %phys-addr-end) ehci
     ;; force 32-byte alignment for all buffers
-    (setf phy-addr-free (logandc2 (+ %phys-addr-free 31) #x1F))
+    (setf %phys-addr-free (logandc2 (+ %phys-addr-free 31) #x1F))
     (let* ((result %phys-addr-free)
            (next-free (+ %phys-addr-free num-bytes)))
       (when (> next-free %phys-addr-end)
@@ -432,8 +433,39 @@
         (free-qtd ehci qtd)))))
 
 (defmethod debounce-port ((ehci ehci-intel) port-num)
-  ;; TODO - define this routine
-  )
+  ;; A connect notification may be generated while the mechanical contact is
+  ;; still bouncing.  Require the connect state to remain unchanged for
+  ;; 100ms, while bounding the total wait to 1.5s (the same contract used by
+  ;; the OHCI root-hub implementation).
+  (check-type port-num (integer 0 *))
+  (when (>= port-num (num-ports ehci))
+    (error "Invalid EHCI port number ~D" port-num))
+  (with-hcd-access (ehci)
+    (let ((connect-state (if (logbitp +ehci-portsc-connect-status+
+                                      (portsc-reg ehci port-num))
+                             1 0))
+          (stable-time 0.0)
+          (total-time 0.0))
+      (loop
+        (sleep 0.03)
+        (incf stable-time 0.03)
+        (incf total-time 0.03)
+        (let* ((status (portsc-reg ehci port-num))
+               (connected (if (logbitp +ehci-portsc-connect-status+ status)
+                              1 0)))
+          ;; PORTSC change bits are write-one-to-clear.  Clear a reported
+          ;; connect change before sampling again.
+          (when (logbitp +ehci-portsc-status-change+ status)
+            (setf (portsc-reg ehci port-num)
+                  +portsc-mask-clear-status-change+)
+            (setf stable-time 0.0))
+          (when (/= connected connect-state)
+            (setf connect-state connected
+                  stable-time 0.0))
+          (when (>= stable-time 0.10)
+            (return connected))
+          (when (>= total-time 1.50)
+            (error "Debounce timeout on port ~D for EHCI" port-num)))))))
 
 ;; When the EHCI Driver receives the request to reset and enable the
 ;; port, it first checks the value reported by the LineStatus bits in the
