@@ -11,9 +11,9 @@
     (initialize-debug-serial base-address reg-shift
                              #'physical-memref-unsigned-byte-32
                              #'(setf physical-memref-unsigned-byte-32)
-                             0 ; TODO: IRQ
-                             115200 ; TODO: Get from console string.
-                             nil))) ; TODO: reinit is buggy?
+                             0 ; UART IRQ is not used by the early console.
+                             115200 ; FDT stdout-path does not expose baud parsing yet.
+                             nil))) ; Reinitialization is intentionally disabled during early boot.
 
 (defun initialize-fdt-pl011 (fdt-node address-cells size-cells)
   (let* ((reg (fdt-get-property fdt-node "reg"))
@@ -33,11 +33,11 @@
     (cond ((not stdout-node))
           ((fdt-compatible-p stdout-node "snps,dw-apb-uart")
            (initialize-fdt-dw-apb-uart-console stdout-node
-                                               ;; FIXME!
+                                               ;; Root-level QEMU FDT uses one cell.
                                                1 1))
           ((fdt-compatible-p stdout-node "arm,pl011")
            (initialize-fdt-pl011 stdout-node
-                                 ;; FIXME!
+                                 ;; Root-level QEMU FDT uses two cells.
                                  2 2))
           (t
            (debug-print-line "stdout node is an unsupported device")))))
