@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1])
 checks={
- '0024':('compiler/backend/dominance.lisp','TODO: This numbers basic blocks'),
  '0025':('compiler/backend/instructions.lisp','TODO: Support arbitrary environments.'),
  '0029':('compiler/backend/ssa.lisp',"FIXME: The CFG doesn't quite represent NLX regions correctly"),
  '0009':('compiler/backend/arm64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
@@ -33,6 +32,7 @@ for ident,(rel,marker) in checks.items():
 # Keep their active specs available for cold-image follow-up, but reject a
 # regression that restores either unsafe marker into the implementation.
 resolved={
+ '0024':('compiler/backend/dominance.lisp','TODO: This numbers basic blocks'),
  '0010':('compiler/backend/arm64/codegen.lisp','FIXME: Support more than 2047 arguments (subs immediate limit).'),
  '0022':('compiler/backend/cfg.lisp','TODO: Break critical edges.'),
  '0023':('compiler/backend/cfg.lisp','TODO: Support switches too.'),
