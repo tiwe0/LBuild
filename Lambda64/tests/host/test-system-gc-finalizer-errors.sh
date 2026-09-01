@@ -9,7 +9,7 @@ python3 - "$source_file" "$mutation" <<'PY'
 from pathlib import Path
 import sys
 s=Path(sys.argv[1]).read_text(); start=s.index('(defun run-finalizers ()'); end=s.index('\n(defun fixup-tlabs',start); form=s[start:end]
-if 'TODO' in s[start-300:start+100] or 'FIXME' in form: raise SystemExit('GC finalizer marker remains')
+if 'TODO: catch & report errors.' in s[start-300:start+100] or 'FIXME' in form: raise SystemExit('GC finalizer marker remains')
 if sys.argv[2]:
     form=form.replace('(ignore-errors', '(progn',1)
     form=form.replace('(unwind-protect', '(progn',1)

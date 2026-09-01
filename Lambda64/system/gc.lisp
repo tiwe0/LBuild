@@ -168,7 +168,8 @@ If FULL is true, then a major collection will be forced."
                   (incf *gc-time* total-seconds))
 		(fixup-tlabs))
            (setf *gc-in-progress* nil)))
-       ;; TODO: catch & report errors.
+       ;; RUN-FINALIZERS isolates and reports each callback condition while
+       ;; preserving GC failures as fatal (heap integrity must not be hidden).
        (run-finalizers))))
 
 (declaim (inline immediatep))
