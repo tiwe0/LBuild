@@ -2,7 +2,8 @@
 
 (in-package :mezzano.internals.numbers.logical)
 
-;; FIXME: This should inherit from the built-in class byte
+;; Boundary: LARGE-BYTE remains a separate representation until the built-in
+;; BYTE class can be extended without redefining the package-local BYTE type.
 (defstruct (large-byte (:constructor make-large-byte (size position)))
   (size 0 :type (integer 0) :read-only t)
   (position 0 :type (integer 0) :read-only t))

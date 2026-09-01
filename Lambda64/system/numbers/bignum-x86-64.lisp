@@ -537,8 +537,8 @@
   (sys.lap-x86:shr64 :rdx #.+object-data-shift+)
   (sys.lap-x86:cmp64 :rax :rdx)
   ;; If it didn't change, return the original bignum.
-  ;; TODO: eventually the bignum code will pass in stack-allocated
-  ;; bignum objects, this'll have to allocate anyway...
+  ;; Boundary: canonicalization may return the original object when size is
+  ;; unchanged; stack-allocated bignums will require an allocation path.
   (sys.lap-x86:je do-return)
   ;; Resizing.
   ;; Save original bignum.

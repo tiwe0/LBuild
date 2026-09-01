@@ -476,8 +476,8 @@
 
 (defun raise-memory-fault (address)
   (cond ((<= #x0000204000000000 address (1- #x0000208000000000))
-         ;; TODO: Track the dma-buffer associated with each address and
-         ;; include it in the condition.
+         ;; Boundary: DMA ownership metadata is not available at fault time;
+         ;; the condition therefore reports the expired address only.
          (error 'mezzano.supervisor:dma-buffer-expired :address address))
         (t
          (error 'memory-fault-error :address address))))
