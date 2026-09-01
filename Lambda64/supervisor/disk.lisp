@@ -175,8 +175,11 @@
                     (when (< (sys.int::%object-header-data buffer) n-bytes)
                       (return-from process-one-disk-request
                         (values nil "Disk buffer is smaller than the request size.")))
-                    ;; Reading or writing into an array, allocate a bounce buffer.
-                    ;; TODO: Do this without the bounce buffer.
+                    ;; Lisp arrays cannot be handed directly to disk drivers:
+                    ;; the object may move or be reclaimed while the asynchronous
+                    ;; transfer is active.  Keep the wired physical bounce buffer
+                    ;; until completion; eliminating it requires a pinned-buffer
+                    ;; API and DMA lifetime contract that do not exist yet.
                     (setf bounce-buffer (allocate-physical-pages
                                          (ceiling n-bytes +4k-page-size+)))
                     (when (not bounce-buffer)
