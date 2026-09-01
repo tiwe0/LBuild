@@ -2,10 +2,9 @@
 
 (in-package :mezzano.lap.x86)
 
-;; FIXME: This is not entirely correct... This table is modified when this
-;; file is loaded, which can happen concurrently with reads. It is on
-;; a hot path, so the risk seems worth it for now...
-(defparameter *instruction-assemblers* (make-hash-table :synchronized nil :enforce-gc-invariant-keys t))
+;; Definitions may be registered while another thread assembles code.  Use the
+;; hash-table's synchronization for both registration and lookup.
+(defparameter *instruction-assemblers* (make-hash-table :synchronized t :enforce-gc-invariant-keys t))
 (defvar *cpu-mode* nil "The CPU mode to assemble for.")
 (defvar *fixup-target*)
 
