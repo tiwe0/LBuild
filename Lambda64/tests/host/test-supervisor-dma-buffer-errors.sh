@@ -16,10 +16,13 @@ assert ':32-bit-only :reader dma-buffer-allocation-error-32-bit-only-p' in sourc
 assert source.count("(error 'dma-buffer-allocation-error") == 2
 assert ':length length' in source and ':contiguous contiguous' in source
 assert ':32-bit-only 32-bit' in source
-# ERRORP NIL remains a non-signalling allocation probe, and the pager TODO is
-# intentionally retained until a reclaim hook exists in the physical allocator.
+# ERRORP NIL remains a non-signalling allocation probe.  Reclaim is deliberately
+# not attempted here until the physical allocator exposes a pager hook.
 assert 'return-from alloc-sg-vec nil' in source
-assert 'TODO: Should this call into the pager' in source
+assert 'Allocation failure is deliberately non-blocking.' in source
+assert 'allocator currently has no pager-reclaim hook' in source
+assert 'ad-hoc page-in/reclaim here would violate the pager ABI' in source
+assert 'TODO: Should this call into the pager' not in source
 for symbol in ('#:dma-buffer-allocation-error',
                '#:dma-buffer-allocation-error-length',
                '#:dma-buffer-allocation-error-contiguous-p',
