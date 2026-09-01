@@ -560,13 +560,11 @@ Interrupts must be off and the global thread lock must be held."
 (defun thread-final-cleanup (return-values)
   (%run-on-wired-stack-without-interrupts (sp fp return-values)
     (let ((self (current-thread)))
-      ;; FIXME: This should be done with the global lock held, but that makes
-      ;; the lock ordering incorrect in (setf event-state).
-      ;; (setf event-state) expects to be called with the thread lock released.
-      ;; This leaves a small race window between the thread's join event
-      ;; being set and the thread state being set to dead, but this is only
-      ;; visible on SMP as interrupts are disabled here.
-      (setf (event-state (thread-join-event self)) (or return-values :no-values))
+      ;; Mark the thread dead and unlink it while holding the global lock.  Do
+      ;; this before publishing the join event so a woken joiner always sees
+      ;; the terminal state.  EVENT-STATE must be called without this lock:
+      ;; its wake-up path holds the wait-object and queue locks before
+      ;; acquiring the global thread lock.
       (acquire-global-thread-lock)
       (setf (thread-state self) :dead)
       ;; Remove thread from the global list.
@@ -576,6 +574,11 @@ Interrupts must be off and the global thread lock must be held."
         (setf (thread-global-next (thread-global-prev self)) (thread-global-next self)))
       (when (eql self *all-threads*)
         (setf *all-threads* (thread-global-next self)))
+      (release-global-thread-lock)
+      ;; Publishing after the state transition closes the SMP visibility gap
+      ;; without inverting the established EVENT-STATE lock order.
+      (setf (event-state (thread-join-event self)) (or return-values :no-values))
+      (acquire-global-thread-lock)
       (%reschedule-via-wired-stack sp fp))))
 
 (defun thread-join (thread &optional (wait-p t))
