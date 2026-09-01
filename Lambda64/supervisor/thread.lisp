@@ -825,9 +825,8 @@ not and WAIT-P is false."
        (sys.int::%atomic-fixnum-add-object ,thread +thread-inhibit-footholds+ 1)
        (let ((,old-allow-with-footholds (thread-allow-with-footholds ,thread)))
          (when ,old-allow-with-footholds
-           ;; The WHEN is a performance kludge, avoid touching thread slots as much as possible
-           ;; TODO: Restructure this to avoid fiddling with T-A-W-F at all
-           ;; if A-W-F isn't used.
+           ;; Avoid touching the allow-with-footholds slot unless it is
+           ;; enabled; this keeps the uncontended path free of a write.
            (setf (thread-allow-with-footholds ,thread) nil))
          (unwind-protect
               (macrolet ((allow-with-footholds (&body allow-forms)
