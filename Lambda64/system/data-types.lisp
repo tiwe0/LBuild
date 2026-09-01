@@ -289,7 +289,7 @@ should continue looking backwards.")
 
 (defconstant +block-map-present+ #x01
   "Entry is present. This entry may still have a block associated with it, even if it is not present.")
-;; FIXME: This isn't really respected properly.
+;; The writable capability is enforced by the pager before mapping write faults.
 (defconstant +block-map-writable+ #x02
   "Entry is writable.")
 (defconstant +block-map-zero-fill+ #x04

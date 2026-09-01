@@ -923,6 +923,15 @@ mapped, then the entry will be NIL."
   (with-rw-lock-read (*vm-lock* :wait-p nil)
     (let ((pte (get-pte-for-address fault-address nil))
           (block-info (block-info-for-virtual-address fault-address)))
+      ;; A write fault on a block-map entry without the writable capability is
+      ;; an access violation, not a request to populate the page.  In
+      ;; particular, do this check before the zero-fill fast path: that path
+      ;; can otherwise install a read-only PTE and report the write fault as
+      ;; handled, causing an avoidable fault/retry loop.
+      (when (and block-info
+                 writep
+                 (not (block-info-writable-p block-info)))
+        (return-from wait-for-page-fast-path nil))
       ;; GC write barrier.
       ;; If a read-only non-COW page is written to then set the appropriate
       ;; card table entry and make the page writable again.
