@@ -364,15 +364,16 @@ thread's stack if this function is called from normal code."
   (unless (fixnump slot)
     (raise-type-error slot 'fixnum)
     (sys.int::%%unreachable))
-  ;; TODO: Can we be more clever about this using unsigned compares?
-  ;; Probably not, if the size of the object is smaller than the range
-  ;; then that underflows too...
-  (unless (and (not (mezzano.runtime::%fixnum-< slot 0))
-               (mezzano.runtime::%fixnum-< slot (mezzano.compiler::%fast-fixnum--
-                                                 (%object-header-data object)
-                                                 range)))
-    (raise-bounds-range-error object slot range)
-    (sys.int::%%unreachable)))
+  ;; Guard the subtraction before using an unsigned compare.  Once RANGE
+  ;; fits in the object, the upper bound is non-negative and the unsigned
+  ;; comparison folds both 0 <= SLOT and SLOT < UPPER-BOUND into one test.
+  (let ((size (%object-header-data object)))
+    (unless (and (not (mezzano.runtime::%fixnum-< size range))
+                 (mezzano.runtime::%fixnum-<-unsigned
+                  slot
+                  (mezzano.compiler::%fast-fixnum-- size range)))
+      (raise-bounds-range-error object slot range)
+      (sys.int::%%unreachable))))
 
 (declaim (inline %complex-bounds-check))
 (defun %complex-bounds-check (array index dim axis)
