@@ -176,7 +176,7 @@
 
 (defconstant +initial-fpsr/fpcr+ 0)
 ;; Start with interrupts unmasked, EL1, SP_EL0.
-(defconstant +initial-spsr+ #x00000004)
+(defconstant +initial-spsr+ #x00000005)
 
 (defun arch-initialize-thread-state (thread stack-pointer)
   (setf (thread-state-rsp thread) stack-pointer
