@@ -131,7 +131,13 @@
                    (make-instance 'lexical-variable
                                   :inherit form
                                   :name (gensym "REST")
-                                  :definition-point *current-lambda*))))
+                                  :definition-point *current-lambda*)))
+         (key-count (if (lexical-variable-p count)
+                        count
+                        (make-instance 'lexical-variable
+                                       :inherit form
+                                       :name (gensym "COUNT")
+                                       :definition-point *current-lambda*))))
     (labels ((bind-variable (name value)
                (list name
                      (wrap-type-check name (ast value form))))
@@ -149,14 +155,16 @@
       (ast `(let (,@(mapcar (lambda (x) (list x '(quote nil))) values)
                   ,@(mapcar (lambda (x) (list x '(quote nil))) suppliedp)
                   ,@(unless (lexical-variable-p original-rest)
-                      (list (list rest `(call symbol-value (quote ,original-rest))))))
+                      (list (list rest `(call symbol-value (quote ,original-rest)))))
+                  ,@(unless (lexical-variable-p count)
+                      (list (list key-count `(call symbol-value (quote ,count))))))
               (progn
                 ;; No processing at all if the list is empty.
                 ;; This is needed to get the list length evenness check
                 ;; right when optional arguments are not supplied.
                 (if ,rest
                     (progn
-                      ,(emit-even-keyword-check form count)
+                      ,(emit-even-keyword-check form key-count)
                       ,@(unless allow-other-keys
                           (list (emit-key-correctness-check keys rest)))
                       ,@(loop
@@ -242,8 +250,6 @@
 (defmethod lower-keyword-arguments-1 ((form lambda-information))
   (let ((*current-lambda* form))
     (when (lambda-information-enable-keys form)
-      ;; TODO: If &REST or &COUNT are special, they should be lowered to
-      ;; lexicals and those lexicals used for the &KEY processing.
       (unless (lambda-information-count-arg form)
         ;; Add in a &COUNT arg.
         (setf (lambda-information-count-arg form)

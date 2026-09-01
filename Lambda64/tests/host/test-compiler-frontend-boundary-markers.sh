@@ -8,7 +8,6 @@ import sys
 root = Path(sys.argv[1])
 checks = {
     "0042": ("compiler/compiler.lisp", 'TODO: cannot compile functions defined outside the null lexical environment.'),
-    "0054": ("compiler/keyword-arguments.lisp", "TODO: If &REST or &COUNT are special"),
     "0068": ("compiler/type-check.lisp", "TODO: Make this more efficient. Save values a la M-V-P1"),
 }
 for ident, (rel, marker) in checks.items():
@@ -22,6 +21,7 @@ for ident, (rel, marker) in checks.items():
 
 resolved = {
     "0049": ("compiler/cross-compile.lisp", "TODO: Promote as appropriate."),
+    "0054": ("compiler/keyword-arguments.lisp", "TODO: If &REST or &COUNT are special"),
 }
 for ident, (rel, legacy_marker) in resolved.items():
     src = (root / rel).read_text()
