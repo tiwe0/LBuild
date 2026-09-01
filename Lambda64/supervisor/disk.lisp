@@ -246,9 +246,16 @@
 (defun disk-read (disk lba n-sectors buffer)
   "Synchronously read N-SECTORS sectors of data to BUFFER from DISK at sector offset LBA.
 Returns true on success; false and an error on failure."
-  (let ((request (make-disk-request)))
-    (disk-submit-request request disk :read lba n-sectors buffer)
-    (disk-await-request request)))
+  ;; During cold boot the pager and disk worker are not available yet.  The
+  ;; paging-disk probe already owns a wired physical buffer, so invoke the
+  ;; driver directly instead of allocating a request and waiting on a queue
+  ;; that cannot be serviced yet.
+  (if (and (boundp 'mezzano.supervisor::*pager-disk-request*)
+           (null mezzano.supervisor::*pager-disk-request*))
+      (funcall (disk-read-fn disk) (disk-device disk) lba n-sectors buffer)
+      (let ((request (make-disk-request)))
+        (disk-submit-request request disk :read lba n-sectors buffer)
+        (disk-await-request request))))
 
 (defun disk-write (disk lba n-sectors buffer)
   "Synchronously write N-SECTORS sectors of data from BUFFER to DISK at sector offset LBA.

@@ -107,29 +107,47 @@
   "Read a block from the disk, returning a freshly allocated page containing
 the data. Free the page with FREE-PAGE when done."
   (let ((page (allocate-page "Disk block")))
-    ;; This is only used during boot to read the freelist & block map, so
-    ;; reusing *PAGER-DISK-REQUEST* is ok.
-    (disk-submit-request *pager-disk-request*
-                         *paging-disk*
-                         :read
+    ;; During cold boot the request object is intentionally deferred until
+    ;; paging is initialized.  The buffer is already wired, so read it
+    ;; directly through the disk driver in that narrow bootstrap window.
+    (if (and (boundp '*pager-disk-request*)
+             (null *pager-disk-request*))
+        (unless (funcall (disk-read-fn *paging-disk*)
+                         (disk-device *paging-disk*)
                          (* block-id (ceiling +4k-page-size+ (disk-sector-size *paging-disk*)))
                          (ceiling +4k-page-size+ (disk-sector-size *paging-disk*))
                          page)
-    (unless (disk-await-request *pager-disk-request*)
-      (panic "Unable to read page from disk"))
+          (panic "Unable to read page from disk"))
+        (progn
+          (disk-submit-request *pager-disk-request*
+                               *paging-disk*
+                               :read
+                               (* block-id (ceiling +4k-page-size+ (disk-sector-size *paging-disk*)))
+                               (ceiling +4k-page-size+ (disk-sector-size *paging-disk*))
+                               page)
+          (unless (disk-await-request *pager-disk-request*)
+            (panic "Unable to read page from disk"))))
     page))
 
 (defconstant +image-header-block-map+ 96)
 (defconstant +image-header-freelist+ 104)
 
 (defun initialize-paging-system ()
-  (with-rw-lock-write (*vm-lock*)
-    (cond ((boot-option +boot-option-freestanding+)
-           (initialize-freestanding-paging-system))
-          (t
-           (detect-paging-disk)
-           (when (not *paging-disk*)
-             (panic "Could not find boot device. Sorry."))))))
+  ;; The cold bootstrap creates VM-LOCK after the backend is discovered to
+  ;; avoid allocating its wired wait queues before the pager can service GC.
+  (if (or (not (boundp '*vm-lock*))
+          (null *vm-lock*))
+      (initialize-paging-system-1)
+      (with-rw-lock-write (*vm-lock*)
+        (initialize-paging-system-1))))
+
+(defun initialize-paging-system-1 ()
+  (cond ((boot-option +boot-option-freestanding+)
+         (initialize-freestanding-paging-system))
+        (t
+         (detect-paging-disk)
+         (when (not *paging-disk*)
+           (panic "Could not find boot device. Sorry.")))))
 
 (defun initialize-freestanding-paging-system ()
   (setf *paging-disk* :freestanding
@@ -1117,7 +1135,7 @@ It will put the thread to sleep, while it waits for the page."
         (push-run-queue sys.int::*pager-thread*)))
     (%reschedule-via-interrupt interrupt-frame)))
 
-(defun initialize-pager (&optional defer-request-latch-p defer-vm-lock-p)
+(defun initialize-pager (&optional defer-request-latch-p defer-vm-lock-p defer-dirty-bits-p defer-request-object-p)
   (setf *bml4* (sys.int::memref-signed-byte-64 (+ *boot-information-page* +boot-information-block-map+)))
   (when (not (boundp '*pager-waiting-threads*))
     (setf *pager-noisy* nil
@@ -1139,12 +1157,19 @@ It will put the thread to sleep, while it waits for the page."
   ;; The request latch is a general-area event.  On the first boot the
   ;; allocator is not usable until pager setup has completed, so leave it
   ;; empty and let the bootstrap entry point fill it afterwards.
-  (setf *pager-disk-request* (make-disk-request defer-request-latch-p))
+  (setf *pager-disk-request*
+        (unless defer-request-object-p
+          (make-disk-request defer-request-latch-p)))
   ;; The VM lock is recreated each boot because it is only held by
   ;; the ephemeral pager & snapshot threads or by threads that have
   ;; inhibited snapshot (just callers of MAP-PHYSICAL-MEMORY).
   (unless defer-vm-lock-p
     (setf *vm-lock* (make-rw-lock '*vm-lock*)))
+  (unless defer-dirty-bits-p
+    (initialize-pager-dirty-bits)))
+
+(defun initialize-pager-dirty-bits ()
+  "Mark wired pages dirty after page tables and the paging backend exist."
   ;; Set all the dirty bits for wired pages. They were not saved over snapshot.
   (map-ptes
    sys.int::*wired-area-base* sys.int::*wired-area-bump*

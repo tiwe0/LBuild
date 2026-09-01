@@ -114,7 +114,10 @@
         *cons-area-expansion-granularity* sys.int::+allocation-minimum-alignment+
         sys.int::*wired-stack-free-regions* nil
         sys.int::*stack-free-regions* nil
-        *allocator-lock* (mezzano.supervisor:make-mutex "Allocator")
+        ;; The allocator mutex itself is a wired object.  Creating it here
+        ;; can exhaust the cold wired area before the pager exists, force a
+        ;; GC, and deadlock in a pager RPC.  The bootstrap entry point installs
+        ;; it after the paging backend is ready.
         *allocation-fudge* (* 8 1024 1024)
         sys.int::*generation-size-ratio* 2)
   (setf mezzano.supervisor::*dma-buffer-virtual-address-bump* #x0000204000000000))

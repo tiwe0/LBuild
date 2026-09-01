@@ -728,7 +728,11 @@ not and WAIT-P is false."
     (setf (thread-symbol-cache thread i) (sys.int::%symbol-binding-cache-sentinel))))
 
 (defun initialize-threads (&optional defer-pending-queues-p)
-  (when (not (boundp '*global-thread-lock*))
+  ;; A cold image can contain bound-but-stale thread globals after
+  ;; serialization.  On first boot (identified by DEFER-PENDING-QUEUES-P),
+  ;; rebuild the complete scheduler state instead of trusting BOUNDP.
+  (when (or defer-pending-queues-p
+            (not (boundp '*global-thread-lock*)))
     ;; First-run stuff.
     (setf *global-thread-lock* :unlocked)
     (setf *supervisor-priority-run-queue* (make-run-queue :supervisor)

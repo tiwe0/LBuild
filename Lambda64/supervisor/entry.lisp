@@ -163,7 +163,11 @@
           *paging-disk* nil)
     (initialize-physical-allocator)
     (initialize-early-video)
-    (when (not (boundp '*boot-id*))
+    ;; A serialized cold image may leave BOOT-ID bound to a non-event object.
+    ;; Treat that state as an uninitialized first boot; relying on BOUNDP alone
+    ;; incorrectly selected the warm-boot path and reused stale thread queues.
+    (when (or (not (boundp '*boot-id*))
+              (not (event-p *boot-id*)))
       (setf first-run-p t)
       (mezzano.runtime::first-run-initialize-allocator)
       ;; These globals are intentionally reset at first supervisor boot. The
@@ -171,6 +175,11 @@
       ;; moving this reset would require extending the generated-image ABI.
       (setf (sys.int::symbol-global-value 'mezzano.runtime::*active-catch-handlers*) 'nil
             (sys.int::symbol-global-value '*pseudo-atomic*) nil
+            ;; Cold-image global cells are not guaranteed to retain their
+            ;; DEFGLOBAL initializer across image serialization.  A stale
+            ;; thread object here makes CALL-WITH-PSEUDO-ATOMIC believe the
+            ;; world is already stopped during first boot.
+            (sys.int::symbol-global-value '*world-stopper*) nil
             sys.int::*known-finalizers* nil
             ;; Paging setup uses WITH-SNAPSHOT-INHIBITED before
             ;; INITIALIZE-SNAPSHOT runs.  Seed the counter with the boot-time
@@ -204,32 +213,36 @@
     ;; The first boot has no pager yet; defer the two contention-only wait
     ;; queues until after paging is initialized.
     (initialize-threads first-run-p)
-    (initialize-sync first-run-p)
     ;; Disk queue and request events allocate general-area vectors.  Defer
     ;; those objects on the first boot until initialize-pager has established
     ;; the paging path.
     ;; The allocator can now grow during bootstrap, so publish the queue
     ;; latch before any disk worker can enter POP-DISK-REQUEST.
     (initialize-disk first-run-p)
-    (initialize-pager first-run-p first-run-p)
+    (initialize-pager first-run-p first-run-p first-run-p first-run-p)
+    ;; Publish synchronization objects before interrupts are enabled.  Normal
+    ;; allocations then have valid pseudo-atomic queues and VM/allocator locks.
     (when (null *disk-request-queue-latch*)
       (setf *disk-request-queue-latch*
             (make-event :name "Disk request queue notifier")))
-    ;; The disk worker was intentionally held asleep until the pager and its
-    ;; queue latch became available on a cold boot.
+    (when (and (boundp '*pager-disk-request*)
+               (null *pager-disk-request*))
+      (setf *pager-disk-request* (make-disk-request)))
     (when first-run-p
       (wake-thread sys.int::*disk-io-thread*))
-    (when (and (boundp '*pager-disk-request*)
-               (null (disk-request-latch *pager-disk-request*)))
-      (setf (disk-request-latch *pager-disk-request*)
-            (make-event :name "Disk request notifier")))
+    (when (and first-run-p
+               (not (boundp 'mezzano.runtime::*allocator-lock*)))
+      (setf mezzano.runtime::*allocator-lock*
+            (make-mutex "Allocator")))
     (when (or (not (boundp '*vm-lock*))
               (null *vm-lock*))
       (setf *vm-lock* (make-rw-lock '*vm-lock*)))
-    (when (null *pending-world-stoppers*)
-      (setf *pending-world-stoppers* (make-wait-queue :name '*pending-world-stoppers*)
-            *pending-pseudo-atomics* (make-wait-queue :name '*pending-pseudo-atomics*)))
-    (initialize-snapshot)
+    (when (or (null *pending-world-stoppers*)
+              (null *pending-pseudo-atomics*))
+      (setf *pending-world-stoppers* (or *pending-world-stoppers*
+                                         (make-wait-queue :name '*pending-world-stoppers*))
+            *pending-pseudo-atomics* (or *pending-pseudo-atomics*
+                                         (make-wait-queue :name '*pending-pseudo-atomics*))))
     (%enable-interrupts)
     ;;(debug-set-output-pseudostream #'debug-video-stream)
     ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
@@ -246,6 +259,14 @@
     (when (not (boot-option +boot-option-no-detect+))
       (detect-disk-partitions))
     (initialize-paging-system)
+    (initialize-snapshot)
+    ;; INITIALIZE-SYNC creates mutex-backed watcher pools.  On a cold boot,
+    ;; doing that before the paging backend exists can exhaust wired space,
+    ;; enter GC, and deadlock in a pager RPC.  Warm boots retain the original
+    ;; no-op behavior because FIRST-RUN-P is false there.
+    (initialize-sync first-run-p)
+    (when first-run-p
+      (initialize-pager-dirty-bits))
     (when (not (boot-option +boot-option-no-smp+))
       (boot-secondary-cpus))
     (cond (first-run-p
