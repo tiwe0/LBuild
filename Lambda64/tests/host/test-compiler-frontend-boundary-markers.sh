@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 root = Path(sys.argv[1])
 checks = {
-    "0042": ("compiler/compiler.lisp", 'TODO: cannot compile functions defined outside the null lexical environment.'),
     "0068": ("compiler/type-check.lisp", "TODO: Make this more efficient. Save values a la M-V-P1"),
 }
 for ident, (rel, marker) in checks.items():
@@ -20,6 +19,7 @@ for ident, (rel, marker) in checks.items():
             raise SystemExit(f"TF-WI-{ident} metadata missing: {token}")
 
 resolved = {
+    "0042": ("compiler/compiler.lisp", 'TODO: cannot compile functions defined outside the null lexical environment.'),
     "0049": ("compiler/cross-compile.lisp", "TODO: Promote as appropriate."),
     "0054": ("compiler/keyword-arguments.lisp", "TODO: If &REST or &COUNT are special"),
 }
@@ -35,7 +35,7 @@ for ident, (rel, legacy_marker) in resolved.items():
 # Mutation-aware guards: retain the safety boundary until the corresponding
 # ABI/effect metadata exists, and prevent accidental weakening of it.
 compiler = (root / "compiler/compiler.lisp").read_text()
-if "(when env" not in compiler or "(error \"TODO: cannot compile functions defined outside" not in compiler:
+if "(when env" not in compiler or "captured bindings are not representable by the target closure ABI" not in compiler:
     raise SystemExit("TF-WI-0042 lexical-environment rejection contract missing")
 if "(pass1-lambda lambda env)" not in compiler or "(defun compile-lambda (lambda &optional env" not in compiler:
     raise SystemExit("TF-WI-0042 explicit project-environment API contract missing")

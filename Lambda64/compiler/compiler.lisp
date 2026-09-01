@@ -135,7 +135,7 @@ Currently disabled by default as it has a severe performance impact.")
         (when (null lambda-expression)
           (error "No source information available for ~S." definition))
         (when env
-          (error "TODO: cannot compile functions defined outside the null lexical environment."))
+          (error "Cannot compile functions defined outside the null lexical environment; captured bindings are not representable by the target closure ABI."))
         (setf definition lambda-expression)))
     (with-compilation-unit ()
       (multiple-value-bind (fn warnings-p errors-p)
