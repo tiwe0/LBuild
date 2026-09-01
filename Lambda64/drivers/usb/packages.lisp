@@ -36,6 +36,7 @@
    :usb-device-drivers
    :usb-device-max-packet
    :usb-device-desc-size
+   :device-control-event
 
    :create-device
    :delete-device
