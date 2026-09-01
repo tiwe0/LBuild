@@ -34,6 +34,21 @@
         (env:make-stack environment (* 128 1024)))
   (setf (env:cross-symbol-value environment 'mezzano.supervisor::*bsp-cpu*)
         (env:make-structure environment 'mezzano.supervisor::arm64-cpu))
+  ;; Early boot can fall back from the TLAB fast path into the general
+  ;; allocator before FIRST-RUN-INITIALIZE-ALLOCATOR runs.  Provide the lock
+  ;; object that those wired-allocation paths expect instead of leaving its
+  ;; DEFGLOBAL value cell unbound.
+  (setf (env:cross-symbol-value environment 'mezzano.runtime::*allocator-lock*)
+        (env:make-structure environment
+                            'mezzano.supervisor::mutex
+                            :name "Allocator"
+                            :%lock :unlocked
+                            :head nil
+                            :tail nil
+                            :owner nil
+                            :state :unlocked
+                            :stack-next nil
+                            :contested-count 0))
   (setf (env:cross-symbol-value environment 'mezzano.supervisor::*arm64-exception-vector*)
         (env:compile-lap environment
                          (loop repeat (/ (+ 2048 +exception-vector-alignment+) 8) ; for alignment
@@ -118,7 +133,48 @@
            (env:translate-symbol environment
                                  'mezzano.supervisor::*arm64-exception-vector-base*))
           ex-vec-base))
+  ;; The allocator reads this global while the supervisor is still bringing
+  ;; up the first CPU, before the regular Lisp root set is reachable.  A
+  ;; DEFGLOBAL declaration alone does not guarantee that the cold environment
+  ;; has a bound value cell, so seed it explicitly with NIL here.
+  (let ((gc-in-progress (env:translate-symbol environment
+                                               'sys.int::*gc-in-progress*)))
+    (setf (env:symbol-global-value environment gc-in-progress) nil))
+  ;; The fast allocation path also checks the runtime profiling switch before
+  ;; it checks GC state.  DEFGLOBAL leaves an unbound cell in a fresh cold
+  ;; environment, which would turn the first allocation into an unbound-symbol
+  ;; panic.  Seed the switch to its disabled default as well.
+  (let ((allocation-profiling (env:translate-symbol
+                               environment
+                               'mezzano.runtime::*enable-allocation-profiling*)))
+    (setf (env:symbol-global-value environment allocation-profiling) nil))
+  ;; Wired allocation checks WORLD-STOPPER while no scheduler thread exists;
+  ;; the supervisor's DEFGLOBAL must therefore start out explicitly NIL.
+  (let ((world-stopper (env:translate-symbol
+                        environment
+                        'mezzano.supervisor::*world-stopper*)))
+    (setf (env:symbol-global-value environment world-stopper) nil))
+  ;; Fast allocation probes these counters and limits before the first-run
+  ;; allocator reset.  Give them the same zero baseline that
+  ;; FIRST-RUN-INITIALIZE-ALLOCATOR installs; otherwise the first probe sees
+  ;; an unbound value cell instead of taking the slow path.
+  (dolist (name '(sys.int::*general-area-young-gen-bump*
+                  sys.int::*general-area-young-gen-limit*
+                  sys.int::*cons-area-young-gen-bump*
+                  sys.int::*cons-area-young-gen-limit*
+                  sys.int::*young-gen-newspace-bit-raw*))
+    (setf (env:symbol-global-value environment
+                                   (env:translate-symbol environment name))
+          0))
   (dolist (name '(mezzano.supervisor::*arm64-exception-vector-base*
+                  sys.int::*gc-in-progress*
+                  mezzano.runtime::*enable-allocation-profiling*
+                  sys.int::*general-area-young-gen-bump*
+                  sys.int::*general-area-young-gen-limit*
+                  sys.int::*cons-area-young-gen-bump*
+                  sys.int::*cons-area-young-gen-limit*
+                  sys.int::*young-gen-newspace-bit-raw*
+                  mezzano.supervisor::*world-stopper*
                   mezzano.supervisor::*bsp-cpu*
                   mezzano.supervisor::*bsp-wired-stack*
                   mezzano.supervisor::*n-up-cpus*
@@ -163,6 +219,14 @@
       ;; every symbol/string reachable from the name; serialize their fref and
       ;; concrete function body directly.
       (if (member name '(mezzano.supervisor::*arm64-exception-vector-base*
+                         sys.int::*gc-in-progress*
+                         mezzano.runtime::*enable-allocation-profiling*
+                         sys.int::*general-area-young-gen-bump*
+                         sys.int::*general-area-young-gen-limit*
+                         sys.int::*cons-area-young-gen-bump*
+                         sys.int::*cons-area-young-gen-limit*
+                         sys.int::*young-gen-newspace-bit-raw*
+                         mezzano.supervisor::*world-stopper*
                          mezzano.supervisor::*bsp-cpu*
                          mezzano.supervisor::*bsp-wired-stack*
                          mezzano.supervisor::*n-up-cpus*

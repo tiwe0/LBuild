@@ -674,6 +674,15 @@
                                                                                             (endp (rest initform))
                                                                                             (string= (symbol-name (first initform)) "%SYMBOL-BINDING-CACHE-SENTINEL"))
                                                                                        (find-special environment :symbol-binding-cache-sentinel))
+                                                                                      ;; PLACE-SPINLOCK-INITIALIZER is a target-only
+                                                                                      ;; helper.  Its cold value is the keyword
+                                                                                      ;; :UNLOCKED; evaluating the form on the host
+                                                                                      ;; would signal an undefined-function warning.
+                                                                                      ((and (consp initform)
+                                                                                            (symbolp (first initform))
+                                                                                            (endp (rest initform))
+                                                                                            (string= (symbol-name (first initform)) "PLACE-SPINLOCK-INITIALIZER"))
+                                                                                       :unlocked)
                                                                                       (t
                                                                                        ;; Ehhhhhhhhhhhhhhhhh.
                                                                                        (eval initform)))))
