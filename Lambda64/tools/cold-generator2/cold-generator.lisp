@@ -607,7 +607,7 @@
     "supervisor/entry.lisp"
     "supervisor/physical.lisp"
     ("supervisor/x86-64/cpu.lisp" :x86-64)
-    ;;"supervisor/arm64/cpu.lisp" fixme
+    ("supervisor/arm64/cpu.lisp" :arm64)
     "supervisor/support.lisp"
     "runtime/struct.lisp"
     "runtime/array.lisp"
