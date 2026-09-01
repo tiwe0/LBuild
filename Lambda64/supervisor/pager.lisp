@@ -711,7 +711,11 @@ mapped, then the entry will be NIL."
   (check-tlb-shootdown-not-in-progress)
   (let ((frame (allocate-physical-pages 1 :type new-type)))
     (when (not frame)
-      ;; TODO: Purge empty page table levels.
+      ;; Empty page-table-level reclamation is intentionally not attempted
+      ;; here.  The allocator runs under the VM write lock, while level pages
+      ;; participate in TLB shootdowns and may be shared by adjacent mappings;
+      ;; safe reclamation needs parent metadata and a deferred shootdown-aware
+      ;; free path that this allocator does not provide yet.
       #+(or)(debug-print-line "Pager out of memory, preparing to SWAP!")
       (when *paging-read-only*
         (panic "Out of memory when running read-only."))
