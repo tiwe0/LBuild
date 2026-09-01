@@ -362,40 +362,50 @@
                    `(lap:br :x9)
                    args-ok)
              (emit-gc-info :incoming-arguments :rcx)))
-      ;; FIXME: Support more than 2047 arguments (subs immediate limit).
+      ;; Argument counts are tagged fixnums.  Keep the compact immediate form
+      ;; when it fits, but materialize larger counts in a scratch register;
+      ;; SUBS accepts only a 12-bit immediate on ARM64.
+      (flet ((emit-count-sub (destination source count)
+               (let ((raw-count (c::fixnum-to-raw count)))
+                 (if (<= -4095 raw-count 4095)
+                     (emit `(lap:subs ,destination ,source ,raw-count))
+                     (progn
+                       (load-literal :x10 raw-count)
+                       (emit `(lap:subs ,destination ,source :x10))))))
+        (declare (inline emit-count-sub))
       (cond ((ir:argument-setup-rest instruction)
              ;; If there are no required parameters, then don't generate a lower-bound check.
              (when (ir:argument-setup-required instruction)
                ;; Minimum number of arguments.
-               (emit `(lap:subs :xzr :x5 ,(c::fixnum-to-raw
-                                           (length (ir:argument-setup-required instruction))))
-                     `(lap:b.ge ,args-ok))
+               (emit-count-sub :xzr :x5
+                               (length (ir:argument-setup-required instruction)))
+               (emit `(lap:b.ge ,args-ok))
                (emit-arg-error)))
             ((and (ir:argument-setup-required instruction)
                   (ir:argument-setup-optional instruction))
              ;; A range.
-             (emit `(lap:sub :x9 :x5 ,(c::fixnum-to-raw
-                                       (length (ir:argument-setup-required instruction))))
-                   `(lap:subs :xzr :x9 ,(c::fixnum-to-raw
-                                         (length (ir:argument-setup-optional instruction))))
-                   `(lap:b.ls ,args-ok))
+             (let ((required (length (ir:argument-setup-required instruction)))
+                   (optional (length (ir:argument-setup-optional instruction))))
+               (emit-count-sub :x9 :x5 required)
+               (emit-count-sub :xzr :x9 optional)
+               (emit `(lap:b.ls ,args-ok)))
              (emit-arg-error))
             ((ir:argument-setup-optional instruction)
              ;; Maximum number of arguments.
-             (emit `(lap:subs :xzr :x5 ,(c::fixnum-to-raw
-                                         (length (ir:argument-setup-optional instruction))))
-                   `(lap:b.ls ,args-ok))
+             (emit-count-sub :xzr :x5
+                             (length (ir:argument-setup-optional instruction)))
+             (emit `(lap:b.ls ,args-ok))
              (emit-arg-error))
             ((ir:argument-setup-required instruction)
              ;; Exact number of arguments.
-             (emit `(lap:subs :xzr :x5 ,(c::fixnum-to-raw
-                                         (length (ir:argument-setup-required instruction))))
-                   `(lap:b.eq ,args-ok))
+             (emit-count-sub :xzr :x5
+                             (length (ir:argument-setup-required instruction)))
+             (emit `(lap:b.eq ,args-ok))
              (emit-arg-error))
             ;; No arguments
             (t
              (emit `(lap:cbz :x5 ,args-ok))
-             (emit-arg-error))))))
+             (emit-arg-error))))))))
 
 (defun emit-dx-rest-list (argument-setup)
   (let* ((regular-argument-count (+ (length (ir:argument-setup-required argument-setup))
