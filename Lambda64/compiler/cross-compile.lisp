@@ -642,7 +642,10 @@
     (sys.int::structure-slot-definition-align slot-definition)))
 
 (defun mezzano.clos:ensure-class (name &rest initargs)
-  (remf initargs :source-location)
+  ;; Preserve source metadata for the cold CLOS bootstrap.  The primordial
+  ;; class converter stores this in the class object for debugger/introspection
+  ;; consumers; hosts that do not accept the optional initarg can still rely on
+  ;; C2MOP's normal validation below.
   (apply #'c2mop:ensure-class name initargs))
 
 (defun sys.int::known-declaration-p (declaration)
