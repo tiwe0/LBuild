@@ -228,26 +228,55 @@
   (incf *store-freelist-n-free-blocks* n-blocks)
   (store-insert-range start n-blocks t))
 
-;; TODO: Be smarter here, check for overlaps in the deferred list and the main freelist.
 (defun store-deferred-free (start n-blocks)
   (ensure (not (eql start sys.int::+block-map-id-lazy+)) "Tried to free lazy block.")
   (ensure (rw-lock-write-held-p *vm-lock*) "*VM-LOCK* must be held when freeing store.")
+  (ensure (plusp n-blocks) "Tried to defer an empty store range.")
   (store-maybe-refill-metadata)
   ;;(debug-print-line "Deferred store free " start " " n-blocks)
   (let ((end (+ start n-blocks)))
-    ;; FIXME: This should be a sorted list, like the normal freelist!
-    (do ((range *store-deferred-freelist-head* (freelist-metadata-next range)))
-        ((null range)
-         (let ((e (freelist-alloc-metadata start (+ start n-blocks) t)))
-           (incf *store-freelist-n-deferred-free-blocks* n-blocks)
-           (setf (freelist-metadata-next e) *store-deferred-freelist-head*
-                 *store-deferred-freelist-head* e)))
-      (when (eql (freelist-metadata-start range) end)
-        (setf (freelist-metadata-start range) start)
-        (return))
-      (when (eql (freelist-metadata-end range) start)
-        (setf (freelist-metadata-end range) end)
-        (return)))))
+    ;; Deferred entries are kept sorted by start, and adjacent entries are
+    ;; coalesced.  A deferred range is still represented as allocated in the
+    ;; main freelist, so only overlap with a *free* main range is invalid.
+    (do ((range *store-freelist-head* (freelist-metadata-next range)))
+        ((null range))
+      (when (and (freelist-metadata-free-p range)
+                 (< (freelist-metadata-start range) end)
+                 (< start (freelist-metadata-end range)))
+        (panic "Tried to defer a range overlapping the free store: " start "-" end)))
+    (let ((before nil)
+          (after nil)
+          (previous nil)
+          (range *store-deferred-freelist-head*))
+      (do ()
+          ((null range))
+        (let ((range-start (freelist-metadata-start range))
+              (range-end (freelist-metadata-end range)))
+          (when (and (< range-start end) (< start range-end))
+            (panic "Tried to defer an overlapping range: " start "-" end))
+          (cond ((eql range-end start) (setf before range))
+                ((eql range-start end) (setf after range)
+                 (return))
+                ((> range-start end) (return))))
+        (setf previous range)
+        (setf range (freelist-metadata-next range)))
+      (incf *store-freelist-n-deferred-free-blocks* n-blocks)
+      (cond
+        ((and before after)
+         (setf (freelist-metadata-end before) (freelist-metadata-end after)
+               (freelist-metadata-next before) (freelist-metadata-next after))
+         (freelist-free-metadata after))
+        (before
+         (setf (freelist-metadata-end before) end))
+        (after
+         (setf (freelist-metadata-start after) start))
+        (t
+         (let ((new (freelist-alloc-metadata start end t)))
+           (if previous
+               (setf (freelist-metadata-next previous) new
+                     (freelist-metadata-next new) range)
+               (setf (freelist-metadata-next new) range
+                     *store-deferred-freelist-head* new))))))))
 
 (defun store-alloc (n-blocks)
   (ensure (rw-lock-write-held-p *vm-lock*) "*VM-LOCK* must be held when allocating store.")
