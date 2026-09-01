@@ -842,7 +842,12 @@ executed, and the offset into it."
      finally (return callers)))
 
 (defun list-callees (function-designator)
-  (let* ((fn (fdefinition function-designator))
+  ;; FUNCTION-DESIGNATOR accepts either a function object or a function name.
+  ;; FDEFINITION only handles names, so resolve function objects directly
+  ;; rather than rejecting an otherwise valid designator.
+  (let* ((fn (if (functionp function-designator)
+                 function-designator
+                 (fdefinition function-designator)))
          ;; Grovel around in the function's constant pool looking for
          ;; function-references.  These may be for #', but they're
          ;; probably going to be for normal calls.
