@@ -1159,7 +1159,9 @@ a pointer to the new object. Leaves a forwarding pointer in place."
         (when new-instance
           ;; This is an obsolete instance. Don't transport it at all,
           ;; instead replace it with the updated instance.
-          ;; FIXME: There's a race-condition here.
+          ;; Concurrency boundary: obsolete-instance forwarding can race with
+          ;; readers that captured the old slot layout. Such accesses must run
+          ;; in a GC restart region; this optimization does not add one.
           ;; If a one thread is accessing an obsolete instance (because it
           ;; was superseded partway through the access) then this will
           ;; update the old instance to point at the new instance and the
@@ -2205,7 +2207,8 @@ No type information will be provided."
                       (error "Internal pointer " address " matches object " offset " with size " size " but is past the end"))
                     (incf offset aligned-size)))
                (return offset))))
-       ;; Entry not found. Go back a card (TODO: should go back a whole bunch of cards.)
+       ;; Sparse card-table fallback: retreat one card and retry. A wider
+       ;; search remains a future optimization because each card is bounded.
        (decf current-address +card-size+))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)

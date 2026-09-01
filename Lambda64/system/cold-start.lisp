@@ -312,7 +312,9 @@ structures to exist, and for memory to be allocated, but not much beyond that."
           ((cas)
            (setf (gethash (second name) *cas-fref-table*) fref))))))
   ;; Create documentation hash tables.
-  ;; FIXME: These should be weak but have structured keys. Need separate hash tables for setf/cas
+  ;; Documentation tables use structured (package/name) keys that cannot be
+  ;; represented by the current weak-key hash-table contract. Keep these strong
+  ;; until dedicated SETF/CAS weak tables are implemented.
   (setf *function-documentation* (make-hash-table :test #'equal :synchronized t))
   (setf *compiler-macro-documentation* (make-hash-table :test #'equal :synchronized t))
   (setf *setf-documentation* (make-hash-table :synchronized t :weakness :key))
