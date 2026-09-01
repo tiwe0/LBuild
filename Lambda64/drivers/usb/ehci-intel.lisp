@@ -295,18 +295,22 @@
 (defconstant +ehci-phys-memory-pages+ 8)
 
 (defun wait-for-async-doorbell (ehci)
-  ;; TODO - waiting holding the mutex is rude, find a better method
+  ;; Request and acknowledge the doorbell under the controller mutex, but do
+  ;; not hold it while sleeping.  This lets interrupt and teardown paths make
+  ;; progress during the bounded hardware wait.
   (sup:with-mutex ((usbd-lock ehci))
-    (setf (command-reg ehci) (logior #x00000040 (command-reg ehci)))
-    (loop
-       for time = 0.0 then (+ time 0.01)
-       when (logbitp 5 (status-reg ehci)) do
-         (setf (status-reg ehci) #x00000020)
-         (return)
-       when (> time 1.0) do
-         (error "timeout waiting for the async doorbell ~D" time)
-       do
-         (sleep 0.01))))
+    (setf (command-reg ehci) (logior #x00000040 (command-reg ehci))))
+  (loop
+     for time = 0.0 then (+ time 0.01)
+     when (sup:with-mutex ((usbd-lock ehci))
+            (logbitp 5 (status-reg ehci))) do
+       (sup:with-mutex ((usbd-lock ehci))
+         (setf (status-reg ehci) #x00000020))
+       (return)
+     when (> time 1.0) do
+       (error "timeout waiting for the async doorbell ~D" time)
+     do
+       (sleep 0.01)))
 
 (defun ehci-addr->array (ehci phys-addr)
   (phys-addr->array (logior (phys-addr-high ehci) phys-addr)))

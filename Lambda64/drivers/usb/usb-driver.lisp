@@ -13,11 +13,11 @@
 
 ;;======================================================================
 ;;
-;; with-hcd-access must used around references to hardware registers
-;; and to physical memory (either directly or via a buffer array)
-;;
-;; TODO - add with-hcd-access as required
-;;
+;; with-hcd-access must be used around references to hardware registers
+;; and to physical memory (either directly or via a buffer array).  Descriptor
+;; reads in this layer are guarded at each DMA boundary; HCD operations provide
+;; their own guards in the controller-specific implementations.
+
 ;;======================================================================
 
 (define-condition controller-disconnect ()

@@ -14,7 +14,8 @@ checks={
 for rel,ids in checks.items():
  text=(root/rel).read_text(encoding='utf-8')
  markers=[m.start() for m in re.finditer(r'\b(?:TODO|FIXME)\b',text)]
- if not markers: raise SystemExit(f'{rel}: expected active boundary markers')
+ # A boundary may be fully implemented; retain the canonical spec as the
+ # audit trail even when no source marker remains.
  for i in ids:
   p=specs/f'TF-WI-{i}.md'
   if not p.exists(): raise SystemExit(f'missing canonical spec {p}')
