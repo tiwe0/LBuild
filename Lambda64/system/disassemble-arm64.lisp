@@ -1536,20 +1536,45 @@
                                       (second operand)))
                            (pool-index (truncate (- target (dis:code-end (dis:context-function context))) 8))
                            (label (dis:label context target)))
-                      (when (and (member (inst-opcode instruction) '(a64:ldr))
+                      (when (and (member (inst-opcode instruction) '(a64:ldr a64:ldrsw))
                                  (not (logtest target #b111))
                                  (<= 0 target (dis:code-end (dis:context-function context))))
-                        ;; This is probably in the literal pool. TODO: Use the instruction & register
-                        ;; to determine exactly what type to read
-                        (let ((value (int::%object-ref-unsigned-byte-64-unscaled
-                                      (dis:context-function context)
-                                      (- target 8))))
+                        ;; This is a literal-pool load.  Read the width encoded by
+                        ;; the destination register instead of assuming every LDR is
+                        ;; a 64-bit integer load (W/S are 32-bit, X/D are 64-bit, and
+                        ;; Q spans two 64-bit words).  The function object maps code
+                        ;; offsets to object offsets by subtracting eight bytes.
+                        (let* ((register (first (inst-operands instruction)))
+                               (register-kind (char (symbol-name register) 0))
+                               (width (if (eql (inst-opcode instruction) 'a64:ldrsw)
+                                           32
+                                           (case register-kind
+                                        ((#\w #\s) 32)
+                                        ((#\x #\d) 64)
+                                        (#\q 128)
+                                        (t 64))))
+                               (object (dis:context-function context))
+                               (object-offset (- target 8))
+                               (value (case width
+                                        (32 (int::%object-ref-unsigned-byte-32-unscaled
+                                             object object-offset))
+                                        (64 (int::%object-ref-unsigned-byte-64-unscaled
+                                             object object-offset))
+                                        (128 (logior
+                                              (int::%object-ref-unsigned-byte-64-unscaled
+                                               object object-offset)
+                                              (ash (int::%object-ref-unsigned-byte-64-unscaled
+                                                    object (+ object-offset 8))
+                                                   64)))))
+                               (value (if (eql (inst-opcode instruction) 'a64:ldrsw)
+                                           (int::sign-extend value 32)
+                                           value)))
                           (push (format nil "#x~X" value) annotations)
-                          (push (format nil "~D" (int::sign-extend value 64)) annotations)
-                          (multiple-value-bind (object validp)
-                              (dis:decode-object-from-integer value)
+                          (push (format nil "~D" (int::sign-extend value width)) annotations)
+                          (multiple-value-bind (decoded-object validp)
+                              (dis:decode-object-from-integer value width)
                             (when validp
-                              (push (format nil "'~S" object) annotations)))))
+                              (push (format nil "'~S" decoded-object) annotations)))))
                       (cond
                         ((and print-labels label)
                          (push (format nil "#x~8,'0X" (+ address target)) annotations)

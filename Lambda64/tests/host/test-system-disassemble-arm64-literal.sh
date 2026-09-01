@@ -11,8 +11,12 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = source.index("(defun load-register-literal")
 end = source.index("\n\n(defparameter *load/store-opcodes*", start)
 decoder = source[start:end]
+print_start = source.index("(defmethod dis:print-instruction", end)
+printer = source[print_start:]
 if sys.argv[2]:
-    # Simulate the baseline bug: always decode Rt as X registers.
+    # Simulate the baseline bug: literal-pool annotations always read 64 bits.
+    printer = printer.replace("(int::%object-ref-unsigned-byte-32-unscaled", "(int::%object-ref-unsigned-byte-64-unscaled", 1)
+    # Keep the decoder mutation too, so both contracts remain protected.
     decoder = decoder.replace("(decode-gp32 (ldb +rt+ word))", "(decode-gp64 (ldb +rt+ word))", 1)
 required = [
     "(simd&fp (logbitp +v-bit+ word))",
@@ -23,6 +27,13 @@ required = [
     ":load-register-literal-simd&fp-size",
 ]
 missing = [token for token in required if token not in decoder]
+printer_required = [
+    "register-kind",
+    "%object-ref-unsigned-byte-32-unscaled",
+    "(width (if (eql (inst-opcode instruction) 'a64:ldrsw)",
+    "(ash (int::%object-ref-unsigned-byte-64-unscaled",
+]
+missing.extend(token for token in printer_required if token not in printer)
 if "FIXME: 32-bit and SIMD&FP versions" in decoder:
     missing.append("FIXME marker removal")
 if missing:
