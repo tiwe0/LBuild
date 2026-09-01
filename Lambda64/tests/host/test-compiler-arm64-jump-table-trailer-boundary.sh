@@ -12,9 +12,9 @@ assert 'FIXME: Emit jump table as trailer.' not in source
 for token in ('*jump-tables*', 'Emit NLX dispatch tables after the function body',
               '(lap:adr :x9 ,jump-table)', 'jump-table)', '(:d64/le (- ,(resolve-label target) ,jump-table))'):
     assert token in source, token
-for token in ('no function-level trailer channel', 'flat instruction list',
-              'Minimal implementation design', 'cold serialization',
-              'out-of-range PC-relative references'):
+for token in ('per-function `*jump-tables*`', 'literal pools',
+              'Minimal implementation design', 'cold serializer',
+              'ADR range validation'):
     assert token in spec, token
 PY
 printf 'ARM64 NLX jump-table trailer boundary checks passed\n'
