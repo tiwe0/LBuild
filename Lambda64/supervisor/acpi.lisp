@@ -203,10 +203,12 @@
                (setf xsdt-address (physical-memref-unsigned-byte-64 (+ rsdp-address +acpi-rsdp-xsdt-address-offset+) 0)))
               (t
                (debug-print-line "RSDP failed extended checksum?")))))
-    ;; Read OEMID. (FIXME: Read as string here, not a vector of bytes.)
-    (let ((oemid (sys.int::make-simple-vector 6 :wired)))
+    ;; Read the fixed-width six-byte OEMID as a wired string.
+    (let ((oemid (mezzano.runtime::make-wired-string 6)))
       (dotimes (i 6)
-        (setf (svref oemid i) (physical-memref-unsigned-byte-8 (+ rsdp-address +acpi-rsdp-oemid-offset+) i)))
+        (setf (char oemid i)
+              (code-char (physical-memref-unsigned-byte-8
+                          (+ rsdp-address +acpi-rsdp-oemid-offset+) i))))
       (make-acpi-rsdp :oemid oemid
                       :revision revision
                       :rsdt-address (physical-memref-unsigned-byte-32 (+ rsdp-address +acpi-rsdp-rsdt-address-offset+) 0)
