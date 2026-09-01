@@ -1292,22 +1292,32 @@
                                                                       sys.int::+tag-cons+))))))
 
 (defmethod lap-prepass (backend-function (instruction ir:make-dx-closure-instruction) uses defs)
-  (setf (gethash instruction *prepass-data*) (allocate-stack-slots 4 :aligned t)))
+  (setf (gethash instruction *prepass-data*)
+        (allocate-stack-slots (+ 1 2 (length (ir:make-dx-closure-environment-operands instruction)))
+                              :aligned t)))
 
 (defmethod emit-lap (backend-function (instruction ir:make-dx-closure-instruction) uses defs)
-  (let ((slots (gethash instruction *prepass-data*)))
-    (emit `(lap:lea64 :rax (:stack ,(+ slots 4 -1)))
+  (let* ((slots (gethash instruction *prepass-data*))
+         ;; (make-dx-closure-environment instruction) is accepted for legacy
+         ;; callers; normalize it to the descriptor below.
+         (environments (ir:make-dx-closure-environment-operands instruction))
+         (size (+ 2 (length environments))))
+    (emit `(lap:lea64 :rax (:stack ,(+ slots size -1)))
           ;; Closure tag and size.
-          `(lap:mov64 (:rax) ,(logior (ash 3 sys.int::+object-data-shift+)
+          `(lap:mov64 (:rax) ,(logior (ash size sys.int::+object-data-shift+)
                                       (ash sys.int::+object-tag-closure+
                                            sys.int::+object-type-shift+)))
           ;; Entry point is CODE's entry point.
           `(lap:mov64 :rcx (:object ,(ir:make-dx-closure-function instruction) 0))
           `(lap:mov64 (:rax 8) :rcx))
     (emit `(lap:lea64 ,(ir:make-dx-closure-result instruction) (:rax ,sys.int::+tag-object+)))
-    ;; Initiaize constant pool.
+    ;; Initialize constant pool. Slot 2 is the legacy environment operand;
+    ;; additional descriptor entries follow it for arbitrary environments.
     (emit `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 1) ,(ir:make-dx-closure-function instruction))
-          `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 2) ,(ir:make-dx-closure-environment instruction)))))
+          `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) 2) ,(first environments))
+          ,@(loop for environment in (rest environments)
+                  for index from 3
+                  collect `(lap:mov64 (:object ,(ir:make-dx-closure-result instruction) ,index) ,environment)))))
 
 (defmethod emit-lap (backend-function (instruction ir:box-fixnum-instruction) uses defs)
   (emit `(lap:lea64 ,(ir:box-destination instruction) (,(ir:box-source instruction) ,(ir:box-source instruction)))))

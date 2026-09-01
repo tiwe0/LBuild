@@ -952,15 +952,22 @@
 (defmethod instruction-pure-p ((instruction make-dx-cons-instruction))
   t)
 
-;; TODO: Support arbitrary environments.
 (defclass make-dx-closure-instruction (backend-instruction)
   ((%result :initarg :result :accessor make-dx-closure-result)
    (%function :initarg :function :accessor make-dx-closure-function)
    (%environment :initarg :environment :accessor make-dx-closure-environment)))
 
+;; ENVIRONMENT historically was a single environment register.  Keep that
+;; representation as the fast path, but also accept a descriptor (a proper
+;; list of environment registers).  A descriptor is emitted into consecutive
+;; closure slots, with the first entry retaining the legacy slot-2 meaning.
+(defun make-dx-closure-environment-operands (instruction)
+  (let ((environment (make-dx-closure-environment instruction)))
+    (if (listp environment) environment (list environment))))
+
 (defmethod instruction-inputs ((instruction make-dx-closure-instruction))
-  (list (make-dx-closure-function instruction)
-        (make-dx-closure-environment instruction)))
+  (cons (make-dx-closure-function instruction)
+        (make-dx-closure-environment-operands instruction)))
 
 (defmethod instruction-outputs ((instruction make-dx-closure-instruction))
   (list (make-dx-closure-result instruction)))
@@ -968,7 +975,11 @@
 (defmethod replace-all-registers ((instruction make-dx-closure-instruction) substitution-function)
   (setf (make-dx-closure-result instruction) (funcall substitution-function (make-dx-closure-result instruction)))
   (setf (make-dx-closure-function instruction) (funcall substitution-function (make-dx-closure-function instruction)))
-  (setf (make-dx-closure-environment instruction) (funcall substitution-function (make-dx-closure-environment instruction))))
+  (setf (make-dx-closure-environment instruction)
+        (let ((environment (make-dx-closure-environment instruction)))
+          (if (listp environment)
+              (mapcar substitution-function environment)
+              (funcall substitution-function environment)))))
 
 (defmethod print-instruction ((instruction make-dx-closure-instruction))
   (format t "   ~S~%"

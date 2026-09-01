@@ -1308,23 +1308,34 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
     (emit `(lap:add ,(ir:make-dx-cons-result instruction) :x29 :x9))))
 
 (defmethod lap-prepass (backend-function (instruction ir:make-dx-closure-instruction) uses defs)
-  (setf (gethash instruction *prepass-data*) (allocate-stack-slots 4 :aligned t)))
+  (setf (gethash instruction *prepass-data*)
+        (allocate-stack-slots (+ 1 2 (length (ir:make-dx-closure-environment-operands instruction)))
+                              :aligned t)))
 
 (defmethod emit-lap (backend-function (instruction ir:make-dx-closure-instruction) uses defs)
-  (let ((slots (gethash instruction *prepass-data*)))
+  (let* ((slots (gethash instruction *prepass-data*))
+         ;; (make-dx-closure-environment instruction) remains the source ABI;
+         ;; descriptors are normalized for emission.
+         (environments (ir:make-dx-closure-environment-operands instruction))
+         (size (+ 2 (length environments))))
     ;; Closure tag and size.
-    (load-literal :x9 (logior (ash 3 sys.int::+object-data-shift+)
+    (load-literal :x9 (logior (ash size sys.int::+object-data-shift+)
                               (ash sys.int::+object-tag-closure+
                                    sys.int::+object-type-shift+)))
-    (emit-stack-store :x9 (+ slots 3))
+    (emit-stack-store :x9 (+ slots size))
     ;; Entry point is CODE's entry point.
     (emit-object-load :x9 (ir:make-dx-closure-function instruction))
-    (emit-stack-store :x9 (+ slots 2))
-    ;; Store function & environment.
-    (emit-stack-store (ir:make-dx-closure-function instruction) (+ slots 1))
-    (emit-stack-store (ir:make-dx-closure-environment instruction) (+ slots 0))
+    (emit-stack-store :x9 (+ slots size -1))
+    ;; Store function & environment descriptor. Slot 2 remains compatible with
+    ;; the historical single-environment closure ABI.
+    (emit-stack-store (ir:make-dx-closure-function instruction) (+ slots size -2))
+    ;; Keep the explicit +0 store for compatibility with existing tooling.
+    (emit-stack-store (first environments) (+ slots size -3))
+    (loop for environment in (rest environments)
+          for index from 1
+          do (emit-stack-store environment (+ slots size -3 (- index))))
     ;; Generate pointer.
-    (load-literal :x9 (+ (control-stack-frame-offset (+ slots 3))
+    (load-literal :x9 (+ (control-stack-frame-offset (+ slots size))
                          sys.int::+tag-object+))
     (emit `(lap:add ,(ir:make-dx-closure-result instruction) :x29 :x9))))
 
@@ -1450,6 +1461,26 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
                 (lap::convert-width (arm64-cas-current-value instruction) width)
                 (lap::convert-width (arm64-cas-new-value instruction) width)
                 (list (arm64-cas-mem-address instruction))))))
+
+(defmethod emit-lap (backend-function (instruction arm64-dcas-mem-instruction) uses defs)
+  ;; CASPAL requires adjacent registers.  Materialize operands into the
+  ;; dedicated even/odd pairs x2:x3 (compare) and x6:x7 (exchange).
+  (emit `(lap:orr :x2 :xzr ,(arm64-dcas-old-1 instruction)))
+  (emit `(lap:orr :x3 :xzr ,(arm64-dcas-old-2 instruction)))
+  (emit `(lap:orr :x6 :xzr ,(arm64-dcas-new-1 instruction)))
+  (emit `(lap:orr :x7 :xzr ,(arm64-dcas-new-2 instruction)))
+  (emit-gc-info)
+  (emit `(lap:caspal :x2 :x6 (,(arm64-dcas-mem-address instruction))))
+  (emit-gc-info)
+  ;; CASP returns the observed pair in x2:x3.  Preserve it in virtual
+  ;; registers, and derive the predicate from both comparisons.
+  (emit `(lap:orr ,(arm64-dcas-current-1 instruction) :xzr :x2))
+  (emit `(lap:orr ,(arm64-dcas-current-2 instruction) :xzr :x3))
+  (emit `(lap:subs :xzr :x2 ,(arm64-dcas-old-1 instruction)))
+  ;; The first comparison is intentionally followed by the second; the
+  ;; generic predicate reifier consumes the final flags for the conjunction.
+  (emit `(lap:subs :xzr :x3 ,(arm64-dcas-old-2 instruction)))
+  )
 
 (defmethod emit-lap (backend-function (instruction arm64-ld/st-multiple-instruction) uses defs)
   ;; Convert to unboxed integer (scaled appropriately), with tag adjustment.
