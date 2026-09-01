@@ -179,6 +179,10 @@
                           :key #'first :test-not #'eql))
          (options (remove :method options-and-methods
                           :key #'first))
+         (declarations (loop
+                          for option in options
+                          when (eql (first option) 'declare)
+                            append (rest option)))
          (gf (gensym "GF"))
          (egf-form `(ensure-generic-function
                      ',function-name
@@ -186,7 +190,10 @@
                      :source-location (lambda () (declare (sys.int::lambda-name (defgeneric ,function-name))))
                      ,@(loop
                           for opt in options
-                          append (canonicalize-defgeneric-option opt)))))
+                          unless (eql (first opt) 'declare)
+                            append (canonicalize-defgeneric-option opt))
+                     ,@(when declarations
+                         `(:declarations ',declarations)))))
     ;; Try to keep E-G-F at the top-level, avoids a trip through the compiler
     ;; when file-compiling.
     (cond (methods
@@ -209,7 +216,6 @@
       :method-class)
      `(,(first option) ',(second option)))
     (declare
-     ;; FIXME: Declarations must be accumulated.
      ;; FIXME: Some declarations are invalid in DEFGENERIC, and unknown ones
      ;; must be warned about.
      `(:declarations ',(rest option)))
