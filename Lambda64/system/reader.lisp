@@ -58,17 +58,25 @@
            (readtable-extended-characters from-readtable))
   to-readtable)
 
+(defun %readtable-syntax-type (char readtable)
+  (cond ((latin1-char-p char)
+         (svref (readtable-base-characters readtable) (char-code char)))
+        (t
+         (gethash char (readtable-extended-characters readtable) nil))))
+
 (defun readtable-syntax-type (char &optional (readtable *readtable*))
   (check-type readtable (or readtable null) "a readtable designator")
   (check-type char character)
   (unless readtable
     (setf readtable *standard-readtable*))
   (with-readtable-lock (readtable)
-    (cond ((latin1-char-p char)
-           ;; Base character.
-           (svref (readtable-base-characters readtable) (char-code char)))
-          (t ;; Extended character.
-           (gethash char (readtable-extended-characters readtable) nil)))))
+    (%readtable-syntax-type char readtable)))
+
+(defun %set-readtable-syntax-type (value char readtable)
+  (cond ((latin1-char-p char)
+         (setf (svref (readtable-base-characters readtable) (char-code char)) value))
+        (t
+         (setf (gethash char (readtable-extended-characters readtable)) value))))
 
 (defun (setf readtable-syntax-type) (value char &optional (readtable *readtable*))
   (check-type readtable (or readtable null) "a readtable designator")
@@ -76,11 +84,7 @@
   (unless readtable
     (setf readtable *standard-readtable*))
   (with-readtable-lock (readtable)
-    (cond ((latin1-char-p char)
-           ;; Base character.
-           (setf (svref (readtable-base-characters readtable) (char-code char)) value))
-          (t ;; Extended character.
-           (setf (gethash char (readtable-extended-characters readtable)) value)))))
+    (%set-readtable-syntax-type value char readtable)))
 
 (defun get-macro-character (char &optional (readtable *readtable*))
   (let ((data (readtable-syntax-type char readtable)))
@@ -109,12 +113,14 @@
 
 (defun get-dispatch-macro-character (disp-char sub-char &optional (readtable *readtable*))
   (check-type sub-char character)
-  (let ((data (readtable-syntax-type disp-char readtable)))
-    (unless (and (listp data) (= (length data) 4))
-      (error "Character ~S is not a dispatching macro character." disp-char))
-    (cond ((latin1-char-p sub-char)
-           (svref (third data) (char-code sub-char)))
-          (t (gethash sub-char (fourth data))))))
+  (let ((rt (or readtable *standard-readtable*)))
+    (with-readtable-lock (rt)
+      (let ((data (%readtable-syntax-type disp-char rt)))
+        (unless (and (listp data) (= (length data) 4))
+          (error "Character ~S is not a dispatching macro character." disp-char))
+      (cond ((latin1-char-p sub-char)
+             (svref (third data) (char-code sub-char)))
+            (t (gethash sub-char (fourth data))))))))
 
 (defun set-dispatch-macro-character (disp-char sub-char new-function &optional (readtable *readtable*))
   (check-type sub-char character)
@@ -122,12 +128,14 @@
   (when (and (null readtable) *protect-the-standard-readtable*)
     (cerror "Carry on!" "This would modify the standard readtable."))
   (check-type new-function (or symbol function) "a function designator")
-  (let ((data (readtable-syntax-type disp-char readtable)))
+  (let ((rt (or readtable *standard-readtable*)))
+    (with-readtable-lock (rt)
+      (let ((data (%readtable-syntax-type disp-char rt)))
     (unless (and (listp data) (= (length data) 4))
       (error "Character ~S is not a dispatching macro character." disp-char))
-    (cond ((latin1-char-p sub-char)
-           (setf (svref (third data) (char-code sub-char)) new-function))
-          (t (setf (gethash sub-char (fourth data)) new-function))))
+        (cond ((latin1-char-p sub-char)
+               (setf (svref (third data) (char-code sub-char)) new-function))
+              (t (setf (gethash sub-char (fourth data)) new-function))))))
   t)
 
 (defun set-syntax-from-char (to-char from-char &optional (to-readtable *readtable*) from-readtable)

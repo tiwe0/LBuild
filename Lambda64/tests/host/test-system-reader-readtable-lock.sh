@@ -20,6 +20,8 @@ required = [
     "(sys.int::cas (readtable-lock ,rt) nil t)",
     "(sys.int::atomic-swapf nil (readtable-lock ,rt))",
     "(with-readtable-lock (readtable)",
+    "(with-readtable-lock (rt)",
+    "(%readtable-syntax-type disp-char rt)",
 ]
 missing = [token for token in required if token not in source]
 if "FIXME: A full lock around the readtable" in source:
