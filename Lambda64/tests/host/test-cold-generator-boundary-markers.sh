@@ -19,7 +19,8 @@ assert 'FIXME: Need to include an initfunction' in clos
 assert 'defun host-make-standard-environment' in environment
 assert 'defun cross-intern' in environment
 assert 'defun host-structure-definition-name' in environment
-assert ':test' in environment and ':weakness :key' in environment
+assert 'defun make-weak-key-table' in environment
+assert ':weakness :key' in environment
 assert 'drain-initialization-queue' in serialize
 assert 'deterministic package/name order' in serialize
 for ident in ('0436', '0437', '0440', '0441', '0443', '0448', '0454'):

@@ -105,6 +105,15 @@
 
 (in-package :mezzano.cold-generator.environment)
 
+(defun make-weak-key-table (&key (test 'eql))
+  "Create a weak-key table, with a portable fallback for hosts without weak hash tables."
+  (handler-case
+      (make-hash-table :test test :weakness :key)
+    (error ()
+      ;; Keep cold generation usable on implementations lacking weak tables;
+      ;; callers still get correct lookup semantics, albeit without GC hints.
+      (make-hash-table :test test))))
+
 ;; The API exposes explicit host-/cross- aliases; legacy names remain for compatibility.
 ;; There are 3 broad classes of functions here:
 ;; * Functions that operate on host objects.
@@ -134,7 +143,7 @@
    ;; Function names may be symbols or compound SETF/CAS names. EQUAL weak
    ;; keys support both shapes, so entries no longer retain transient compound
    ;; names (the prior strong table leaked compiler metadata).
-   (%name-frefs :initform (make-hash-table :test 'equal :weakness :key)
+   (%name-frefs :initform (make-weak-key-table :test 'equal)
                 :reader environment-name-fref-table)
    ;; Object allocation areas for non-instances.
    (%object-area :initform (make-hash-table :weakness :key) :reader environment-object-area-table)
