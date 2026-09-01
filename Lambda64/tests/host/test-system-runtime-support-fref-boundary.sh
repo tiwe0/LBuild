@@ -55,6 +55,14 @@ for marker in markers:
     if marker not in form:
         raise SystemExit(f"missing function-reference publication marker: {marker}")
 
+# Each setter branch must publish its target independently.  Counting the
+# writes prevents a branch-local publication from being silently dropped while
+# a later branch's write still satisfies the coarse ordering checks below.
+if form.count("(%object-ref-t fref +fref-function+)") != 3:
+    raise SystemExit("function-reference setter must publish exactly once per branch")
+if form.count("%activate-function-reference") != 3:
+    raise SystemExit("function-reference setter must activate exactly once per branch")
+
 # The target field must be published before changing executable dispatch bytes.
 for branch in ("((not value)", "((%object-of-type-p value", "(t"):
     pos = form.find(branch)
