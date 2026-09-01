@@ -576,15 +576,28 @@
          (class (structure-definition-native-class sdef)))
     (when (not class)
       ;; Create an instance class for this structure definition.
-      ;; TODO: Set direct superclasses properly. This involves figuring out
-      ;; which slots are inherited.
+      ;; Structure definitions retain their parent, so preserve that
+      ;; relationship in the host CLOS class as well.  Only slots introduced
+      ;; by this definition belong in :DIRECT-SLOTS; inherited slots are
+      ;; supplied by the superclass.  Passing the complete slot list here
+      ;; duplicates inherited slots and can produce a layout that disagrees
+      ;; with the cold image layout.
+      (let* ((parent (structure-definition-parent sdef))
+             (parent-class (and parent (structure-definition-native-class parent)))
+             (parent-slots (and parent (structure-definition-slots parent))))
       (setf class (make-instance
                    'instance-class
                    :name (structure-definition-name sdef)
                    :sdef sdef
-                   :direct-superclasses (list (find-class 'instance-object))
+                   :direct-superclasses (list (or parent-class (find-class 'instance-object)))
                    :direct-slots (loop
-                                    for slot in (structure-definition-slots sdef)
+                                    for slot in (if parent-slots
+                                                    (remove-if (lambda (slot)
+                                                                 (find (structure-slot-definition-name slot)
+                                                                       parent-slots
+                                                                       :key #'structure-slot-definition-name))
+                                                               (structure-definition-slots sdef))
+                                                    (structure-definition-slots sdef))
                                     collect (list :name (structure-slot-definition-name slot)
                                                   :initform (structure-slot-definition-initform slot)
                                                   :initfunction (let ((slot slot))
@@ -603,7 +616,7 @@
                                                                           (cl:make-array (structure-slot-definition-fixed-vector slot) :initial-element val)
                                                                           val))))
                                                   :initargs (list (cl:intern (symbol-name (structure-slot-definition-name slot)) :keyword)))))
-            (structure-definition-native-class sdef) class))
+            (structure-definition-native-class sdef) class)))
     (apply #'make-instance class initargs)))
 
 (defun structure-slot-value (environment object slot-name)

@@ -263,8 +263,20 @@
                                        :dcas-sibling (env:structure-slot-definition-dcas-sibling slot-def)
                                        :documentation (primordial-slot-value (first direct-slots) (env:translate-symbol environment 'mezzano.clos::documentation)))))
           (t
-           (let ((initer (find-if-not #'null direct-slots
+           (let* ((type (primordial-slot-value (first direct-slots)
+                                               (env:translate-symbol environment 'mezzano.clos::type)))
+                  (allocation (primordial-slot-value (first direct-slots)
+                                                     (env:translate-symbol environment 'mezzano.clos::allocation)))
+                  (initer (find-if-not #'null direct-slots
                                       :key (lambda (def) (primordial-slot-value def (env:translate-symbol environment 'mezzano.clos::initfunction))))))
+             ;; Conflicting declarations cannot be represented by one
+             ;; effective slot; reject them instead of silently taking the
+             ;; first declaration's metadata.
+             (dolist (direct-slot (rest direct-slots))
+               (assert (equal type (primordial-slot-value direct-slot
+                                                          (env:translate-symbol environment 'mezzano.clos::type))))
+               (assert (eql allocation (primordial-slot-value direct-slot
+                                                               (env:translate-symbol environment 'mezzano.clos::allocation)))))
              (primordial-make-instance environment
                                        (env:translate-symbol environment 'mezzano.clos::standard-effective-slot-definition)
                                        :name (primordial-slot-value (first direct-slots) (env:translate-symbol environment 'mezzano.clos::name))
@@ -274,14 +286,12 @@
                                        :initfunction (if initer
                                                          (primordial-slot-value initer (env:translate-symbol environment 'mezzano.clos::initfunction))
                                                          nil)
-                                       ;; TODO: Should make sure type is consistent across direct slots.
-                                       :type (primordial-slot-value (first direct-slots) (env:translate-symbol environment 'mezzano.clos::type))
+                                       :type type
                                        :initargs (remove-duplicates
                                                   (loop
                                                      for direct-slot in direct-slots
                                                      append (primordial-slot-value direct-slot (env:translate-symbol environment 'mezzano.clos::initargs))))
-                                       ;; TODO: Should make sure allocation is consistent across direct slots.
-                                       :allocation (primordial-slot-value (first direct-slots) (env:translate-symbol environment 'mezzano.clos::allocation))
+                                       :allocation allocation
                                        :documentation (primordial-slot-value (first direct-slots) (env:translate-symbol environment 'mezzano.clos::documentation))))))))
 
 (defun primordial-compute-slots (environment class)
