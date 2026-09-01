@@ -384,20 +384,6 @@ Virtual registers must be defined exactly once."
        backend-function candidate dom dynamic-contour)
     (when (not *shut-up*)
       (format t "Phi sites for ~S: ~:S~%" candidate phi-sites))
-    ;; FIXME: Critical edges will prevent phi insertion, need to break them.
-    ;; work around this by bailing out whenever a phi site's predecessor is
-    ;; terminated by a non-jump.
-    (dolist (bb phi-sites)
-      (check-type bb label)
-      (dolist (pred (gethash bb bb-preds))
-        (loop
-           (when (typep pred 'terminator-instruction) (return))
-           (setf pred (next-instruction backend-function pred)))
-        (when (not (typep pred 'jump-instruction))
-          (when (not *shut-up*)
-            (format t "Bailing out of conversion for ~S due to non-jump ~S.~%"
-                    candidate pred))
-          (return-from ssa-convert-one-local nil))))
     (ssa-convert-one-local-insert-phi-nodes
      backend-function candidate bb-preds debugp phi-sites)
     (ssa-convert-one-local-rename-values
@@ -428,6 +414,12 @@ Virtual registers must be defined exactly once."
 
 (defun construct-ssa (backend-function)
   "Convert locals to SSA registers."
+  ;; Phi insertion requires that every edge from a block with multiple
+  ;; successors to a block with multiple predecessors is split.  The normal
+  ;; backend pipeline performs this before calling CONSTRUCT-SSA; doing it
+  ;; here as well keeps the pass self-contained for callers that invoke it
+  ;; directly (and is a no-op when the graph is already split).
+  (break-critical-edges backend-function)
   (multiple-value-bind (simple-transforms full-transforms rejected-transforms)
       (discover-ssa-conversion-candidates backend-function)
     (when (not *shut-up*)

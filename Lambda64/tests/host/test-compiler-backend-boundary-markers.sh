@@ -10,7 +10,6 @@ checks={
  '0024':('compiler/backend/dominance.lisp','TODO: This numbers basic blocks'),
  '0025':('compiler/backend/instructions.lisp','TODO: Support arbitrary environments.'),
  '0029':('compiler/backend/ssa.lisp',"FIXME: The CFG doesn't quite represent NLX regions correctly"),
- '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
  '0009':('compiler/backend/arm64/codegen.lisp','TODO: Sort the layout so stack slots for values are all together and trim'),
  '0010':('compiler/backend/arm64/codegen.lisp','FIXME: Support more than 2047 arguments (subs immediate limit).'),
  '0013':('compiler/backend/arm64/codegen.lisp','FIXME: Emit jump table as trailer.'),
@@ -33,6 +32,7 @@ resolved={
  '0028':('compiler/backend/register-allocation.lisp','TODO: Force 16-byte alignment.'),
  '0011':('compiler/backend/arm64/codegen.lisp','FIXME: This is wildly wrong and will cause the GC to lose live values.'),
  '0012':('compiler/backend/arm64/codegen.lisp',"FIXME: Fuckin' stop doing this!!!"),
+ '0030':('compiler/backend/ssa.lisp','FIXME: Critical edges will prevent phi insertion'),
 }
 for ident,(rel,legacy_marker) in resolved.items():
  src=(root/rel).read_text()
