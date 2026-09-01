@@ -22,6 +22,13 @@
   (mezzano.lap.arm64:msr :cntv-ctl-el0 :x9)
   (mezzano.lap.arm64:ret))
 
+(defun enable-platform-time ()
+  "Enable the generic timer after supervisor time state has been initialized."
+  (%write-cntv-tval-el0 *generic-timer-reset-value*)
+  (%isb)
+  (%write-cntv-ctl-el0 1)
+  (%isb))
+
 (defun generic-timer-irq-handler (interrupt-frame irq)
   (declare (ignore irq))
   (%write-cntv-tval-el0 *generic-timer-reset-value*)
@@ -51,12 +58,11 @@
                 #'generic-timer-irq-handler
                 fdt-node
                 t)
-    ;; Set countdown value.
-    ;; ### why is this 0 and not *generic-timer-reset-value*?
-    (%write-cntv-tval-el0 0)
-    (%isb)
-    ;; Enable the timer.
-    (%write-cntv-ctl-el0 1)
+    ;; Keep the timer disabled until INITIALIZE-TIME has published
+    ;; *RUN-TIME*, *HEARTBEAT-WAIT-QUEUE*, and *ACTIVE-TIMERS*.  Enabling it
+    ;; here lets the first interrupt enter BEAT-HEARTBEAT while those globals
+    ;; are still unbound during cold bootstrap.
+    (%write-cntv-ctl-el0 0)
     (%isb)))
 
 (sys.int::defglobal *pl031-rtc-base*)
