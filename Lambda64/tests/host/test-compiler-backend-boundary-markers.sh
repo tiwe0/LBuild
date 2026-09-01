@@ -12,9 +12,7 @@ checks={
 }
 for ident,(rel,marker) in checks.items():
  src=(root/rel).read_text()
- if marker not in src: raise SystemExit(f'TF-WI-{ident} marker unexpectedly missing')
- if ident in {'0040','0041'} and src.count(marker) != 2:
-  raise SystemExit('TF-WI-0040/0041 expected two distinct 8-bit preg markers')
+ if marker in src: raise SystemExit(f'TF-WI-{ident} legacy marker unexpectedly present')
  spec=(root.parent/'docs/modernization/todo-fixme/specs'/f'TF-WI-{ident}.md').read_text()
  for token in ('status: active','owner: compiler','review-cycle: 30d',f'# TF-WI-{ident}:'):
   if token not in spec: raise SystemExit(f'TF-WI-{ident} metadata missing: {token}')
@@ -26,11 +24,11 @@ canon=(root/'compiler/backend/canon.lisp').read_text()
 if 'debug-update-variable-instruction' not in canon or ':representation (third entry)' not in canon:
  raise SystemExit('TF-WI-0021 debug-update contract missing')
 instructions=(root/'compiler/backend/instructions.lisp').read_text()
-if '(list (make-dx-closure-function instruction)\n        (make-dx-closure-environment instruction))' not in instructions:
- raise SystemExit('TF-WI-0025 closure environment operand contract missing')
+if 'make-dx-closure-environment-operands' not in instructions:
+ raise SystemExit('TF-WI-0025 closure environment descriptor contract missing')
 ssa=(root/'compiler/backend/ssa.lisp').read_text()
-if '(typep inst \'begin-nlx-instruction)' not in ssa or 'setf rejected-transforms full-transforms' not in ssa:
- raise SystemExit('TF-WI-0029 conservative NLX rejection contract missing')
+if '(typep inst \'begin-nlx-instruction)' not in ssa or 'intersection live full-transforms' not in ssa:
+ raise SystemExit('TF-WI-0029 dynamic NLX contour filtering contract missing')
 
 # TF-WI-0011/0012 are resolved by the GC-safe stack-slot swap lowering.
 # Keep their active specs available for cold-image follow-up, but reject a
