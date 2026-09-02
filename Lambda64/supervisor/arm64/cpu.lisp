@@ -220,7 +220,36 @@
   ;; Read the function entry point and call it.
   (mezzano.lap.arm64:ldr :x9 (:object :x6 #.sys.int::+function-entry-point+))
   (mezzano.lap.arm64:blr :x9)
-  (mezzano.lap.arm64:hlt 4))
+  ;; Drop the frame object created above.
+  (mezzano.lap.arm64:add :sp :sp 16)
+  ;; Restore x30, SPSR_EL1, and ELR_EL1.
+  (mezzano.lap.arm64:ldr :x30 (:sp #x80))
+  (mezzano.lap.arm64:ldr :x9 (:sp #x88))
+  (mezzano.lap.arm64:msr :spsr-el1 :x9)
+  ;; Enable MDSCR.SS if we're single-stepping.
+  (mezzano.lap.arm64:tbz :x9 #.+spsr-ss+ L1)
+  (mezzano.lap.arm64:mrs :x9 :mdscr-el1)
+  (mezzano.lap.arm64:orr :x9 :x9 #.(ash 1 +mdscr-ss+))
+  (mezzano.lap.arm64:msr :mdscr-el1 :x9)
+  (mezzano.lap.arm64:isb)
+  L1
+  ;; Restore ELR_EL1 and remember the original EL1 stack pointer.  Unlike
+  ;; %EL0-COMMON, an EL1h return must restore SP_EL1 itself before ERET.
+  (mezzano.lap.arm64:ldr :x9 (:sp #x78))
+  (mezzano.lap.arm64:msr :elr-el1 :x9)
+  (mezzano.lap.arm64:ldr :x15 (:sp #x90))
+  ;; Restore registers.
+  (mezzano.lap.arm64:ldp :x14 :x13 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x7 :x4 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x3 :x2 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x1 :x0 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x12 :x11 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x6 :x10 (:post :sp 16))
+  (mezzano.lap.arm64:ldp :x5 :x9 (:x9))
+  (mezzano.lap.arm64:ldr :x29 (:sp))
+  ;; Return to the interrupted EL1h context with its original SP_EL1.
+  (mezzano.lap.arm64:add :sp :x15 0)
+  (mezzano.lap.arm64:eret))
 
 (defun broadcast-panic-ipi ()
   (broadcast-ipi +panic-sgi-id+))
