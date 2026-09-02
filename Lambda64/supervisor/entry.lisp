@@ -210,6 +210,12 @@
             ;; Freelist metadata allocation consults this before the hosted
             ;; paging initializer computes its image-size based value.
             (sys.int::symbol-global-value '*store-fudge-factor*) 0
+            ;; DEFGLOBAL initializers are not materialized in a cold image.
+            ;; Keep pager diagnostics disabled until the paging path is live;
+            ;; PAGER-LOG-OP formats through the general allocator, so a stale
+            ;; non-NIL value here would recursively issue PAGER-RPC from the
+            ;; pager thread while handling its first request.
+            (sys.int::symbol-global-value '*pager-noisy*) nil
             ;; DEFVAR initializers are not materialized in a cold image.  The
             ;; first allocation-area expansion reads these limits before the
             ;; normal runtime initialization path has run.
