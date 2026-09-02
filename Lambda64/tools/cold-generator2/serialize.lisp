@@ -1142,6 +1142,13 @@ the cold serializer without duplicating their definitions here."
     ;; Tell the GC the area sizes.
     (finalize-areas image environment)
     (post-serialize-image-for-target image environment (env:environment-target environment))
+    (let* ((p (env:translate-symbol environment 'sys.int::*pager-thread*))
+           (w (env:translate-symbol environment 'mezzano.supervisor::*world-stopper*)))
+      (format t "DBG cells pager=~X/~X world=~X/~X~%"
+              (gethash (env:symbol-global-value environment p) (image-object-values image))
+              (gethash (env:symbol-global-value-cell environment p) (image-object-values image))
+              (gethash (env:symbol-global-value environment w) (image-object-values image))
+              (gethash (env:symbol-global-value-cell environment w) (image-object-values image))))
     ;; That's all, folks.
     image))
 
