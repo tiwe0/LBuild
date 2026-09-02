@@ -760,7 +760,10 @@ not and WAIT-P is false."
   (reset-ephemeral-thread sys.int::*snapshot-thread* #'snapshot-thread :sleeping :supervisor)
   ;; Don't let the pager run until the paging disk has been found.
   (reset-ephemeral-thread sys.int::*pager-thread* #'pager-thread :sleeping :supervisor)
-  (setf (thread-wait-item sys.int::*pager-thread*) "Waiting for paging disk")
+  ;; The pager wake-up path uses *PAGER-WAITING-THREADS* as its sleep token.
+  ;; Keep the same token during cold boot; a descriptive string here prevents
+  ;; PAGER-RPC from recognizing a sleeping pager before its first loop turn.
+  (setf (thread-wait-item sys.int::*pager-thread*) '*pager-waiting-threads*)
   ;; On the first boot the pager and disk queue are not initialized yet.
   ;; Starting the disk worker here lets it enter POP-DISK-REQUEST while its
   ;; queue latch is still unbound (and can also race early allocator growth).
