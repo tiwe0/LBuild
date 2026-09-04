@@ -210,6 +210,10 @@
             ;; Freelist metadata allocation consults this before the hosted
             ;; paging initializer computes its image-size based value.
             (sys.int::symbol-global-value '*store-fudge-factor*) 0
+            ;; DEFVAR initializers are not materialized in a cold image.
+            ;; STORE-MAYBE-REFILL-METADATA reads this guard on the first
+            ;; pager allocation; seed it before the freelist is populated.
+            (sys.int::symbol-global-value '*store-freelist-recursive-metadata-allocation*) nil
             ;; DEFGLOBAL initializers are not materialized in a cold image.
             ;; Keep pager diagnostics disabled until the paging path is live;
             ;; PAGER-LOG-OP formats through the general allocator, so a stale
@@ -266,7 +270,15 @@
     ;; issues PAGER-RPC and the pager thread needs the same lock.  Warm boots
     ;; retain the normal lock-protected path.
     (if first-run-p
-        (initialize-paging-system-1)
+        (progn
+          ;; The first paging RPC itself acquires VM-LOCK.  A cold image may
+          ;; leave the global unbound, while MAKE-RW-LOCK is too eager here
+          ;; because its wait queues allocate through the not-yet-live pager.
+          ;; Install the wired lock object without queues as a bootstrap
+          ;; placeholder; it is replaced by the full lock below once paging
+          ;; is operational.
+          (setf *vm-lock* (%make-rw-lock '*vm-lock*))
+          (initialize-paging-system-1))
         (initialize-paging-system))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only

@@ -1144,9 +1144,13 @@ It will put the thread to sleep, while it waits for the page."
 
 (defun initialize-pager (&optional defer-request-latch-p defer-vm-lock-p defer-dirty-bits-p defer-request-object-p)
   (setf *bml4* (sys.int::memref-signed-byte-64 (+ *boot-information-page* +boot-information-block-map+)))
+  ;; A cold image may retain a bound but stale *PAGER-WAITING-THREADS*
+  ;; value, which skips the conditional bootstrap block below.  Logging is
+  ;; not safe until the pager allocator is live: PAGER-LOG-OP formats through
+  ;; the general allocator and would recursively issue PAGER-RPC here.
+  (setf *pager-noisy* nil)
   (when (not (boundp '*pager-waiting-threads*))
-    (setf *pager-noisy* nil
-          *pager-waiting-threads* '()
+    (setf *pager-waiting-threads* '()
           *pager-current-thread* nil
           *pager-lock* (place-spinlock-initializer)
           *pager-fast-path-enabled* t
