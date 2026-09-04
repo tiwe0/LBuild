@@ -149,6 +149,19 @@ Path(sys.argv[2]).write_text(r'''
 (defvar *captured-finalizer* nil)
 (defvar *cas-conflict-word* nil)
 (defvar *cas-attempts* 0)
+(defvar *card-table-writes* 0)
+(defvar *truncate-calls* 0)
+(defun memref-unsigned-byte-16 (base index) (gethash (list :u16 base index) *memory* 0))
+(defun (setf memref-unsigned-byte-16) (value base index)
+  (incf *card-table-writes*)
+  (setf (gethash (list :u16 base index) *memory*) value)
+  ;; Mirror raw card-table writes into the fixture's decoded view.
+  (when (eql base +card-table-base+)
+    (let ((card (* (/ index 2) +card-size+)))
+      (setf (gethash (list :card card) *memory*)
+            (if (= value (1- (ash 1 (byte-size +card-table-entry-offset+))))
+                nil
+                (- (* value 16)))))))
 (defun memref-unsigned-byte-32 (base index) (gethash (list base index) *memory* 0))
 (defun (setf memref-unsigned-byte-32) (v base index) (setf (gethash (list base index) *memory*) v))
 (defun memref-unsigned-byte-64 (base index) (gethash (list :u64 base index) *memory* 0))
@@ -169,7 +182,12 @@ Path(sys.argv[2]).write_text(r'''
        current)))
 (defun make-freelist-header (len) len)
 (defun card-table-offset (address) (gethash (list :card address) *memory*))
-(defun (setf card-table-offset) (value address) (setf (gethash (list :card address) *memory*) value))
+(defun (setf card-table-offset) (value address)
+  ;; Model the production setter's per-card index calculation so the
+  ;; regression test catches accidental reintroduction of the hot-path divide.
+  (incf *card-table-writes*)
+  (incf *truncate-calls*)
+  (setf (gethash (list :card address) *memory*) value))
 (defun %object-tag (object) (gethash object *tags*))
 (defun %object-ref-unsigned-byte-64 (object slot) (declare (ignore slot)) (gethash object *entry-points*))
 (defun (setf %object-ref-unsigned-byte-64) (value object slot)
@@ -259,9 +277,12 @@ Path(sys.argv[2]).write_text(r'''
 (defpackage :mezzano.runtime
  (:use :cl)
  (:shadow #:make-symbol #:symbol-name #:symbol-value #:symbol-function
-          #:symbol-plist #:symbol-package)
+          #:symbol-plist #:symbol-package #:truncate)
  (:local-nicknames (:sys.int :mezzano.internals)))
 (in-package :mezzano.runtime)
+(defun truncate (number &optional divisor)
+  (incf sys.int::*truncate-calls*)
+  (if divisor (cl:truncate number divisor) (cl:truncate number)))
 (defvar *allocator-lock* t)
 (defvar *copied-area* nil)
 (defvar *copy-inputs* nil)
@@ -300,10 +321,23 @@ Path(sys.argv[2]).write_text(r'''
   (unless (equalp actual expected) (error "~A: ~S /= ~S" description actual expected)))
 
 (setf sys.int::*memory* (make-hash-table :test 'equal))
-(update-freelist-card-offsets 10 210)
-(equal-check (sys.int::card-table-offset 64) -54 "first card offset")
-(equal-check (sys.int::card-table-offset 128) -118 "second card offset")
-(equal-check (sys.int::card-table-offset 192) -182 "third card offset")
+(update-freelist-card-offsets 16 224)
+(equal-check (sys.int::card-table-offset 64) -48 "first card offset")
+(equal-check (sys.int::card-table-offset 128) -112 "second card offset")
+(equal-check (sys.int::card-table-offset 192) -176 "third card offset")
+
+;; The card-table update is a hot path during cold bootstrap. It must not
+;; perform a generic integer division for every card; one initial index
+;; calculation is acceptable, but per-card TRUNCATE calls are not.
+(setf sys.int::*card-table-writes* 0
+      sys.int::*truncate-calls* 0)
+(update-freelist-card-offsets 16 5000)
+(check (<= sys.int::*truncate-calls* 1)
+       "card-table update performs per-card TRUNCATE calls")
+(equal-check (sys.int::card-table-offset 448) -432
+             "last representable card offset")
+(equal-check (sys.int::card-table-offset 512) nil
+             "unrepresentable card offset uses sentinel")
 
 (let ((*maximum-young-generation-size* 1000))
   (check (allocation-area-growth-permitted-p 800 200 400)

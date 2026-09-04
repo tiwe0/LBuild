@@ -131,15 +131,30 @@
 
 (defun update-freelist-card-offsets (start end)
   "Point every card boundary in [START, END) back at the freelist entry at START."
-  (let ((minimum-offset
-          (- (* (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+)))
-                16))))
+  ;; The public CARD-TABLE-OFFSET setter is intentionally general, but it
+  ;; divides the address by CARD-SIZE on every call.  This function runs while
+  ;; splitting the cold image's large wired-area freelist, so that division can
+  ;; dominate bootstrap time.  Compute the first table index once, then walk
+  ;; the packed 16-bit offset entries linearly.  The 16-bit store preserves the
+  ;; dirty-generation half of each 32-bit card entry.
+  (let* ((minimum-offset
+           (- (* (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+)))
+                 16)))
+         (card (mezzano.supervisor::align-up start sys.int::+card-size+))
+         (table-index (* (truncate card sys.int::+card-size+) 2))
+         (sentinel (1- (ash 1 (byte-size sys.int::+card-table-entry-offset+)))))
     (loop
-       for card from (mezzano.supervisor::align-up start sys.int::+card-size+)
-         below end by sys.int::+card-size+
+       while (< card end)
        for delta = (- start card) then (- delta sys.int::+card-size+)
-       do (setf (sys.int::card-table-offset card)
-                (and (> delta minimum-offset) delta)))))
+       do (setf (sys.int::memref-unsigned-byte-16 sys.int::+card-table-base+
+                                                   table-index)
+                (if (> delta minimum-offset)
+                    ;; CARD-SIZE and START are page/alignment multiples, so
+                    ;; the representable offset is exactly a 16-byte unit.
+                    (ash (- delta) -4)
+                    sentinel))
+          (incf card sys.int::+card-size+)
+          (incf table-index 2))))
 
 (defun %freelist-allocate-internal (freelist prev size log2-len tag data words bins)
   ;; Remove it from the bin.
