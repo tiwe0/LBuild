@@ -11,6 +11,7 @@ source-of-truth: tests
 # 运行与排障
 
 - [QEMU 运行模式](qemu.md)
+- [ARM64 冷启动动态排障记录](dynamic-boot-debugging.md)
 - [宿主文件服务器生命周期](file-server.md)
 - [来源证明与可复现性](reproducible-builds.md)
 
