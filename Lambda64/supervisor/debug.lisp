@@ -227,9 +227,7 @@
   ;; Debug output is used during boot before the pager and dynamic areas are
   ;; initialized.  Keep the short-lived formatting buffer in wired memory so
   ;; early diagnostics do not recurse through the general allocator/pager.
-  (let* ((buf-data (make-array 100
-                               :element-type '(unsigned-byte 8)
-                               :area :wired))
+  (let* ((buf-data (sys.int::make-simple-byte-vector 100 :wired))
          (buf (cons buf-data 0)))
     (declare (dynamic-extent buf-data buf))
     (dolist (thing things)

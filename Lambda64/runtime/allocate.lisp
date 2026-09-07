@@ -679,6 +679,13 @@
 (defun sys.int::make-simple-vector (size &optional area)
   (%allocate-object sys.int::+object-tag-array-t+ size size area))
 
+(defun sys.int::make-simple-byte-vector (size &optional area)
+  "Allocate a simple (UNSIGNED-BYTE 8) vector without keyword dispatch."
+  (%allocate-object sys.int::+object-tag-array-unsigned-byte-8+
+                    size
+                    (ceiling size 8)
+                    area))
+
 (defun sys.int::make-closure (function environment &optional area)
   "Allocate a closure object."
   (check-type function function)

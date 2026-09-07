@@ -3,7 +3,7 @@ title: ARM64 冷启动动态排障记录
 status: active
 owner: build-and-test
 last-verified: 2026-09-04
-verified-against: git:18df4cd87110acc2304ebb51dd0f3c3a6c99f664
+verified-against: git:working-tree
 review-cycle: 30d
 source-of-truth: dynamic-trace
 ---
@@ -74,3 +74,21 @@ UPDATE-FREELIST-CARD-OFFSETS
 优先在无断点运行中采样 `UPDATE-FREELIST-CARD-OFFSETS` 的入口/返回和 freelist
 头部，计算真实 `end-start` 与进度；若范围异常，再修正长度来源并只提交一个最小批次。
 若范围合理，则应先优化或分段这次卡表初始化，再重新生成镜像并运行快速启动烟测。
+
+## 2026-09-07：临时 store freelist 的保留块不变量
+
+本轮动态断点在 `STORE-ALLOC` 命中时观察到返回块号为 `0`，调用者是
+`ALLOCATE-NEW-BLOCK-FOR-VIRTUAL-ADDRESS`。根因不是物理页元数据分配，而是冷启动
+重放序列化 freelist 之前，临时 freelist 从块 0 开始；而冷生成器在
+`*store-bump* = #x3000` 后才分配 store，块 0、1、2 分别属于镜像头、BML4 和
+序列化 freelist，不能作为 backing store。
+
+修复保持临时范围 `[0,N)` 的连续形状（这样首个序列化 USED 区间可整体重放），但在
+`*store-freelist-bootstrap-p*` 期间从范围高端分配 backing 块，并拒绝落入保留前缀。
+`initialize-store-freelist` 将该动态绑定覆盖到整个重放过程；元数据页本身仍通过
+位置参数物理分配，避免 pager/关键字参数在冷路径分配临时对象。
+
+验证：重建镜像成功；120 秒 ARM64 TCG 诊断烟测不再出现
+`Tried to insert bad range` 或 `Mapping new wired page ... not present` panic，
+但仍停在 `mezzano: Starting system...` 且超时，说明下一个问题位于启动后调度/等待
+路径，尚未满足正向 oracle。

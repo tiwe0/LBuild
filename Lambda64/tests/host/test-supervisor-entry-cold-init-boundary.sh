@@ -22,5 +22,12 @@ first_irq_enable = text.index('(%enable-interrupts)')
 assert queues < first_irq_enable, 'pending queues must be published before early IRQ enable'
 assert "(thread-wait-item sys.int::*pager-thread*) '*pager-waiting-threads*" in thread_text, \
     'cold pager must use the wake-up queue token'
+
+placeholder = text.index('(setf *vm-lock* (%make-rw-lock \'*vm-lock*))')
+owner = text.index('(rw-lock-write-owner *vm-lock*)', placeholder)
+init_paging = text.index('(initialize-paging-system-1)', owner)
+replace = text.index('(setf *vm-lock* (make-rw-lock \'*vm-lock*))', init_paging)
+assert owner < init_paging < replace, \
+    'cold paging metadata must run under the bootstrap VM lock before the full lock is published'
 PY
 printf 'supervisor entry cold-init boundary checks passed\n'

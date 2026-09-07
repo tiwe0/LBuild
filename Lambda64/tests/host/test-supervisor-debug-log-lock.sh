@@ -37,6 +37,7 @@ def form(name):
 
 byte = form('debug-log-buffer-write-byte')
 flush = form('debug-flush-buffer')
+line = form('debug-print-line-1')
 if '(with-symbol-spinlock (*supervisor-log-buffer-lock*)' not in byte:
     raise SystemExit('byte writer is not protected by the log lock')
 if '(with-symbol-spinlock (*supervisor-log-buffer-lock*)' not in flush:
@@ -45,6 +46,10 @@ if 'debug-log-buffer-write-byte-1' not in flush:
     raise SystemExit('flush must use the non-recursive locked helper')
 if '*supervisor-log-buffer-lock* :unlocked' not in s:
     raise SystemExit('log lock has no safe initial value')
+if 'sys.int::make-simple-byte-vector 100 :wired' not in line:
+    raise SystemExit('early debug formatting must use the direct wired byte-vector allocator')
+if '(make-array 100' in line:
+    raise SystemExit('early debug formatting still uses keyword MAKE-ARRAY dispatch')
 
 if sys.argv[2]:
     # Mutation removes both lock forms; the contract must reject that change.

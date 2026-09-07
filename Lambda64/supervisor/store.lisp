@@ -24,6 +24,12 @@
 (sys.int::defglobal *store-freelist-metadata-freelist*)
 (sys.int::defglobal *store-freelist-n-free-metadata*)
 (defvar *store-freelist-recursive-metadata-allocation*)
+;; During cold hosted boot the in-memory freelist is only a temporary
+;; all-free range.  Pager allocation is not safe in that window: if it has to
+;; evict a page, STORE-ALLOC would hand out block 0 before the serialized
+;; freelist has replayed the image's occupied ranges.  Allocate the metadata
+;; frame directly from the physical allocator until replay is complete.
+(defvar *store-freelist-bootstrap-p*)
 (defconstant +store-freelist-metadata-soft-limit+ 16)
 
 ;;; Block counts.
@@ -70,10 +76,23 @@
 
 (defconstant +freelist-metadata-size+ 32)
 
+;; Store blocks 0..2 are occupied by the cold image header, BML4 and the
+;; serialized freelist block (the cold generator starts STORE-BUMP at #x3000).
+;; They must never be handed out by the temporary bootstrap range.
+(defconstant +store-bootstrap-reserved-blocks+ 3)
+
 (defun store-refill-metadata ()
   ;; Repopulate freelist.
-  (let* ((frame (let ((*store-freelist-recursive-metadata-allocation* t))
-                  (pager-allocate-page :new-type :other)))
+  (let* ((frame (if (and (boundp '*store-freelist-bootstrap-p*)
+                         *store-freelist-bootstrap-p*)
+                    ;; Keep the bootstrap path independent of the pager and
+                    ;; STORE-ALLOC.  The positional call also avoids creating
+                    ;; a keyword argument vector before paging is live.
+                    (%allocate-physical-pages 1 :other
+                                               "Store freelist bootstrap metadata"
+                                               nil)
+                    (let ((*store-freelist-recursive-metadata-allocation* t))
+                      (%pager-allocate-page :other))))
          (addr (convert-to-pmap-address (ash frame 12))))
     (dotimes (i (truncate #x1000 +freelist-metadata-size+))
       (setf (sys.int::memref-unsigned-byte-64 (+ addr (* i +freelist-metadata-size+)) 0) 0
@@ -288,10 +307,20 @@
     (let ((size (- (freelist-metadata-end range) (freelist-metadata-start range))))
       (when (and (freelist-metadata-free-p range)
                  (<= n-blocks size))
-        (let ((start (freelist-metadata-start range)))
-          (store-insert-range start n-blocks nil)
-          (decf *store-freelist-n-free-blocks* n-blocks)
-          (return start))))))
+          ;; During cold freelist replay, preserve the serialized [0,N)
+          ;; containing range while allocating bootstrap backing blocks from
+          ;; its high end.  This avoids handing out reserved image blocks 0-2
+          ;; without fragmenting the range needed by STORE-INSERT-RANGE.
+          (let ((start (if (and (boundp '*store-freelist-bootstrap-p*)
+                                *store-freelist-bootstrap-p*)
+                           (- (freelist-metadata-end range) n-blocks)
+                           (freelist-metadata-start range))))
+            (when (and (or (not (boundp '*store-freelist-bootstrap-p*))
+                           (not *store-freelist-bootstrap-p*)
+                           (>= start +store-bootstrap-reserved-blocks+)))
+            (store-insert-range start n-blocks nil)
+            (decf *store-freelist-n-free-blocks* n-blocks)
+            (return start)))))))
 
 (defun process-one-freelist-block (block-id)
   (with-disk-block (blk block-id)
@@ -331,24 +360,27 @@
   (setf *store-freelist-metadata-freelist* '()
         *store-freelist-recursive-metadata-allocation* nil
         *store-freelist-n-free-metadata* 0)
-  (store-refill-metadata)
-  (setf *store-freelist-head* (freelist-alloc-metadata 0 n-store-blocks t)
-        *store-freelist-tail* *store-freelist-head*
-        *store-deferred-freelist-head* nil
-        *store-freelist-n-free-blocks* n-store-blocks
-        *store-freelist-n-deferred-free-blocks* 0
-        *store-freelist-total-blocks* n-store-blocks)
-  (debug-print-line "Store freelist block is " freelist-block)
-  (loop
-     (multiple-value-bind (last-entry-offset next-block)
-         (process-one-freelist-block freelist-block)
-       (declare (ignore last-entry-offset))
-       (when (not next-block)
-         (return))
-       (setf freelist-block next-block)))
-  (when *verbose-store*
-    (dump-store-freelist))
-  (debug-print-line *store-freelist-n-free-blocks* "/" *store-freelist-total-blocks* " store blocks free at boot"))
+  ;; Keep bootstrap mode active until serialized replay completes so any
+  ;; pager-driven backing allocation also avoids image-reserved blocks.
+  (let ((*store-freelist-bootstrap-p* t))
+    (store-refill-metadata)
+    (setf *store-freelist-head* (freelist-alloc-metadata 0 n-store-blocks t)
+          *store-freelist-tail* *store-freelist-head*
+          *store-deferred-freelist-head* nil
+          *store-freelist-n-free-blocks* n-store-blocks
+          *store-freelist-n-deferred-free-blocks* 0
+          *store-freelist-total-blocks* n-store-blocks)
+    (debug-print-line "Store freelist block is " freelist-block)
+    (loop
+       (multiple-value-bind (last-entry-offset next-block)
+           (process-one-freelist-block freelist-block)
+         (declare (ignore last-entry-offset))
+         (when (not next-block)
+           (return))
+         (setf freelist-block next-block)))
+    (when *verbose-store*
+      (dump-store-freelist))
+    (debug-print-line *store-freelist-n-free-blocks* "/" *store-freelist-total-blocks* " store blocks free at boot")))
 
 (defun initialize-freestanding-store ()
   (when (not (boundp '*verbose-store*))
@@ -390,7 +422,7 @@
                         estimated-count " freelist blocks required.")
       ;; Allocate blocks and pages.
       (dotimes (i estimated-count)
-        (let ((memory (convert-to-pmap-address (ash (pager-allocate-page) 12)))
+        (let ((memory (convert-to-pmap-address (ash (%pager-allocate-page :active) 12)))
               (disk-block (or (store-alloc 1)
                               (panic "Unable to allocate new freelist entries!"))))
           (setf (sys.int::memref-t memory 0) free-block-list

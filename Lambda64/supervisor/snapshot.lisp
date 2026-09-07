@@ -137,7 +137,7 @@
                               wired-page)
              (snapshot-add-to-writeback-list other-frame)
              (when (snapshot-wired-dirty-tracking-p)
-               (update-pte pte :dirty nil)))))))
+               (%update-pte pte nil nil nil t)))))))
     (when (snapshot-wired-dirty-tracking-p)
       (flush-tlb)
       (tlb-shootdown-all)
@@ -161,9 +161,10 @@
     ;; Point the PTE at the new page, disable copy on write and reenable write access.
     (begin-tlb-shootdown)
     (setf (sys.int::memref-unsigned-byte-64 pte 0)
-          (make-pte new-frame
-                    :writable (and (block-info-writable-p block-info)
-                                   (not (block-info-track-dirty-p block-info)))))
+          (%make-pte new-frame
+                     (and (block-info-writable-p block-info)
+                          (not (block-info-track-dirty-p block-info)))
+                     t nil nil nil nil :normal))
     (flush-tlb-single fault-addr)
     (tlb-shootdown-single fault-addr)
     (finish-tlb-shootdown)
@@ -223,10 +224,10 @@ Returns 4 values:
                                 (panic "No block info for CoW address?" address))))
            ;; Update PTE bits. Clear CoW bit, make writable.
            (setf (sys.int::memref-unsigned-byte-64 pte 0)
-                 (make-pte frame
-                           :writable (and (block-info-writable-p block-info)
-                                          (not (block-info-track-dirty-p block-info)))
-                           :dirty (page-dirty-p pte)))
+                 (%make-pte frame
+                            (and (block-info-writable-p block-info)
+                                 (not (block-info-track-dirty-p block-info)))
+                            t nil nil (page-dirty-p pte) nil :normal))
            (flush-tlb-single address))
          ;; Return page to normal use.
          (setf (physical-page-frame-type frame) :active)
@@ -331,7 +332,7 @@ Returns 4 values:
 (defun snapshot-block-map-outer-level (bml next-fn address-part)
   (let ((bml-disk (or (store-alloc 1)
                       (panic "Unable to allocate disk space for new block map.")))
-        (bml-memory (convert-to-pmap-address (* (pager-allocate-page :new-type :other) +4k-page-size+)))
+        (bml-memory (convert-to-pmap-address (* (%pager-allocate-page :other) +4k-page-size+)))
         (bml-count 0)
         (next-address-part (ash address-part 9)))
     (dotimes (i 512)
@@ -404,7 +405,7 @@ Returns 4 values:
            (setf page
                  (convert-to-pmap-address
                   (* (with-rw-lock-write (*vm-lock*)
-                       (pager-allocate-page :new-type :other))
+                       (%pager-allocate-page :other))
                      +4k-page-size+)))
            (disk-submit-request
             *snapshot-disk-request*
@@ -495,7 +496,7 @@ Returns 4 values:
              (setf header
                    (convert-to-pmap-address
                     (* (with-rw-lock-write (*vm-lock*)
-                         (pager-allocate-page :new-type :other))
+                         (%pager-allocate-page :other))
                        +4k-page-size+)))
              (disk-submit-request
               *snapshot-disk-request*

@@ -27,8 +27,7 @@
                    (snapshot-add-writeback-frame frame)
                    ;; Clear dirty and writable bits, set copy-on-write bit.
                    (setf (sys.int::memref-unsigned-byte-64 pml1 pml1e)
-                         (make-pte frame
-                                   :copy-on-write t)))))))
+                         (%make-pte frame nil t nil nil nil t :normal)))))))
     (declare (dynamic-extent #'mark-level
                              #'mark-pml4e-cow #'mark-pml3e-cow
                              #'mark-pml2e-cow #'mark-pml1e-cow))

@@ -81,7 +81,7 @@
       (ext:cas (sys.int::memref-unsigned-byte-64 page-table index) old new)
     (%dc.cvau (+ page-table (* index 8)))))
 
-(defun make-pte (frame &key writable (present t) block wired dirty copy-on-write (cache-mode :normal))
+(defun %make-pte (frame writable present block wired dirty copy-on-write cache-mode)
   (logior (ash frame 12)
           (if present
               (logior +arm64-tte-present+
@@ -119,10 +119,18 @@
                +arm64-tte-attr-index+
                0)))
 
+(defun make-pte (frame &key writable (present t) block wired dirty copy-on-write (cache-mode :normal))
+  "Keyword-compatible page-table entry constructor.
+
+The pager uses %MAKE-PTE directly.  Keeping keyword parsing at this outer
+boundary prevents a temporary argument vector from being allocated while the
+pager owns *VM-LOCK* and is servicing the first cold-boot request."
+  (%make-pte frame writable present block wired dirty copy-on-write cache-mode))
+
 (defun pte-physical-address (pte)
   (logand pte +arm64-tte-address-mask+))
 
-(defun update-pte (pte &key (writable nil writablep) (dirty nil dirtyp))
+(defun %update-pte (pte writable writablep dirty dirtyp)
   (let ((current-entry (page-table-entry pte)))
     (when writablep
       (if writable
@@ -136,8 +144,14 @@
           (setf current-entry (logand current-entry (lognot +arm64-tte-dirty+)))))
     (setf (page-table-entry pte) current-entry)))
 
+(defun update-pte (pte &key (writable nil writablep) (dirty nil dirtyp))
+  "Keyword-compatible PTE update wrapper.
 
-(defun update-pte-atomic (pte pte-value &key (writable nil writablep) (dirty nil dirtyp))
+Pager-critical callers use %UPDATE-PTE so keyword argument parsing cannot
+allocate a temporary vector while the VM lock is held."
+  (%update-pte pte writable writablep dirty dirtyp))
+
+(defun %update-pte-atomic (pte pte-value writable writablep dirty dirtyp)
   (let ((current-entry pte-value))
     (when writablep
       (if writable
@@ -150,6 +164,10 @@
           (setf current-entry (logior current-entry +arm64-tte-dirty+))
           (setf current-entry (logand current-entry (lognot +arm64-tte-dirty+)))))
     (eql (sys.int::cas (page-table-entry pte) pte-value current-entry) pte-value)))
+
+(defun update-pte-atomic (pte pte-value &key (writable nil writablep) (dirty nil dirtyp))
+  "Keyword-compatible atomic PTE update wrapper."
+  (%update-pte-atomic pte pte-value writable writablep dirty dirtyp))
 
 (defun pte-page-present-p (pte)
   (logtest +arm64-tte-present+ pte))
@@ -177,10 +195,11 @@
   (if (not (page-present-p page-table index))
       (when allocate
         ;; No PT. Allocate one.
-        (let* ((frame (pager-allocate-page :new-type :page-table))
+        (let* ((frame (%pager-allocate-page :page-table))
                (addr (convert-to-pmap-address (ash frame 12))))
           (zeroize-page addr)
-          (setf (page-table-entry page-table index) (make-pte frame :writable t))
+          (setf (page-table-entry page-table index)
+                (%make-pte frame t t nil nil nil nil :normal))
           addr))
       (convert-to-pmap-address (pte-physical-address (page-table-entry page-table index)))))
 

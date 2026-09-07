@@ -265,20 +265,25 @@
     ;; re-enable them at the exact point where paging discovery can block on
     ;; PAGER-RPC so the pager is guaranteed to be schedulable.
     (%enable-interrupts)
-    ;; On first boot VM-LOCK is only a bootstrap placeholder.  Holding it
-    ;; around INITIALIZE-PAGING-SYSTEM deadlocks when store-freelist setup
-    ;; issues PAGER-RPC and the pager thread needs the same lock.  Warm boots
-    ;; retain the normal lock-protected path.
+    ;; On first boot VM-LOCK is a wired bootstrap placeholder.  Store-freelist
+    ;; construction uses the pager allocation core directly (the request
+    ;; object is intentionally deferred), so the bootstrap thread must own
+    ;; the placeholder write lock while it publishes the first metadata pages.
+    ;; Do not schedule a pager RPC while holding this lock; the complete lock
+    ;; with wait queues is installed immediately after this direct phase.
     (if first-run-p
         (progn
-          ;; The first paging RPC itself acquires VM-LOCK.  A cold image may
-          ;; leave the global unbound, while MAKE-RW-LOCK is too eager here
-          ;; because its wait queues allocate through the not-yet-live pager.
-          ;; Install the wired lock object without queues as a bootstrap
-          ;; placeholder; it is replaced by the full lock below once paging
-          ;; is operational.
+          ;; MAKE-RW-LOCK is too eager here because its wait queues allocate
+          ;; through the not-yet-live pager.  Install the wired lock object
+          ;; without queues and mark it held by this bootstrap thread.
           (setf *vm-lock* (%make-rw-lock '*vm-lock*))
-          (initialize-paging-system-1))
+          (setf (rw-lock-state *vm-lock*) +rw-lock-mode-write-locked+
+                (rw-lock-write-owner *vm-lock*) (current-thread))
+          (initialize-paging-system-1)
+          ;; The direct bootstrap phase is complete.  Publish the normal lock
+          ;; shape before any subsequent general-area operation can contend
+          ;; for VM-LOCK or enqueue a waiter.
+          (setf *vm-lock* (make-rw-lock '*vm-lock*)))
         (initialize-paging-system))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
