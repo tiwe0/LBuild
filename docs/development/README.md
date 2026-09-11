@@ -52,6 +52,8 @@ source-of-truth: code
 
 第一方源码的编码范围、generic 声明规则和可执行门禁见 [Common Lisp 编码规范](common-lisp-style.md)。
 
+supervisor 与运行时中禁止分配内存的上下文、隐式分配的四条来源及树内已有的机器检查，见 [不可分配上下文](allocation-forbidden-contexts.md)。
+
 ## 调试证据
 
 - 保存完整宿主构建日志，不只截取最后一行。
