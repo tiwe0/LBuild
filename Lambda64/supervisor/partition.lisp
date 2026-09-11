@@ -86,7 +86,6 @@
 
 (defun detect-disk-partitions ()
   (dolist (disk (all-disks))
-    (debug-uart-boot-line "TRACE partition-disk")
     ;; Search for a GPT, then a PC MBR.
     (or (detect-gpt-partition-table disk)
         (detect-mbr-partition-table disk)
@@ -252,7 +251,6 @@
         t))))
 
 (defun detect-gpt-partition-table (disk)
-  (debug-uart-boot-line "TRACE gpt-enter")
   (let* ((sector-size (disk-sector-size disk))
          (pages-per-sector (ceiling sector-size +4k-page-size+))
          (n-sectors (disk-n-sectors disk)))
@@ -262,21 +260,16 @@
                                :mandatory-p "DETECT-DISK disk buffer")
       ;; The primary header is at LBA 1. If it or its entry array fails
       ;; validation, retry using the standard backup header at the final LBA.
-      (debug-uart-boot-line "TRACE gpt-read-primary")
       (when (not (disk-read disk 1 1 header-buffer))
         (panic "Unable to read second block on disk " disk))
-      (debug-uart-boot-line "TRACE gpt-read-primary-done")
       (or (progn
-            (debug-uart-boot-line "TRACE gpt-process-primary")
             (process-gpt-header disk header-buffer 1))
           (let ((backup-lba (1- n-sectors)))
-            (debug-uart-boot-line "TRACE gpt-read-backup")
             ;; Keep the trace out of the AND chain.  DEBUG-UART-BOOT-LINE
             ;; returns NIL, so as a conjunct it made backup-GPT recovery
             ;; always fail.
             (and (disk-read disk backup-lba 1 header-buffer)
                  (progn
-                   (debug-uart-boot-line "TRACE gpt-read-backup-done")
                    (process-gpt-header disk header-buffer backup-lba))))))))
 
 (defun decode-ebr (page-addr)
@@ -289,7 +282,6 @@
     (values 0 0 0 0)))
 
 (defun detect-mbr-partition-table (disk)
-  (debug-uart-boot-line "TRACE mbr-enter")
   (let* ((sector-size (disk-sector-size disk))
          (pages-per-sector (ceiling sector-size +4k-page-size+))
          (found-table-p nil)
@@ -387,7 +379,6 @@
           (return nil)))))
 
 (defun detect-iso9660-partition-table (disk)
-  (debug-uart-boot-line "TRACE iso-enter")
   (let* ((sector-size (disk-sector-size disk))
          (pages-per-sector (ceiling sector-size +4k-page-size+)))
     (when (not (eql sector-size 2048))

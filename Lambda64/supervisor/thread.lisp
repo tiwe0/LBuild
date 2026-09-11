@@ -425,10 +425,8 @@ Interrupts must be off and the global thread lock must be held."
   ;; Interrupts must be off and the global thread lock must be held.
   ;; Releases the thread lock and reenables interrupts.
   (ensure-global-thread-lock-held)
-  (debug-uart-boot-line "TRACE resched-update-start")
   (let ((next (update-run-queue))
         (current (current-thread)))
-    (debug-uart-boot-line "TRACE resched-update-done")
     ;; Name both ends of the switch.  A voluntary reschedule with no other
     ;; trace between it and the previous restore is how a lost wakeup shows
     ;; up, and that is only readable if the actors are identified.
@@ -441,7 +439,6 @@ Interrupts must be off and the global thread lock must be held."
            (release-global-thread-lock)
            (%%return-to-same-thread sp fp))
           (t
-           (debug-uart-boot-line "TRACE resched-switch-start")
            (%%switch-to-thread-via-wired-stack current sp fp next)))
     (panic "unreachable")))
 
@@ -543,7 +540,6 @@ Interrupts must be off and the global thread lock must be held."
   ;; Check if the thread is full-save.
   (if (thread-full-save-p new-thread)
       (progn
-        (debug-uart-boot-line "TRACE restore-full")
         ;; Keep the complete architectural target visible while diagnosing
         ;; ARM64 ERET/stack hand-off failures.  These values come from the
         ;; same save area consumed by %%restore-full-save-thread; logging them
@@ -568,7 +564,6 @@ Interrupts must be off and the global thread lock must be held."
                                    (thread-state-r8-value new-thread)))
         (%%restore-full-save-thread new-thread))
       (progn
-        (debug-uart-boot-line "TRACE restore-partial")
         ;; Identify the partial-save target too.  Without this the switch graph
         ;; is only half visible and a thread that resumes and immediately
         ;; reschedules is indistinguishable from one that never resumed.
@@ -600,25 +595,18 @@ Interrupts must be off and the global thread lock must be held."
 
 (defun make-thread (function &key name initial-bindings (stack-size *default-stack-size*) (priority :normal))
   (declare (mezzano.compiler::closure-allocation :wired))
-  (debug-uart-boot-line "TRACE thread-make-start")
   (check-type function (or function symbol))
   (check-type priority (member :supervisor :high :normal :low))
   (setf name (copy-name-to-wired-area name))
-  (debug-uart-boot-line "TRACE thread-name-done")
   (setf stack-size (align-up stack-size #x1000))
   (let* ((thread (%make-thread name)))
-    (debug-uart-boot-line "TRACE thread-object-done")
     (let ((stack (%allocate-stack (+ stack-size +thread-stack-soft-guard-size+))))
-      (debug-uart-boot-line "TRACE thread-stack-done")
-    (debug-uart-boot-line "TRACE thread-event-start")
     (setf (thread-stack thread) stack
           (thread-self thread) thread
           (thread-priority thread) priority
           (thread-join-event thread) (%make-event thread nil))
-    (debug-uart-boot-line "TRACE thread-event-done")
     ;; Protect the guard area, making it fully inaccessible.
     (protect-memory-range (stack-base stack) +thread-stack-soft-guard-size+ 0)
-    (debug-uart-boot-line "TRACE thread-protect-done")
     ;; Perform initial bindings.
     (when initial-bindings
       (let ((symbols (mapcar #'first initial-bindings))
@@ -659,7 +647,6 @@ Interrupts must be off and the global thread lock must be held."
                                   trampoline sys.int::+function-entry-point+)))
     (setf (thread-full-save-p thread) t
           (thread-state thread) :runnable)
-    (debug-uart-boot-line "TRACE thread-state-done")
     (safe-without-interrupts (thread)
       (with-symbol-spinlock (*global-thread-lock*)
         (push-run-queue thread)
@@ -668,7 +655,6 @@ Interrupts must be off and the global thread lock must be held."
               (thread-global-next thread) *all-threads*
               (thread-global-prev thread) nil
               *all-threads* thread)))
-      (debug-uart-boot-line "TRACE thread-queue-done")
       thread)))
 
 ;; MAKE-THREAD arranges for new threads to call this function with the thread's
@@ -676,14 +662,12 @@ Interrupts must be off and the global thread lock must be held."
 ;; It sets up the top-level catch for 'terminate-thread, and deals with cleaning
 ;; up when the thread exits (either by normal return or by a throw to terminate-thread).
 (defun thread-entry-trampoline (function)
-  (debug-uart-boot-line "TRACE thread-entry")
   (cond ((eq function #'sys.int::initialize-lisp)
          (debug-uart-boot-line "TRACE thread-entry-function-lisp"))
         ((eq function #'post-boot-worker)
          (debug-uart-boot-line "TRACE thread-entry-function-post-worker"))
         (t
          (debug-uart-boot-line "TRACE thread-entry-function-other")))
-  (debug-uart-boot-line "TRACE thread-entry-before-funcall")
   (let ((return-values 'terminate-thread))
     (unwind-protect
          (catch 'terminate-thread
@@ -691,11 +675,8 @@ Interrupts must be off and the global thread lock must be held."
                 ;; Footholds in a new thread are inhibited until the terminate-thread
                 ;; catch block is established, to guarantee that it's always available.
                 (progn
-                  (debug-uart-boot-line "TRACE thread-entry-progn")
                   (when (eql (sys.int::%atomic-fixnum-add-object (current-thread) +thread-inhibit-footholds+ -1) 1)
                     (run-pending-footholds))
-                  (debug-uart-boot-line "TRACE thread-entry-after-footholds")
-                  (debug-uart-boot-line "TRACE thread-entry-before-call")
                   (debug-uart-boot-hex-line "TRACE thread-entry-function-object"
                                              (sys.int::lisp-object-address function))
                   (debug-uart-boot-hex-line "TRACE thread-entry-function-entry"
@@ -708,7 +689,6 @@ Interrupts must be off and the global thread lock must be held."
                   ;; the primary return value to continue into cleanup.
                   (call-function-noargs-traced function)
                   (setf return-values nil)
-                  (debug-uart-boot-line "TRACE thread-entry-call-done")
                   (debug-uart-boot-line "TRACE thread-entry-after-funcall"))
              ;; Re-inhibit footholds when leaving. This way it is never possible
              ;; to foothold a thread after the TERMINATE-THREAD catch has exited.
@@ -721,7 +701,6 @@ Interrupts must be off and the global thread lock must be held."
       (thread-final-cleanup return-values))))
 
 (defun call-function-noargs-traced (function)
-  (debug-uart-boot-line "TRACE call-function-bridge-enter")
   (prog1 (sys.int::%call-function-noargs function)
     (debug-uart-boot-line "TRACE call-function-bridge-return")))
 
@@ -942,7 +921,6 @@ not and WAIT-P is false."
 
 (defun wake-thread (thread)
   "Wake a sleeping thread."
-  (debug-uart-boot-line "TRACE wake-enter")
   ;; Run the lock transition on the wired stack.  This is safe for both a
   ;; normal thread and an exception path, and avoids WITHOUT-INTERRUPTS'
   ;; normal-stack save/restore sequence on ARM64.
@@ -953,7 +931,6 @@ not and WAIT-P is false."
   ;; critical path, where the world may be stopped, so it has to be
   ;; allocation-free.
   (safe-without-interrupts (thread)
-    (debug-uart-boot-line "TRACE wake-without")
     (wake-thread-with-interrupts-disabled thread)
     (debug-uart-boot-line "TRACE wake-after-1"))
   (debug-uart-boot-line "TRACE wake-exit"))
@@ -962,30 +939,22 @@ not and WAIT-P is false."
 ;; (notably an IRQ handler running on SP_EL1).  Avoid nesting WITHOUT-INTERRUPTS
 ;; here: its save/restore path assumes a normal thread stack.
 (defun wake-thread-with-interrupts-disabled (thread)
-  (debug-uart-boot-line "TRACE wake-disabled-enter")
   (ensure-interrupts-disabled)
   (with-symbol-spinlock (*global-thread-lock*)
-    (debug-uart-boot-line "TRACE wake-disabled-lock")
     (wake-thread-1 thread)
     (debug-uart-boot-line "TRACE wake-disabled-after-1")))
 
 (defun wake-thread-1 (thread)
   "Wake a sleeping thread, with locks held."
-  (debug-uart-boot-line "TRACE wake1-enter")
   (debug-uart-boot-hex-line "TRACE wake1-target"
                             (sys.int::lisp-object-address thread))
   (ensure-interrupts-disabled)
-  (debug-uart-boot-line "TRACE wake1-disabled")
   (ensure-global-thread-lock-held)
-  (debug-uart-boot-line "TRACE wake1-lock-held")
   (ensure (not (or (eql (thread-state thread) :runnable)
                    (eql (thread-state thread) :active)))
           "Thread " thread " not sleeping.")
-  (debug-uart-boot-line "TRACE wake1-state-ok")
   (setf (thread-state thread) :runnable)
-  (debug-uart-boot-line "TRACE wake1-state-set")
   (push-run-queue thread)
-  (debug-uart-boot-line "TRACE wake1-queued")
   (broadcast-wakeup-ipi)
   (debug-uart-boot-line "TRACE wake1-ipi"))
 
@@ -1009,17 +978,12 @@ not and WAIT-P is false."
   ;; The initial thread must finish with no values on the special stack.
   ;; This is required by INITIALIZE-INITIAL-THREAD.
   (let ((thread (current-thread)))
-    (debug-uart-boot-line "TRACE finish-resume-start")
     (%call-on-wired-stack-without-interrupts
      #'%resume-the-world nil)
-    (debug-uart-boot-line "TRACE finish-resume-done")
     (%disable-interrupts)
-    (debug-uart-boot-line "TRACE finish-lock-start")
     (acquire-global-thread-lock)
-    (debug-uart-boot-line "TRACE finish-lock-done")
     (setf (thread-wait-item thread) "The start of a new world"
           (thread-state thread) :sleeping)
-    (debug-uart-boot-line "TRACE finish-resched-start")
     (%run-on-wired-stack-without-interrupts (sp fp)
      (%reschedule-via-wired-stack sp fp))
     (panic "Initial thread woken??")))

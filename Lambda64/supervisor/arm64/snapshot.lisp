@@ -24,7 +24,9 @@
                  (panic "Page table entry marked CoW when it shouldn't be."))
                (when (logtest entry +arm64-tte-dirty+)
                  (let ((frame (ash (pte-physical-address (sys.int::memref-unsigned-byte-64 pml1 pml1e)) -12)))
+                   (debug-uart-boot-hex-line "COW wb-start" frame)
                    (snapshot-add-writeback-frame frame)
+                   (debug-uart-boot-hex-line "COW wb-done" frame)
                    ;; Clear dirty and writable bits, set copy-on-write bit.
                    (setf (sys.int::memref-unsigned-byte-64 pml1 pml1e)
                          (%make-pte frame nil t nil nil nil t :normal)))))))
@@ -34,10 +36,12 @@
     (let ((pml4 (convert-to-pmap-address (logand (%ttbr0-el1) (lognot #xFFF)))))
       ;; Skip wired area, entry 0.
       (loop for i from 1 below 64 ; pinned area to wired stack area.
-         do (mark-pml4e-cow pml4 i))
+         do (debug-uart-boot-hex-line "COW pml4" i)
+            (mark-pml4e-cow pml4 i))
       ;; Skip wired stack area, entry 64.
       (loop for i from 65 below 256 ; stack area to end of persistent memory.
-         do (mark-pml4e-cow pml4 i))))
+         do (debug-uart-boot-hex-line "COW pml4" i)
+            (mark-pml4e-cow pml4 i))))
   (flush-tlb)
   (tlb-shootdown-all)
   (finish-tlb-shootdown))

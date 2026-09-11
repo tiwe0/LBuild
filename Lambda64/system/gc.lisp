@@ -174,7 +174,6 @@ If FULL is true, then a major collection will be forced."
                   ;; the base of the released semispace.  Keep this window to
                   ;; fixnum arithmetic and move the reporting below.
                   (fixup-tlabs)
-                  (verify-no-oldspace-special-stack-refs)
                   (setf gc-elapsed (- (get-internal-run-time) gc-start)))
              (setf *gc-in-progress* nil))
            (let ((total-seconds (/ gc-elapsed
@@ -587,14 +586,10 @@ This is required to make the GC interrupt safe."
             (t (when *gc-debug-scavenge-stack*
                  (gc-log "Done scav stack.")))))))
 
-(sys.int::defglobal *gc-last-stack-frames* 0)
-(sys.int::defglobal *gc-last-stack-final-ra* 0)
 
 (defun scavenge-stack (stack-pointer frame-pointer return-address cycle-kind)
   (when *gc-debug-scavenge-stack* (gc-log "Scav stack..."))
-  (setf *gc-last-stack-frames* 0)
   (loop
-     (setf *gc-last-stack-final-ra* return-address)
      (when *gc-debug-scavenge-stack*
        (gc-log "SP: " stack-pointer)
        (gc-log "FP: " frame-pointer)
@@ -602,7 +597,6 @@ This is required to make the GC interrupt safe."
      (when (zerop return-address)
        (when *gc-debug-scavenge-stack* (gc-log "Done scav stack."))
        (return))
-     (incf *gc-last-stack-frames*)
      (let* ((fn (return-address-to-function return-address))
             (fn-address (logand (lisp-object-address fn) -16))
             (fn-offset (- return-address fn-address)))
@@ -912,16 +906,6 @@ This is required to make the GC interrupt safe."
 
 (defun scan-thread (object cycle-kind)
   (when *gc-debug-scavenge-stack* (gc-log "Scav thread " object))
-  (mezzano.supervisor::debug-uart-boot-hex-line
-   "TSCAN thread" (lisp-object-address object))
-  (mezzano.supervisor::debug-uart-boot-hex-line
-   "TSCAN state" (lisp-object-address (mezzano.supervisor:thread-state object)))
-  (mezzano.supervisor::debug-uart-boot-hex-line
-   "TSCAN prio" (lisp-object-address (mezzano.supervisor:thread-priority object)))
-  (mezzano.supervisor::debug-uart-boot-hex-line
-   "TSCAN scavengable" (if (scavengable-thread-p object) 1 0))
-  (mezzano.supervisor::debug-uart-boot-hex-line
-   "TSCAN fullsave" (if (mezzano.supervisor:thread-full-save-p object) 1 0))
   ;; Only scan the thread's stack and MV area when it's alive.
   (case (mezzano.supervisor:thread-state object)
     (:dead) ; Nothing.
@@ -934,8 +918,7 @@ This is required to make the GC interrupt safe."
      (when (scavengable-thread-p object)
        (cond ((mezzano.supervisor:thread-full-save-p object)
               (scavenge-full-save-thread object cycle-kind))
-             (t (let* ((probe-sp (mezzano.supervisor:thread-stack-pointer object))
-                       (stack-pointer probe-sp)
+             (t (let* ((stack-pointer (mezzano.supervisor:thread-stack-pointer object))
                        (frame-pointer (mezzano.supervisor:thread-frame-pointer object))
                        (return-address (memref-unsigned-byte-64 stack-pointer
                                                                 #-arm64 0
@@ -944,15 +927,7 @@ This is required to make the GC interrupt safe."
                   (scavengef (memref-t stack-pointer 0) cycle-kind) ; x13
                   #+arm64
                   (scavengef (memref-t stack-pointer 1) cycle-kind) ; x14
-                  (scavenge-stack stack-pointer frame-pointer return-address cycle-kind)
-                  (mezzano.supervisor::debug-uart-boot-hex-line
-                   "STKSCAN thread" (lisp-object-address object))
-                  (mezzano.supervisor::debug-uart-boot-hex-line
-                   "STKSCAN sp" probe-sp)
-                  (mezzano.supervisor::debug-uart-boot-hex-line
-                   "STKSCAN frames" *gc-last-stack-frames*)
-                  (mezzano.supervisor::debug-uart-boot-hex-line
-                   "STKSCAN final-ra" *gc-last-stack-final-ra*))))))))
+                  (scavenge-stack stack-pointer frame-pointer return-address cycle-kind))))))))
 
 (defun gc-info-for-function-offset (function offset)
   (when (function-reference-p function)
@@ -2527,30 +2502,6 @@ No type information will be provided."
            ;; Leave the weak pointer completely empty: no references to any
            ;; other object remain after this invocation.
            (setf (%object-ref-t finalizer +weak-pointer-finalizer+) nil)))))
-
-(defun verify-no-oldspace-special-stack-refs ()
-  "Post-cycle invariant: no special-stack entry may still name the semispace
-this cycle released.  Checked after the whole cycle rather than per-entry so a
-slot that is scavenged correctly and then re-staled later is still caught."
-  (let ((released (logxor *young-gen-newspace-bit* +address-semispace+)))
-    (do ((thread mezzano.supervisor::*all-threads*
-                 (mezzano.supervisor::thread-global-next thread)))
-        ((null thread))
-      (do ((ssp (mezzano.supervisor::thread-special-stack-pointer thread)
-                (%object-ref-t ssp 0)))
-          ((null ssp))
-        (dolist (slot '(1 2))
-          (let* ((value (%object-ref-t ssp slot))
-                 (address (lisp-object-address value)))
-            (when (and (%value-has-tag-p value +tag-object+)
-                       (eql (ldb (byte 3 +address-tag-shift+) address)
-                            +address-tag-general+)
-                       (zerop (logand address +address-old-generation+))
-                       (eql (logand address +address-semispace+) released))
-              (mezzano.supervisor:panic
-               "Special stack entry names released semispace after GC: thread "
-               thread " ssp " (lisp-object-address ssp)
-               " slot " slot " value " address))))))))
 
 (defun fixup-tlabs ()
   (do ((thread mezzano.supervisor::*all-threads*

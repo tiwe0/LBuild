@@ -384,20 +384,33 @@ Returns 4 values:
             available " bytes.")))
 
 (defun call-with-snapshot-vm-stable (critical-function stable-function)
-  "Quiesce CPUs for CRITICAL-FUNCTION, then run STABLE-FUNCTION with VM locked."
-  (let ((vm-lock-held-p nil))
-    (unwind-protect
-         (progn
-           (call-with-world-stopped
-            (dx-lambda ()
-              (rw-lock-write-acquire *vm-lock*)
-              (setf vm-lock-held-p t)
-              (funcall critical-function)))
-           ;; Other CPUs may run here, but VM mutations remain blocked until
-           ;; the on-disk block map and freelist have been written.
-           (funcall stable-function))
-      (when vm-lock-held-p
-        (rw-lock-write-release *vm-lock*)))))
+  "Run both functions with the world stopped and *VM-LOCK* held for write.
+
+STABLE-FUNCTION used to run after the world resumed, still holding *VM-LOCK*,
+so that VM mutations stayed blocked while the on-disk block map and freelist
+were written.  That deadlocks: CRITICAL-FUNCTION ends by marking every
+non-wired page read-only and copy-on-write, so the first thing any resumed
+thread does -- writing to its own stack -- takes a copy-on-write fault, and
+the pager cannot service it while this thread holds *VM-LOCK*.  The snapshot
+thread then blocks in turn on *ALLOCATOR-LOCK*, held by a thread already
+waiting on the VM lock, and every thread ends up asleep.
+
+Keeping STABLE-FUNCTION inside the world-stop preserves the property it was
+written for -- no VM mutations while the block map and freelist are written --
+and closes the fault window instead of opening it."
+  (call-with-world-stopped
+   (dx-lambda ()
+     (rw-lock-write-acquire *vm-lock*)
+     (unwind-protect
+          (progn
+            (funcall critical-function)
+            ;; STORE-ALLOC asserts *VM-LOCK* is held, so STABLE-FUNCTION runs
+            ;; under it.  Anything it touches must therefore already be
+            ;; resident: a fault here cannot be serviced, because the pager
+            ;; needs this very lock.  WAIT-FOR-PAGE-VIA-INTERRUPT panics on
+            ;; that case rather than parking forever.
+            (funcall stable-function))
+       (rw-lock-write-release *vm-lock*)))))
 
 (defun call-with-snapshot-disk-block (block-id function)
   (let ((page nil))
@@ -476,16 +489,20 @@ Returns 4 values:
          (set-snapshot-light nil)
          (return-from take-snapshot :retry))
        (ensure-snapshot-wired-reserve)
-       (debug-print-line "Begin snapshot.")
-       (debug-print-line "deferred blocks: " *store-freelist-n-deferred-free-blocks*)
-       (debug-print-line "Copying wired area.")
+       ;; Raw UART inside the *VM-LOCK* region: DEBUG-PRINT-LINE formats
+       ;; through the general allocator, and a fault taken there cannot be
+       ;; serviced because the pager needs this same lock.
+       (debug-uart-boot-line "Begin snapshot.")
+       (debug-uart-boot-hex-line "deferred blocks"
+                                 *store-freelist-n-deferred-free-blocks*)
+       (debug-uart-boot-line "Copying wired area.")
        (snapshot-copy-wired-area)
-       (debug-print-line "Marking dirty pages copy-on-write.")
+       (debug-uart-boot-line "Marking dirty pages copy-on-write.")
        (snapshot-mark-cow-dirty-pages))
      (dx-lambda ()
-       (debug-print-line "Updating block map.")
+       (debug-uart-boot-line "Updating block map.")
        (setf bml4-block (snapshot-block-map))
-       (debug-print-line "Updating freelist.")
+       (debug-uart-boot-line "Updating freelist.")
        (setf (values freelist-block previously-deferred-free-blocks)
              (snapshot-freelist))))
     (snapshot-write-back-pages)
@@ -651,7 +668,6 @@ per-page frames rather than failing the snapshot."
                              :wired-backing nil nil)))
                  (when trace-chunk-p
                    (if large-frame
-                       (debug-uart-boot-line "TRACE snapshot-backing-large")
                        (debug-uart-boot-line "TRACE snapshot-backing-fallback")))
                  ;; Pass 2: install a backing frame for each present page.
                  (map-ptes-1
@@ -679,41 +695,30 @@ per-page frames rather than failing the snapshot."
   (allocate-snapshot-wired-backing-pages-1 start end sparse))
 
 (defun initialize-snapshot ()
-  (debug-uart-boot-line "TRACE snapshot-init-start")
   (when (not (boundp '*snapshot-state*))
     (setf *snapshot-state* (%make-event 'snapshot-not-in-progress nil)))
-  (debug-uart-boot-line "TRACE snapshot-state-ready")
   (setf (event-state *snapshot-state*) nil)
   (cond ((boundp '*snapshot-epoch*)
          (setf (event-state *snapshot-epoch*) t)
          (setf *snapshot-epoch* *snapshot-next-epoch*))
   (t
          (setf *snapshot-epoch* (%make-event 'snapshot-epoch nil))))
-  (debug-uart-boot-line "TRACE snapshot-epoch-ready")
   (setf *snapshot-disk-request* (make-disk-request t)
         (disk-request-latch *snapshot-disk-request*)
         (%make-event "Snapshot disk request notifier" nil))
-  (debug-uart-boot-line "TRACE snapshot-request-ready")
   (setf *snapshot-in-progress* nil)
   (setf *snapshot-inhibit* 1)
   (setf *enable-snapshot-cow-fast-path* nil)
-  (debug-uart-boot-line "TRACE snapshot-flags-ready")
   ;; Allocate pages to copy the wired area into.
-  (debug-uart-boot-line "TRACE snapshot-wired-start")
   (allocate-snapshot-wired-backing-pages-1
    sys.int::*wired-area-base* sys.int::*wired-area-bump* nil)
-  (debug-uart-boot-line "TRACE snapshot-wired-done")
-  (debug-uart-boot-line "TRACE snapshot-function-start")
   (allocate-snapshot-wired-backing-pages-1
    sys.int::*wired-function-area-limit* sys.int::*function-area-base* nil)
-  (debug-uart-boot-line "TRACE snapshot-function-done")
-  (debug-uart-boot-line "TRACE snapshot-card-start")
   ;; MAP-PTES skips absent page-table branches for the mostly sparse card table.
   (allocate-snapshot-wired-backing-pages-1
    sys.int::+card-table-base+
    (+ sys.int::+card-table-base+ sys.int::+card-table-size+)
    t)
-  (debug-uart-boot-line "TRACE snapshot-card-done")
   ;; ### same here.
   (setf *snapshot-bounce-buffer-page*
         (%allocate-physical-pages 1 :other "snapshot bounce page" nil)))

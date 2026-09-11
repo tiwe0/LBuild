@@ -84,9 +84,7 @@
           (virtio:virtio-ring-desc-length vq stat-desc) 1
           (virtio:virtio-ring-desc-flags vq stat-desc) (ash 1 virtio:+virtio-ring-desc-f-write+))
     (virtio:virtio-ring-add-to-avail-ring vq req-desc)
-    (sup::debug-uart-boot-line "TRACE virtio-kick-start")
     (virtio:virtio-kick dev 0)
-    (sup::debug-uart-boot-line "TRACE virtio-kick-done")
     ;; The first paging-disk read runs before the normal wired-stack bridge
     ;; is usable.  Poll the device-owned used index during that narrow phase;
     ;; the IRQ still arrives and acknowledges the transport, but no scheduler
@@ -94,22 +92,17 @@
     (if (and (boundp 'sup::*cold-boot-in-progress*)
              sup::*cold-boot-in-progress*)
         (progn
-          (sup::debug-uart-boot-line "TRACE virtio-cold-wait-start")
           (loop until (sup:event-state (virtio-block-irq-latch device))
                 do (sys.int::cpu-relax))
           (sup::debug-uart-boot-line "TRACE virtio-cold-wait-done"))
         (sup:event-wait (virtio-block-irq-latch device)))
-    (sup::debug-uart-boot-line "TRACE virtio-block-wait-done")
     (setf (sup:event-state (virtio-block-irq-latch device)) nil)
-    (sup::debug-uart-boot-line "TRACE virtio-block-event-clear-done")
     ;; Release the descriptors.
     (virtio:virtio-ring-free-descriptor vq req-desc)
     (virtio:virtio-ring-free-descriptor vq buf-desc)
     (virtio:virtio-ring-free-descriptor vq stat-desc)
-    (sup::debug-uart-boot-line "TRACE virtio-block-desc-free")
     ;; Check status.
     (let ((status (sys.int::memref-unsigned-byte-8 (+ req +virtio-block-req-status+) 0)))
-      (sup::debug-uart-boot-hex-line "TRACE virtio-block-status" status)
       (values (eql status +virtio-block-s-ok+)
               (case status
                 (#.+virtio-block-s-ok+ :no-error)
@@ -153,27 +146,20 @@
           (virtio:virtio-ring-desc-length vq stat-desc) 1
           (virtio:virtio-ring-desc-flags vq stat-desc) (ash 1 virtio:+virtio-ring-desc-f-write+))
     (virtio:virtio-ring-add-to-avail-ring vq req-desc)
-    (sup::debug-uart-boot-line "TRACE virtio-kick-start")
     (virtio:virtio-kick dev 0)
-    (sup::debug-uart-boot-line "TRACE virtio-kick-done")
     (if (and (boundp 'sup::*cold-boot-in-progress*)
              sup::*cold-boot-in-progress*)
         (progn
-          (sup::debug-uart-boot-line "TRACE virtio-cold-wait-start")
           (loop until (sup:event-state (virtio-block-irq-latch device))
                 do (sys.int::cpu-relax))
           (sup::debug-uart-boot-line "TRACE virtio-cold-wait-done"))
         (sup:event-wait (virtio-block-irq-latch device)))
-    (sup::debug-uart-boot-line "TRACE virtio-block-flush-wait-done")
     (setf (sup:event-state (virtio-block-irq-latch device)) nil)
-    (sup::debug-uart-boot-line "TRACE virtio-block-flush-clear-done")
     ;; Release the descriptors.
     (virtio:virtio-ring-free-descriptor vq req-desc)
     (virtio:virtio-ring-free-descriptor vq stat-desc)
-    (sup::debug-uart-boot-line "TRACE virtio-block-flush-desc-free")
     ;; Check status.
     (let ((status (sys.int::memref-unsigned-byte-8 (+ req +virtio-block-req-status+) 0)))
-      (sup::debug-uart-boot-hex-line "TRACE virtio-block-flush-status" status)
       (values (eql status +virtio-block-s-ok+)
               (case status
                 (#.+virtio-block-s-ok+ :no-error)
@@ -185,15 +171,9 @@
   (sup::debug-uart-boot-line "TRACE virtio-block-irq-probe"))
 
 (defun virtio-block-irq-handler (blk)
-  (sup::debug-uart-boot-line "TRACE virtio-block-irq-before")
   (let ((latch (virtio-block-irq-latch blk)))
-    (sup::debug-uart-boot-line "TRACE virtio-block-irq-latch")
-    (sup::debug-uart-boot-line "TRACE virtio-block-event-get-before")
     (sup:event-state latch)
-    (sup::debug-uart-boot-line "TRACE virtio-block-event-get-after")
-    (sup::debug-uart-boot-line "TRACE virtio-block-event-set-before")
     (virtio-block-irq-probe)
-    (sup::debug-uart-boot-line "TRACE virtio-block-event-set-probed")
     (let ((fn #'sup::set-event-state))
       (sup::debug-uart-boot-hex-line "TRACE event-fn-object"
                                      (sys.int::lisp-object-address fn))

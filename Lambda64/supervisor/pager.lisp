@@ -109,16 +109,13 @@
 (defun read-disk-block (block-id)
   "Read a block from the disk, returning a freshly allocated page containing
 the data. Free the page with FREE-PAGE when done."
-  (debug-uart-boot-line "TRACE read-block-start")
   (let ((page (allocate-page "Disk block")))
-    (debug-uart-boot-line "TRACE read-block-page")
     ;; During cold boot the request object is intentionally deferred until
     ;; paging is initialized.  The buffer is already wired, so read it
     ;; directly through the disk driver in that narrow bootstrap window.
     (if (and (boundp '*pager-disk-request*)
              (null *pager-disk-request*))
         (progn
-          (debug-uart-boot-line "TRACE read-block-direct")
           (unless (funcall (disk-read-fn *paging-disk*)
                          (disk-device *paging-disk*)
                          (* block-id (ceiling +4k-page-size+ (disk-sector-size *paging-disk*)))
@@ -169,32 +166,24 @@ the data. Free the page with FREE-PAGE when done."
   (wake-thread sys.int::*pager-thread*))
 
 (defun initialize-hosted-paging-system (disk header)
-  (debug-uart-boot-line "TRACE hosted-disk-selected")
   (debug-print-line "BOOT paging=hosted-disk-selected")
   (setf *paging-disk* disk)
-  (debug-uart-boot-line "TRACE hosted-disk-published")
   (setf *paging-read-only* (or (not (disk-writable-p disk))
                                (boot-option +boot-option-force-read-only+)))
-  (debug-uart-boot-line "TRACE hosted-mode-ready")
   ;; Cold bootstrap keeps metadata and freelist replay on the direct physical
   ;; allocator path.  Do not wake the pager here: broadcasting its IPI while
   ;; the bootstrap thread still owns the scheduler/VM lock can switch away
   ;; before the direct phase resumes.  The pager is made runnable after the
   ;; serialized freelist has been replayed below.
-  (debug-uart-boot-line "TRACE store-args-start")
   (let ((n-store-blocks (truncate (* (disk-n-sectors *paging-disk*)
                                      (disk-sector-size *paging-disk*))
                                   #x1000))
         (freelist-block (sys.int::memref-unsigned-byte-64 (+ header +image-header-freelist+))))
-    (debug-uart-boot-line "TRACE store-args-ready")
     (initialize-store-freelist n-store-blocks freelist-block))
-  (debug-uart-boot-line "TRACE freelist-replayed")
   (wake-thread sys.int::*pager-thread*)
-  (debug-uart-boot-line "TRACE pager-woken")
   ;; Keep diagnostics on the raw UART until the first post-paging allocator
   ;; setup has completed; DEBUG-PRINT-LINE may demand-map dynamic pages while
   ;; the pager is still transitioning to its normal request path.
-  (debug-uart-boot-line "TRACE paging-stats-start")
   (when *paging-read-only*
     (debug-uart-boot-line "TRACE paging-read-only"))
   (multiple-value-bind (free-blocks total-blocks)
@@ -207,11 +196,9 @@ the data. Free the page with FREE-PAGE when done."
                                               allocated-blocks))))
             (t
              (setf *store-fudge-factor* (+ allocated-blocks 256))))))
-  (debug-uart-boot-line "TRACE paging-stats-ready")
   (debug-uart-boot-line "TRACE pager-available"))
 
 (defun detect-paging-disk ()
-  (debug-uart-boot-line "TRACE detect-start")
   (debug-print-line "BOOT paging=detect-start")
   (debug-print-line "Looking for paging disk with UUID "
                     (boot-uuid 0) ":" (boot-uuid 1) ":"
@@ -230,13 +217,11 @@ the data. Free the page with FREE-PAGE when done."
                   (ceiling (max +4k-page-size+ sector-size) +4k-page-size+)
                   :other "DETECT-PAGING-DISK disk buffer" nil))
            (page-addr (convert-to-pmap-address (* page +4k-page-size+))))
-      (debug-uart-boot-line "TRACE disk-header-read")
       ;; Read first 4k, figure out what to do with it.
       (debug-print-line "BOOT paging=read-header disk=" disk)
       (when (not (disk-read disk 0 (ceiling +4k-page-size+ sector-size) page-addr))
         (panic "Unable to read first block on disk " disk))
       (debug-print-line "BOOT paging=header-read disk=" disk)
-      (debug-uart-boot-line "TRACE disk-header-done")
       ;; Search for a Lambda64 image header here.
       (unwind-protect
            (flet ((check-magic ()
@@ -609,7 +594,6 @@ materialises its argument vector in the general area -- which panics with
            *cold-paging-direct-stack-ops*
            (stack-area-p base))
       (progn
-        (debug-uart-boot-line "TRACE stack-protect-direct")
         (protect-memory-range-in-pager base length flags))
       (pager-rpc 'protect-memory-range-in-pager base length flags)))
 
@@ -1148,7 +1132,6 @@ while the pager thread owns *VM-LOCK*."
 (defun wait-for-page-via-interrupt (interrupt-frame address writep ist-state)
   "Called by the page fault handler when a page fault occurs.
 It will put the thread to sleep, while it waits for the page."
-  (debug-uart-boot-line "TRACE wait-page-interrupt-start")
   (let ((self (current-thread))
         (pager (sys.int::symbol-global-value 'sys.int::*pager-thread*)))
     (when (eql self pager)
@@ -1156,12 +1139,15 @@ It will put the thread to sleep, while it waits for the page."
              " addr:" address " writep:" writep " ist-state:" ist-state))
     (when (and *pager-fast-path-enabled*
                (wait-for-page-fast-path address writep))
-      (debug-uart-boot-line "TRACE wait-page-fastpath-hit")
       (sys.int::%atomic-fixnum-add-symbol
        '*pager-fast-path-hits* 1)
-      (debug-uart-boot-line "TRACE wait-page-fastpath-return")
       (return-from wait-for-page-via-interrupt))
-    (debug-uart-boot-line "TRACE wait-page-fastpath-miss")
+    ;; A thread holding *VM-LOCK* for write cannot wait for the pager: the
+    ;; pager needs that lock to service the fault, so parking here deadlocks
+    ;; silently with every thread asleep.  Report the faulting access instead.
+    (when (rw-lock-write-held-p *vm-lock*)
+      (panic "Page fault at " address " writep " writep
+             " while holding *VM-LOCK* for write"))
     (sys.int::%atomic-fixnum-add-symbol
      '*pager-fast-path-misses* 1)
     (with-symbol-spinlock (*pager-lock*)
@@ -1177,7 +1163,6 @@ It will put the thread to sleep, while it waits for the page."
         (setf (thread-state pager) :runnable)
         (push-run-queue pager)))
     (restore-page-fault-ist ist-state)
-    (debug-uart-boot-line "TRACE wait-page-interrupt-resched")
     (%reschedule-via-interrupt interrupt-frame)))
 
 (defun map-physical-memory-in-pager (base size name)
@@ -1305,13 +1290,11 @@ It will put the thread to sleep, while it waits for the page."
 (sys.int::defglobal *panic-on-unhandled-paging-requests* t)
 
 (defun handle-pager-request ()
-  (debug-uart-boot-line "TRACE pager-handle-request-start")
   (setf (thread-pager-argument-1 *pager-current-thread*)
         (funcall (thread-wait-item *pager-current-thread*)
                  (thread-pager-argument-1 *pager-current-thread*)
                  (thread-pager-argument-2 *pager-current-thread*)
                  (thread-pager-argument-3 *pager-current-thread*)))
-  (debug-uart-boot-line "TRACE pager-handle-request-done")
   (wake-thread *pager-current-thread*))
 
 (defun pager-invoke-function-on-thread (thread function &optional (arg nil arg-p))
@@ -1352,7 +1335,6 @@ It will put the thread to sleep, while it waits for the page."
 
 (defun handle-fault-in-pager (thread writep)
   "Called when WAIT-FOR-PAGE is unable to handle a paging request."
-  (debug-uart-boot-line "TRACE pager-handle-fault-start")
   (let ((faulting-address (thread-wait-item thread)))
     (let* ((stack (thread-stack thread))
            (stack-base (stack-base stack))
@@ -1404,40 +1386,7 @@ It will put the thread to sleep, while it waits for the page."
         ;; Return and let the thread redo the fault.
         (wake-thread thread)
         (return-from handle-fault-in-pager)))
-    ;; Try to pass through to the support function.  Record where the fault
-    ;; came from first: forcing %RAISE-MEMORY-FAULT onto the thread replaces
-    ;; its saved PC, so by the time the panic prints a backtrace the faulting
-    ;; instruction is gone.  Raw UART only -- this runs on the pager thread and
-    ;; may be servicing a request with the world stopped.
-    (debug-uart-boot-hex-line "FAULT addr" faulting-address)
-    (debug-uart-boot-hex-line "FAULT thread"
-                              (sys.int::lisp-object-address thread))
-    (debug-uart-boot-hex-line "FAULT pc" (thread-state-rip thread))
-    (debug-uart-boot-hex-line "FAULT sp" (thread-state-rsp thread))
-    (debug-uart-boot-hex-line "FAULT fp" (thread-state-rbp thread))
-    (debug-uart-boot-hex-line
-     "FAULT yg-bump" (sys.int::symbol-global-value 'sys.int::*general-area-young-gen-bump*))
-    (debug-uart-boot-hex-line
-     "FAULT yg-limit" (sys.int::symbol-global-value 'sys.int::*general-area-young-gen-limit*))
-    (debug-uart-boot-hex-line
-     "FAULT ss-bit" (sys.int::symbol-global-value 'sys.int::*young-gen-newspace-bit*))
-    (debug-uart-boot-hex-line
-     "FAULT og-limit" (sys.int::symbol-global-value 'sys.int::*general-area-old-gen-limit*))
-    ;; The faulting instruction word itself: the backtrace names the function
-    ;; but not which access inside it faulted.
-    (let ((pc (thread-state-rip thread)))
-      (debug-uart-boot-hex-line "FAULT insn-2" (sys.int::memref-unsigned-byte-32 (- pc 8) 0))
-      (debug-uart-boot-hex-line "FAULT insn-1" (sys.int::memref-unsigned-byte-32 (- pc 4) 0))
-      (debug-uart-boot-hex-line "FAULT insn"   (sys.int::memref-unsigned-byte-32 pc 0)))
-    ;; The special-stack entry lives in the establishing frame at fp-184..-208
-    ;; (header, link, function, environment).  Reading it here says whether the
-    ;; entry itself is stale at fault time or whether the faulting register was
-    ;; loaded from somewhere else entirely.
-    (let ((fp (thread-state-rbp thread)))
-      (debug-uart-boot-hex-line "FAULT m184" (sys.int::memref-unsigned-byte-64 (- fp 184) 0))
-      (debug-uart-boot-hex-line "FAULT m192" (sys.int::memref-unsigned-byte-64 (- fp 192) 0))
-      (debug-uart-boot-hex-line "FAULT m200" (sys.int::memref-unsigned-byte-64 (- fp 200) 0))
-      (debug-uart-boot-hex-line "FAULT m208" (sys.int::memref-unsigned-byte-64 (- fp 208) 0)))
+    ;; Try to pass through to the support function.
     (when (pager-invoke-function-on-thread thread #'%raise-memory-fault faulting-address)
       (debug-print-line "Pager invoked memory fault handler on address " faulting-address)
       ;; Return and let the thread redo the fault.
@@ -1461,7 +1410,6 @@ It will put the thread to sleep, while it waits for the page."
            (panic-print-backtrace (thread-frame-pointer *pager-current-thread*))))))
 
 (defun pager-thread ()
-  (debug-uart-boot-line "TRACE pager-thread-entry")
   (loop
      ;; Select a thread.
      ;; This must be WITHOUT-INTERRUPTS, not SAFE-WITHOUT-INTERRUPTS.  The
@@ -1473,17 +1421,14 @@ It will put the thread to sleep, while it waits for the page."
      ;; %CALL-ON-WIRED-STACK-WITHOUT-INTERRUPTS on this CPU and the pager
      ;; then returns through an overwritten frame.
      (without-interrupts
-       (debug-uart-boot-line "TRACE pager-select-start")
        (with-symbol-spinlock (*pager-lock*)
          (loop
             (when *pager-waiting-threads*
               (setf *pager-current-thread* *pager-waiting-threads*
                     *pager-waiting-threads* (thread-queue-next *pager-current-thread*))
               (set-paging-light t)
-              (debug-uart-boot-line "TRACE pager-select-request")
               (return))
             (set-paging-light nil)
-            (debug-uart-boot-line "TRACE pager-select-empty")
             ;; Manually sleep, don't use condition variables or similar within ephemeral threads.
             (acquire-global-thread-lock)
             (release-place-spinlock (sys.int::symbol-global-value '*pager-lock*))
@@ -1492,7 +1437,6 @@ It will put the thread to sleep, while it waits for the page."
             (%run-on-wired-stack-without-interrupts (sp fp)
              (%reschedule-via-wired-stack sp fp))
             (%disable-interrupts)
-            (debug-uart-boot-line "TRACE pager-resumed")
             (acquire-place-spinlock (sys.int::symbol-global-value '*pager-lock*)))))
      (cond ((eql (thread-state *pager-current-thread*) :pager-request)
             (handle-pager-request))

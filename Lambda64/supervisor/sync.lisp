@@ -485,18 +485,14 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
   write-owner)
 
 (defun make-rw-lock (&optional name)
-  (debug-uart-boot-line "TRACE rw-lock-alloc-start")
   (let ((rw-lock (%make-rw-lock name)))
-    (debug-uart-boot-line "TRACE rw-lock-object-ready")
     (setf (rw-lock-writer-wait-queue rw-lock)
           ;; The descriptive list is not part of lock semantics.  Avoid
           ;; allocating wired cons cells during the first post-paging
           ;; bootstrap; the lock's wait queue itself is already wired.
           (%make-wait-queue :writer))
-    (debug-uart-boot-line "TRACE rw-lock-writer-queue-ready")
     (setf (rw-lock-reader-wait-queue rw-lock)
           (%make-wait-queue :reader))
-    (debug-uart-boot-line "TRACE rw-lock-reader-queue-ready")
     rw-lock))
 
 (defun rw-lock-read-acquire-slow (sp fp rw-lock)
@@ -794,16 +790,11 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
 (defun set-event-state (value event)
   "Set the state of EVENT.
 STATE may be any object and will be treated as a generalized boolean by EVENT-WAIT and WAIT-FOR-OBJECTS."
-  (debug-uart-boot-line "TRACE event-set-enter")
   (check-type event event)
-  (debug-uart-boot-line "TRACE event-set-checked")
   ;; Keep tracing allocation-free: this setter can run directly from an IRQ
   ;; handler, so avoid global counters/closures in the trace path.
-  (debug-uart-boot-line "TRACE event-set-start")
   (safe-without-interrupts (value event)
-    (debug-uart-boot-line "TRACE event-set-safe")
     (with-place-spinlock (*big-wait-for-objects-lock*)
-      (debug-uart-boot-line "TRACE event-set-big-lock")
       (when (and value
                  (not (event-%state event)))
         ;; Moving from the false state to the true state. Wake waiters.
@@ -818,10 +809,8 @@ STATE may be any object and will be treated as a generalized boolean by EVENT-WA
                      ((null (wait-queue-head watcher)))
                    (wake-thread-with-interrupts-disabled (pop-wait-queue watcher))))))
         (with-wait-queue-lock (event)
-          (debug-uart-boot-line "TRACE event-set-event-lock")
           (do ()
               ((null (wait-queue-head event)))
-            (debug-uart-boot-line "TRACE event-set-wake")
             (wake-thread-with-interrupts-disabled (pop-wait-queue event))))
         (debug-uart-boot-line "TRACE event-set-wake-done"))
       (setf (event-%state event) value)
@@ -867,7 +856,6 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
 
 (defun event-wait (event)
   "Wait until EVENT's state is not NIL."
-  (debug-uart-boot-line "TRACE event-wait-enter")
   (check-type event event)
   ;; The cold bootstrap thread is already the supervisor transaction owner;
   ;; handing its first device wait to the thread pool would recurse into the
@@ -880,7 +868,6 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
     (let ((self (current-thread)))
       (lock-wait-queue event)
       (cond ((event-%state event)
-             (debug-uart-boot-line "TRACE event-wait-already-set")
              ;; Event state is non-NIL, don't sleep.
              (unlock-wait-queue event)
              (release-place-spinlock *big-wait-for-objects-lock*))
@@ -894,7 +881,6 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
                    (thread-state self) :sleeping
                    (thread-unsleep-helper self) #'event-wait
                    (thread-unsleep-helper-argument self) event)
-             (debug-uart-boot-line "TRACE event-wait-sleep")
              (unlock-wait-queue event)
              (release-place-spinlock *big-wait-for-objects-lock*)
              (%reschedule-via-wired-stack sp fp)

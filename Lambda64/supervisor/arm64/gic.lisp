@@ -140,7 +140,6 @@
          (vector (ldb (byte 9 0) iar)))
     (when (and (boundp '*gic-irq-trace-count*)
                (< *gic-irq-trace-count* 16))
-      (debug-uart-boot-hex-line "TRACE gic-irq" vector)
       (incf *gic-irq-trace-count*))
     (when (eql (ldb (byte 23 0) iar) 1023)
       ;; Spurious interrupt.

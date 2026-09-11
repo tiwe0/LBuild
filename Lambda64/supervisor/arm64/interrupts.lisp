@@ -247,8 +247,6 @@
   ;; an address-size/permission fault indicates an address-layout or PTE
   ;; contract violation and must not be mistaken for a missing page.
   (when (fault-trace-allowed-p)
-    (debug-uart-boot-line "TRACE instruction-abort-handler")
-    (debug-uart-boot-hex-line "TRACE instruction-abort-far" fault-addr)
     (debug-uart-boot-hex-line "TRACE instruction-abort-esr" esr))
   (let ((status (ldb (byte 5 0) esr)))
     (case status
@@ -259,10 +257,8 @@
 
 (defun %data-abort-handler (interrupt-frame fault-addr esr)
   (when (fault-trace-allowed-p)
-    (debug-uart-boot-line "TRACE data-abort-handler")
     (debug-uart-boot-hex-line "TRACE data-abort-pc"
                               (interrupt-frame-raw-register interrupt-frame :rip))
-    (debug-uart-boot-hex-line "TRACE data-abort-far" fault-addr)
     (debug-uart-boot-hex-line "TRACE data-abort-esr" esr))
   (when (eql fault-addr #x400000000020)
     ;; Keep this diagnostic pointer-only.  The fault is often caused by the

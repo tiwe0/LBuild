@@ -54,7 +54,6 @@ Can be :TOP to position them at the top of the screen, :BOTTOM to position them 
   (declare (ignore x y w h in-unsafe-context-p)))
 
 (defun video-set-framebuffer (phys width height pitch layout &key damage-fn device)
-  (debug-uart-boot-line "TRACE framebuffer-config")
   (multiple-value-bind (bytes-per-pixel blit-fn fill-fn)
       (ecase layout
         (:x8r8g8b8 (values 4 #'%%bitblt-row-x8r8g8b8 #'%%bitset-row-x8r8g8b8))
