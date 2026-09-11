@@ -859,9 +859,19 @@ VALUE may be nil to make the fref unbound."
   (if (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
            mezzano.supervisor::*cold-boot-in-progress*)
       (%publish-function-reference-function value fref)
-      (mezzano.supervisor:safe-without-interrupts (fref value)
-        (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
-          (%publish-function-reference-function value fref))))
+      (progn
+        ;; Resolve any copy-on-write mapping on the fref before masking
+        ;; interrupts.  The snapshot marks the whole function area read-only
+        ;; and copy-on-write, and %PAGE-FAULT-HANDLER refuses to service a
+        ;; fault taken with IRQs masked -- it reports page-fault-no-irqs and
+        ;; panics.  A benign self-assignment here takes that fault while
+        ;; interrupts are still enabled, so the critical section below writes
+        ;; to a page that is already private and resident.
+        (setf (%object-ref-t fref +fref-function+)
+              (%object-ref-t fref +fref-function+))
+        (mezzano.supervisor:safe-without-interrupts (fref value)
+          (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
+            (%publish-function-reference-function value fref)))))
   value)
 
 (defun trace-wrapper-p (object)
