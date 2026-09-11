@@ -26,7 +26,20 @@
 (defun %allocate-virtio-legacy-mmio-device (mmio mmio-irq)
   "Allocate an MMIO device without relying on inherited constructor order."
   (let ((dev (sys.int::%allocate-struct 'virtio-legacy-mmio-device)))
+    ;; %ALLOCATE-STRUCT hands back raw storage: every slot must be written
+    ;; here, including the ones this transport does not care about.  VIRTQUEUES
+    ;; and CLAIMED were left holding the unbound marker, which is not NIL, so
+    ;; (VIRTIO-DEVICE-CLAIMED dev) was true for every device the moment it was
+    ;; allocated.  REGISTER-VIRTIO-DRIVER and VIRTIO-LATE-PROBE both skip
+    ;; claimed devices, so no driver could ever attach to an MMIO transport --
+    ;; the net, GPU and input devices were all invisible.  Only virtio-block
+    ;; worked, because VIRTIO-DEVICE-REGISTER special-cases it and attaches
+    ;; without consulting CLAIMED.  DID is written by VIRTIO-MMIO-REGISTER
+    ;; immediately after this returns.
     (setf (virtio::virtio-device-transport dev) #'virtio-legacy-mmio-transport
+          (virtio::virtio-device-virtqueues dev) nil
+          (virtio::virtio-device-did dev) nil
+          (virtio::virtio-device-claimed dev) nil
           (virtio::virtio-device-boot-id dev) (sup:current-boot-id)
           (virtio-legacy-mmio-device-mmio dev) mmio
           (virtio-legacy-mmio-device-mmio-irq dev) mmio-irq)

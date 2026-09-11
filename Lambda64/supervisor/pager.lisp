@@ -1327,11 +1327,24 @@ It will put the thread to sleep, while it waits for the page."
 
 ;; These exist so that the function object exists in the wired area,
 ;; this is needed so the pager can safely read the entry point address.
+;; SYS.INT::RAISE-STACK-OVERFLOW and SYS.INT::RAISE-MEMORY-FAULT live in the
+;; warm-loaded system/error.lisp.  Before warm loading completes they are not
+;; fbound, so calling them turns a stack overflow or an unserviceable memory
+;; fault into "Undefined function RAISE-STACK-OVERFLOW called with NIL" -- a
+;; report that names neither the real failure nor its address.  Both of those
+;; were mistaken for compiler bugs during ARM64 bring-up.  Panic with the real
+;; cause instead when the condition system is not up yet.
+
 (defun %raise-stack-overflow ()
-  (sys.int::raise-stack-overflow))
+  (if (fboundp 'sys.int::raise-stack-overflow)
+      (sys.int::raise-stack-overflow)
+      (panic "Stack overflow before the error system is loaded")))
 
 (defun %raise-memory-fault (address)
-  (sys.int::raise-memory-fault address))
+  (if (fboundp 'sys.int::raise-memory-fault)
+      (sys.int::raise-memory-fault address)
+      (panic "Memory fault at " address
+             " before the error system is loaded")))
 
 (defun handle-fault-in-pager (thread writep)
   "Called when WAIT-FOR-PAGE is unable to handle a paging request."

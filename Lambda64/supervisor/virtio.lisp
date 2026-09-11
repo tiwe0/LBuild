@@ -466,10 +466,17 @@
   ;; to serialize arbitrary driver callbacks.
   (let ((pending (with-virtio-registry-lock *virtio-late-probe-devices*)))
     (dolist (dev pending)
+      ;; No matching driver is not the same as giving up on the device.  This
+      ;; runs from the post-boot worker, long before the warm modules that
+      ;; register the net, GPU and input drivers are loaded.  Setting
+      ;; +VIRTIO-STATUS-FAILED+ here is terminal per the virtio spec -- the
+      ;; device needs a reset afterwards -- so REGISTER-VIRTIO-DRIVER's probe
+      ;; of unclaimed devices could never pick it up, and the machine came up
+      ;; with "No network cards detected!" despite the NIC being present.
+      ;; Leave the device pending instead; registration will claim it.
       (dolist (drv *virtio-drivers*
-               (progn
-                 (sup:debug-print-line "Unknown virtio device type " (virtio-device-did dev))
-                 (setf (virtio-device-status dev) +virtio-status-failed+)))
+               (sup:debug-print-line "No driver yet for virtio device type "
+                                     (virtio-device-did dev)))
         (when (and (eql (virtio-device-did dev) (virtio-driver-dev-id drv))
                    (sys.int::log-and-ignore-errors
                     (funcall (virtio-driver-probe drv) dev)))
@@ -577,7 +584,15 @@
 (defmacro define-virtio-driver (name probe-function dev-id)
   `(register-virtio-driver ',name ',probe-function ,dev-id))
 
-(defun register-virtio-driver (name probe-function dev-id)
+(defun copy-virtio-device-list ()
+  "Snapshot the device list so probing can run without holding the registry lock."
+  (let ((result '()))
+    (dolist (dev *virtio-devices* result)
+      (push dev result))))
+
+(defun %register-virtio-driver (name probe-function dev-id)
+  "Add the driver record under the registry lock.
+Returns the new driver, or NIL when one was already registered."
   (declare (mezzano.compiler::closure-allocation :wired))
   (with-virtio-registry-lock
     (dolist (drv *virtio-drivers*)
@@ -588,21 +603,46 @@
         ;; Driver records have no detach/reset callback. Keep an incompatible
         ;; redefinition rejected rather than clearing claims and probing live
         ;; transports; explicit teardown must precede any future reprobe.
-        (return-from register-virtio-driver name)))
+        (return-from %register-virtio-driver nil)))
     (let ((driver (make-virtio-driver
                    :name name
                    :probe probe-function
                    :dev-id dev-id)))
       (sup:debug-print-line "Registered new virtio driver " name " for device-id " dev-id)
       (sup::push-wired driver *virtio-drivers*)
-      ;; Probe devices.
-      (dolist (dev *virtio-devices*)
+      driver)))
+
+(defun register-virtio-driver (name probe-function dev-id)
+  (declare (mezzano.compiler::closure-allocation :wired))
+  (let ((driver (%register-virtio-driver name probe-function dev-id)))
+    ;; Probe outside the registry lock.  Driver probes allocate, and allocation
+    ;; can expand an area, which goes through PAGER-RPC and reschedules.  Doing
+    ;; that under a spinlock with interrupts disabled saves the thread's resume
+    ;; SP into the per-CPU wired stack, which another thread immediately reuses.
+    ;; The lock protects the registry lists, not arbitrary driver callbacks --
+    ;; the same correction VIRTIO-LATE-PROBE already carries.
+    (sup:debug-print-line "virtio register " name " driver? " (if driver 1 0))
+    (when driver
+      (let ((devs (with-virtio-registry-lock (copy-virtio-device-list))))
+        (sup:debug-print-line "virtio devices visible " (length devs))
+        (dolist (dev devs)
+          (sup:debug-print-line "  dev did " (virtio-device-did dev)
+                                " claimed " (if (virtio-device-claimed dev) 1 0)))))
+    (when driver
+      (dolist (dev (with-virtio-registry-lock (copy-virtio-device-list)))
         (when (and (not (virtio-device-claimed dev))
-                   (eql (virtio-device-did dev) dev-id)
-                   (sys.int::log-and-ignore-errors
-                    (funcall probe-function dev)))
-          (setf (virtio-device-claimed dev) driver)))
-      name)))
+                   (eql (virtio-device-did dev) dev-id))
+          ;; Report the probe outcome on the supervisor's own output.
+          ;; LOG-AND-IGNORE-ERRORS writes to *ERROR-OUTPUT*, which is not
+          ;; necessarily attached to the serial port during warm loading, so a
+          ;; failing probe is otherwise completely silent.
+          (let ((ok (sys.int::log-and-ignore-errors
+                     (funcall probe-function dev))))
+            (sup:debug-print-line "virtio probe " name " dev-id " dev-id
+                                  " result " (if ok 1 0))
+            (when ok
+              (setf (virtio-device-claimed dev) driver)))))))
+  name)
 
 (defun sup::initialize-virtio ()
   (setf *virtio-registry-lock* :unlocked)
