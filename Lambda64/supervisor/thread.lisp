@@ -535,18 +535,7 @@ Interrupts must be off and the global thread lock must be held."
   ;; a thread with a wired stack - one of the ephemeral supervisor threads.
   ;; Check if the thread is full-save.
   (if (thread-full-save-p new-thread)
-      (progn
-        ;; Keep the complete architectural target visible while diagnosing
-        ;; ARM64 ERET/stack hand-off failures.  These values come from the
-        ;; same save area consumed by %%restore-full-save-thread; logging them
-        ;; here distinguishes a corrupt saved frame from a fault after ERET.
-        (debug-uart-boot-hex-line "TRACE restore-rbx"
-                                  (sys.int::lisp-object-address
-                                   (thread-state-rbx-value new-thread)))
-        (debug-uart-boot-hex-line "TRACE restore-r8"
-                                  (sys.int::lisp-object-address
-                                   (thread-state-r8-value new-thread)))
-        (%%restore-full-save-thread new-thread))
+      (%%restore-full-save-thread new-thread)
       (progn
         ;; Identify the partial-save target too.  Without this the switch graph
         ;; is only half visible and a thread that resumes and immediately
