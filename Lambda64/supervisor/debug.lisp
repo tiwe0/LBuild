@@ -101,8 +101,15 @@
 
 While panicking, the log ring buffer must be skipped: its spinlock may already
 be held by this CPU, and ACQUIRE-PLACE-SPINLOCK panics on a self-held lock --
-a second panic that halts before the first has printed anything."
-  (and (boundp '*panic-in-progress*) *panic-in-progress*))
+a second panic that halts before the first has printed anything.
+
+Also true while the collector owns the world.  DEBUG-PRINT-LINE-1 normally
+formats into a wired byte vector, and GC-LOG runs from inside the collector,
+so the buffered path turns a GC diagnostic into \"Allocating during GC!\" --
+the reporting path destroys the very report it was asked to produce.  Both
+cases need the same answer: write straight through, allocate nothing."
+  (or (and (boundp '*panic-in-progress*) *panic-in-progress*)
+      (and (boundp 'sys.int::*gc-in-progress*) sys.int::*gc-in-progress*)))
 
 (defun debug-write-string (string &optional buf)
   (cond (buf

@@ -227,13 +227,38 @@
    #:floating-point-denormal-operand))
 
 ;; The reader is compiled before the cross-compiler's full CAS shim is
-;; loaded. Its bootstrap readtable lock is single-threaded on the host, so
-;; provide a temporary setf expansion for that early FASL. cross-compile.lisp
-;; replaces this macro with the target-aware implementation later in ASDF's
-;; serial load.
+;; loaded. Its bootstrap readtable lock is single-threaded on the host, so an
+;; early expansion is needed for that FASL. cross-compile.lisp and
+;; system/cas.lisp install the target-aware implementations later in ASDF's
+;; serial load, but this expansion has been observed reaching target code, so
+;; it must be correct on its own terms rather than merely adequate for the
+;; reader.
+;;
+;; The previous expansion was (progn (setf place new) old): an unconditional
+;; store that returns the OLD value the caller passed in. That reports success
+;; for every CAS, so every mutex acquisition, pseudo-atomic gate and wake race
+;; in the target believed it had won. Delegate to the real expansion whenever
+;; GET-CAS-EXPANSION exists, and keep a genuine compare-and-swap as the
+;; bootstrap fallback so a leaked expansion can never report a false win.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (cl:defmacro mezzano.extensions:cas (place old new)
-    `(progn (setf ,place ,new) ,old))
+  (cl:defmacro mezzano.extensions:cas (&environment environment place old new)
+    (cl:let ((expander (cl:and (cl:find-package '#:mezzano.internals)
+                               (cl:find-symbol "GET-CAS-EXPANSION"
+                                               '#:mezzano.internals))))
+      (cl:if (cl:and expander (cl:fboundp expander))
+          (cl:multiple-value-bind (vars vals old-sym new-sym cas-form)
+              (cl:funcall expander place environment)
+            `(let (,@(cl:mapcar #'cl:list vars vals)
+                   (,old-sym ,old)
+                   (,new-sym ,new))
+               ,cas-form))
+          (cl:let ((old-value (cl:gensym "OLD"))
+                   (current (cl:gensym "CURRENT")))
+            `(let* ((,old-value ,old)
+                    (,current ,place))
+               (when (eq ,current ,old-value)
+                 (setf ,place ,new))
+               ,current)))))
   (cl:defmacro mezzano.extensions:atomic-swapf (place new)
     `(prog1 ,place (setf ,place ,new))))
 

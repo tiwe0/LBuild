@@ -371,7 +371,11 @@ Returns NIL if the entry is missing and ALLOCATE is false."
                                   sys.int::+block-map-committed+))
                   flags))))
 
-(defun release-vm-page (frame &key allow-wired stackp)
+(defun %release-vm-page (frame allow-wired stackp)
+  "Positional entry point.  RELEASE-MEMORY-RANGE-IN-PAGER runs on the pager
+thread while the collector owns the world, and a keyword lambda list
+materialises its argument vector in the general area -- which panics with
+\"Allocating during GC!\" exactly when a major cycle is releasing oldspace."
   (case (physical-page-frame-type frame)
     (:active
      (remove-from-page-replacement-list frame)
@@ -393,6 +397,10 @@ Returns NIL if the entry is missing and ALLOCATE is false."
      (release-physical-pages frame 1))
     (t
      (panic "Releasing page " frame " with bad type " (physical-page-frame-type frame)))))
+
+(defun release-vm-page (frame &key allow-wired stackp)
+  "Keyword-compatible wrapper.  Pager-internal callers use %RELEASE-VM-PAGE."
+  (%release-vm-page frame allow-wired stackp))
 
 (defun pager-rpc (fn &optional arg1 arg2 arg3)
   (when (eq fn 'allocate-memory-range-in-pager)
@@ -566,8 +574,8 @@ Returns NIL if the entry is missing and ALLOCATE is false."
           ;; Update page tables and release pages if possible.
           (let ((pte (get-pte-for-address (+ card-base (* i #x1000)) nil)))
             (when (and pte (page-present-p pte 0))
-              (release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12)
-                               :allow-wired t)
+              (%release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12)
+                                t nil)
               (setf (page-table-entry pte 0) 0)))))
       (dotimes (i (truncate length #x1000))
         ;; Update block map.
@@ -575,9 +583,9 @@ Returns NIL if the entry is missing and ALLOCATE is false."
         ;; Update page tables and release pages if possible.
         (let ((pte (get-pte-for-address (+ base (* i #x1000)) nil)))
           (when (and pte (page-present-p pte 0))
-            (release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12)
-                             ;; Allow wired stacks to be freed.
-                             :allow-wired stackp :stackp stackp)
+            ;; Allow wired stacks to be freed.
+            (%release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12)
+                              stackp stackp)
             (setf (page-table-entry pte 0) 0))))
       (begin-tlb-shootdown)
       (flush-tlb)
@@ -627,7 +635,8 @@ Returns NIL if the entry is missing and ALLOCATE is false."
                        (block-info-zero-fill-p page-flags))
                    ;; Page going away, but it's ok. It'll be back, zero-filled.
                    #+(or)(debug-print-line "  flush page " (+ base (* i #x1000)) "  " (page-table-entry pte 0))
-                   (release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12))
+                   (%release-vm-page (ash (pte-physical-address (page-table-entry pte 0)) -12)
+                                     nil nil)
                    (setf (page-table-entry pte 0) 0))
                   ((and (block-info-writable-p page-flags)
                         (not (block-info-track-dirty-p page-flags)))
@@ -1395,7 +1404,40 @@ It will put the thread to sleep, while it waits for the page."
         ;; Return and let the thread redo the fault.
         (wake-thread thread)
         (return-from handle-fault-in-pager)))
-    ;; Try to pass through to the support function.
+    ;; Try to pass through to the support function.  Record where the fault
+    ;; came from first: forcing %RAISE-MEMORY-FAULT onto the thread replaces
+    ;; its saved PC, so by the time the panic prints a backtrace the faulting
+    ;; instruction is gone.  Raw UART only -- this runs on the pager thread and
+    ;; may be servicing a request with the world stopped.
+    (debug-uart-boot-hex-line "FAULT addr" faulting-address)
+    (debug-uart-boot-hex-line "FAULT thread"
+                              (sys.int::lisp-object-address thread))
+    (debug-uart-boot-hex-line "FAULT pc" (thread-state-rip thread))
+    (debug-uart-boot-hex-line "FAULT sp" (thread-state-rsp thread))
+    (debug-uart-boot-hex-line "FAULT fp" (thread-state-rbp thread))
+    (debug-uart-boot-hex-line
+     "FAULT yg-bump" (sys.int::symbol-global-value 'sys.int::*general-area-young-gen-bump*))
+    (debug-uart-boot-hex-line
+     "FAULT yg-limit" (sys.int::symbol-global-value 'sys.int::*general-area-young-gen-limit*))
+    (debug-uart-boot-hex-line
+     "FAULT ss-bit" (sys.int::symbol-global-value 'sys.int::*young-gen-newspace-bit*))
+    (debug-uart-boot-hex-line
+     "FAULT og-limit" (sys.int::symbol-global-value 'sys.int::*general-area-old-gen-limit*))
+    ;; The faulting instruction word itself: the backtrace names the function
+    ;; but not which access inside it faulted.
+    (let ((pc (thread-state-rip thread)))
+      (debug-uart-boot-hex-line "FAULT insn-2" (sys.int::memref-unsigned-byte-32 (- pc 8) 0))
+      (debug-uart-boot-hex-line "FAULT insn-1" (sys.int::memref-unsigned-byte-32 (- pc 4) 0))
+      (debug-uart-boot-hex-line "FAULT insn"   (sys.int::memref-unsigned-byte-32 pc 0)))
+    ;; The special-stack entry lives in the establishing frame at fp-184..-208
+    ;; (header, link, function, environment).  Reading it here says whether the
+    ;; entry itself is stale at fault time or whether the faulting register was
+    ;; loaded from somewhere else entirely.
+    (let ((fp (thread-state-rbp thread)))
+      (debug-uart-boot-hex-line "FAULT m184" (sys.int::memref-unsigned-byte-64 (- fp 184) 0))
+      (debug-uart-boot-hex-line "FAULT m192" (sys.int::memref-unsigned-byte-64 (- fp 192) 0))
+      (debug-uart-boot-hex-line "FAULT m200" (sys.int::memref-unsigned-byte-64 (- fp 200) 0))
+      (debug-uart-boot-hex-line "FAULT m208" (sys.int::memref-unsigned-byte-64 (- fp 208) 0)))
     (when (pager-invoke-function-on-thread thread #'%raise-memory-fault faulting-address)
       (debug-print-line "Pager invoked memory fault handler on address " faulting-address)
       ;; Return and let the thread redo the fault.

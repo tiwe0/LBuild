@@ -541,23 +541,6 @@ of the wired freelist into a bounded per-allocation cost."
                  sys.int::+allocation-minimum-alignment+)))
     (when sys.int::*gc-enable-logging*
       (mezzano.supervisor:debug-print-line "Expanding " name " area by " expansion " [remaining " remaining "]"))
-    ;; Every caller reaches here under *ALLOCATOR-LOCK*.  CURRENT-LIMIT was
-    ;; read above and is used as the base of the new mapping, so two threads
-    ;; running this concurrently map the same range twice and trip the pager's
-    ;; "entry not zero" check.
-    (when (not (mezzano.supervisor::mutex-held-p *allocator-lock*))
-      (mezzano.supervisor:panic "EXPAND-ALLOCATION-AREA without the allocator lock"))
-    ;; Raw UART only.  This point is reached precisely when the area is
-    ;; exhausted, so anything that formats through the general allocator
-    ;; recurses back into EXPAND-ALLOCATION-AREA and overflows the stack.
-    (mezzano.supervisor::debug-uart-boot-hex-line
-     "EXPAND-ENTER thread "
-     (sys.int::lisp-object-address (mezzano.supervisor:current-thread)))
-    (mezzano.supervisor::debug-uart-boot-hex-line
-     "EXPAND-ENTER owner "
-     (sys.int::lisp-object-address (mezzano.supervisor::mutex-owner *allocator-lock*)))
-    (mezzano.supervisor::debug-uart-boot-hex-line
-     "EXPAND-ENTER limit " current-limit)
     (cond ((and (allocation-area-growth-permitted-p
                  (young-generation-size) expansion remaining)
                 (mezzano.supervisor:allocate-memory-range
@@ -572,20 +555,16 @@ of the wired freelist into a bounded per-allocation cost."
            (setf (sys.int::symbol-global-value granularity-symbol) (* expansion 2))
            ;; Atomically store the new limit, other CPUs may be reading the value.
            (sys.int::%atomic-fixnum-add-symbol limit-symbol expansion)
-           (mezzano.supervisor:debug-print-line
-            "EXPAND-OK base " current-limit " len " expansion
-            " limit-now " (sys.int::symbol-global-value limit-symbol))
            (when sys.int::*gc-enable-logging*
              (mezzano.supervisor:debug-print-line "new remaining: " (bytes-remaining)))
            t)
           (t
            ;; Expansion failed, either not enough space or rejected by the pager.
-           (mezzano.supervisor:debug-print-line
-            "EXPAND-FAIL base " current-limit " len " expansion
-            " permitted " (if (allocation-area-growth-permitted-p
-                               (young-generation-size) expansion remaining)
-                              1 0)
-            " limit-now " (sys.int::symbol-global-value limit-symbol))
+           ;; Never format here: this path runs under *ALLOCATOR-LOCK* with
+           ;; the area exhausted, so anything that allocates re-enters the
+           ;; lock recursively.
+           (when sys.int::*gc-enable-logging*
+             (mezzano.supervisor:debug-print-line "A-M-R failed."))
            nil))))
 
 (defun %do-get-new-tlab ()

@@ -419,7 +419,15 @@
                  *boot-hooks* '()
                  *late-boot-hooks* '())
            (debug-uart-boot-line "TRACE main-thread-start")
-           (make-thread #'sys.int::initialize-lisp :name "Main thread" :priority :supervisor)
+           ;; :NORMAL, not :SUPERVISOR.  SCAVENGABLE-THREAD-P deliberately
+           ;; refuses to scan the stacks of :SUPERVISOR threads, on the
+           ;; contract that they only ever hold pointers to wired objects.
+           ;; This thread runs INITIALIZE-LISP -- all of warm loading and
+           ;; arbitrary user code -- so its stack is full of general-area
+           ;; pointers.  Marking it :SUPERVISOR meant the collector never
+           ;; scanned it, and every young-generation pointer on it dangled
+           ;; after the first cycle.
+           (make-thread #'sys.int::initialize-lisp :name "Main thread")
            (debug-uart-boot-line "TRACE main-thread-done")
            (setf *post-boot-worker-thread*
                  (make-thread #'post-boot-worker :name "Post-boot worker thread"))
@@ -430,7 +438,8 @@
                  *early-boot-hooks* '()
                  *boot-hooks* '()
                  *late-boot-hooks* '())
-           (make-thread #'sys.int::initialize-lisp :name "Main thread" :priority :supervisor)
+           ;; See the first-run branch: this thread must be scavengable.
+           (make-thread #'sys.int::initialize-lisp :name "Main thread")
            (setf *cold-boot-in-progress* nil)
            (debug-uart-boot-line "TRACE main-thread-done"))
           (t (wake-thread *post-boot-worker-thread*)))

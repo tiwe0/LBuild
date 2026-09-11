@@ -101,11 +101,25 @@
 ;; no-argument bridge for the first function invocation.  This guarantees the
 ;; function object is installed in x6 before loading its entry point.
 (sys.int::define-lap-function sys.int::%call-function-noargs ((function))
+  ;; BLR overwrites X30, so this bridge cannot stay a leaf.  Declaring
+  ;; :NO-FRAME tells the collector the return address is still in X30; after
+  ;; the BLR it is not, and the address of this function's own RET is there
+  ;; instead.  That both makes the RET jump to itself and leaves the collector
+  ;; unable to unwind any stack parked below this frame, which surfaces as
+  ;; "Bad GC metadata: Tried to unwind through function with no available
+  ;; return address".  Build a real frame so the saved X30 is on the stack
+  ;; where the unwinder expects it.
   (:gc :no-frame :layout #*)
+  (mezzano.lap.arm64:stp :x29 :x30 (:pre :sp -16))
+  (:gc :no-frame :layout #*00)
+  (mezzano.lap.arm64:add :x29 :sp :xzr)
+  (:gc :frame)
   (mezzano.lap.arm64:orr :x6 :xzr :x0)
   (mezzano.lap.arm64:orr :x5 :xzr :xzr)
   (mezzano.lap.arm64:ldr :x9 (:object :x6 #.sys.int::+function-entry-point+))
   (mezzano.lap.arm64:blr :x9)
+  (mezzano.lap.arm64:ldp :x29 :x30 (:post :sp 16))
+  (:gc :no-frame :layout #*)
   (mezzano.lap.arm64:ret))
 
 (sys.int::define-lap-function %%restore-full-save-thread ((thread))
