@@ -301,7 +301,11 @@ Arguments to FUNCTION:
   ;; instances require the trampoline to load their environment/target.
   (setf (%object-ref-unsigned-byte-64
          funcallable-instance +function-entry-point+)
-        (funcallable-instance-entry-point value)
+        ;; Package-qualified: this file is MEZZANO.INTERNALS while the helper
+        ;; is defined in MEZZANO.RUNTIME (runtime/allocate.lisp).  Unqualified,
+        ;; it resolves to a distinct MEZZANO.INTERNALS symbol that is never
+        ;; defined, and the only warning is lost in the existing baseline.
+        (mezzano.runtime::funcallable-instance-entry-point value)
         (%object-ref-t funcallable-instance +funcallable-instance-function+)
         value))
 

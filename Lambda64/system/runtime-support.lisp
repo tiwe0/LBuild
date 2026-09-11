@@ -488,6 +488,24 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
          (equal (sys.int::structure-slot-definition-initform new-slot)
                 (mezzano.runtime::instance-access-by-name existing-slot 'mezzano.clos::initform)))))
 
+(defun heap-layout-bit (heap-layout index)
+  "Read slot INDEX's boxedness from any HEAP-LAYOUT representation.
+
+The layout is stored compressed: T when every slot is boxed, NIL when none is,
+otherwise a per-slot bit sequence.  The cold image and the LLF loader do not
+always agree on the concrete representation of that sequence, so callers must
+compare meaning rather than object identity."
+  (cond ((eql heap-layout 't) 1)
+        ((null heap-layout) 0)
+        ((integerp heap-layout) (if (logbitp index heap-layout) 1 0))
+        (t (aref heap-layout index))))
+
+(defun heap-layouts-equivalent-p (a b size)
+  "True when A and B describe the same boxedness for the first SIZE slots."
+  (dotimes (i size t)
+    (when (not (eql (heap-layout-bit a i) (heap-layout-bit b i)))
+      (return nil))))
+
 (defun structure-definition-trivially-compatible-p (existing-structure-class sdef)
   (let* ((parent (structure-definition-parent sdef))
          (parent-class (or (and parent (%defstruct parent))
@@ -500,8 +518,13 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
               (structure-definition-area sdef))
          (eql (sys.int::layout-heap-size (mezzano.runtime::instance-access-by-name existing-structure-class 'mezzano.clos::slot-storage-layout))
               (structure-definition-size sdef))
-         (equal (sys.int::layout-heap-layout (mezzano.runtime::instance-access-by-name existing-structure-class 'mezzano.clos::slot-storage-layout))
-                (sys.int::layout-heap-layout (structure-definition-layout sdef)))
+         ;; Compare meaning, not representation.  EQUAL here rejected an
+         ;; identical THREAD definition whose cold-image heap-layout was stored
+         ;; in a different concrete form than the LLF's bit vector.
+         (heap-layouts-equivalent-p
+          (sys.int::layout-heap-layout (mezzano.runtime::instance-access-by-name existing-structure-class 'mezzano.clos::slot-storage-layout))
+          (sys.int::layout-heap-layout (structure-definition-layout sdef))
+          (structure-definition-size sdef))
          (eql (mezzano.runtime::instance-access-by-name existing-structure-class 'mezzano.clos::sealed)
               (structure-definition-sealed sdef))
          (eql (length (mezzano.runtime::instance-access-by-name existing-structure-class 'mezzano.clos::effective-slots))
@@ -522,6 +545,44 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
          (existing (find-class name nil)))
     (cond (existing
            (when (not (structure-definition-trivially-compatible-p existing structure-type))
+             ;; Report which clause of the compatibility test rejected it.
+             ;; Reporting only the class prints an address and says nothing.
+             (let* ((layout (mezzano.runtime::instance-access-by-name
+                             existing 'mezzano.clos::slot-storage-layout))
+                    (parent (structure-definition-parent structure-type))
+                    (parent-class (or (and parent (%defstruct parent))
+                                      (find-class 'structure-object)))
+                    (bad-slot (find-if-not
+                               (lambda (slot)
+                                 (structure-slot-definition-trivially-compatible-p
+                                  existing slot))
+                               (sys.int::structure-definition-slots structure-type))))
+               (mezzano.supervisor::debug-print-line
+                "Struct redefinition " name
+                " parent-eq " (if (eql (mezzano.runtime::instance-access-by-name
+                                        existing 'mezzano.clos::parent)
+                                       parent-class)
+                                  1 0)
+                " existing-hl-type " (type-of (sys.int::layout-heap-layout layout))
+                " new-hl " (let ((hl (sys.int::layout-heap-layout
+                                      (structure-definition-layout structure-type))))
+                             (cond ((eql hl 't) :t)
+                                   ((null hl) :nil)
+                                   ((bit-vector-p hl) (length hl))
+                                   (t :other)))
+                " prefix-eq " (let ((a (sys.int::layout-heap-layout layout))
+                                    (b (sys.int::layout-heap-layout
+                                        (structure-definition-layout structure-type))))
+                                (if (and (bit-vector-p a) (bit-vector-p b))
+                                    (let ((n (min (length a) (length b))))
+                                      (if (dotimes (i n t)
+                                            (when (not (eql (bit a i) (bit b i)))
+                                              (return nil)))
+                                          1 0))
+                                    :n/a))
+                " bad-slot " (if bad-slot
+                                 (sys.int::structure-slot-definition-name bad-slot)
+                                 nil)))
              (mezzano.clos::redefine-structure-type existing structure-type))
            (when location
              (setf (slot-value existing 'mezzano.clos::source-location) location))
@@ -670,11 +731,9 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
       ;; area may not have a published free-list entry yet, while the wired
       ;; function area is already part of the cold image.
       (unless fref
-        (mezzano.supervisor::debug-uart-boot-line "TRACE fref-normal-nil")
         (setf fref (mezzano.runtime::%allocate-function
                     +object-tag-function-reference+ 0 8 t)))
       (unless fref
-        (mezzano.supervisor::debug-uart-boot-line "TRACE fref-wired-nil")
         (mezzano.supervisor:panic "Unable to allocate function reference"))
     (setf (%object-ref-t fref +fref-name+) name)
     ;; Keep bootstrap output focused on the call boundaries under diagnosis;

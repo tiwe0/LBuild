@@ -430,10 +430,6 @@ Interrupts must be off and the global thread lock must be held."
     ;; Name both ends of the switch.  A voluntary reschedule with no other
     ;; trace between it and the previous restore is how a lost wakeup shows
     ;; up, and that is only readable if the actors are identified.
-    (debug-uart-boot-hex-line "TRACE resched-current"
-                              (sys.int::lisp-object-address current))
-    (debug-uart-boot-hex-line "TRACE resched-next"
-                              (sys.int::lisp-object-address next))
     (cond ((eql next current)
            ;; Staying on the same thread, unlock and return.
            (release-global-thread-lock)
@@ -544,18 +540,6 @@ Interrupts must be off and the global thread lock must be held."
         ;; ARM64 ERET/stack hand-off failures.  These values come from the
         ;; same save area consumed by %%restore-full-save-thread; logging them
         ;; here distinguishes a corrupt saved frame from a fault after ERET.
-        (debug-uart-boot-hex-line "TRACE restore-thread"
-                                  (sys.int::lisp-object-address new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-rip"
-                                  (thread-state-rip new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-rsp"
-                                  (thread-state-rsp new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-rbp"
-                                  (thread-state-rbp new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-cs"
-                                  (thread-state-cs new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-rflags"
-                                  (thread-state-rflags new-thread))
         (debug-uart-boot-hex-line "TRACE restore-rbx"
                                   (sys.int::lisp-object-address
                                    (thread-state-rbx-value new-thread)))
@@ -567,10 +551,6 @@ Interrupts must be off and the global thread lock must be held."
         ;; Identify the partial-save target too.  Without this the switch graph
         ;; is only half visible and a thread that resumes and immediately
         ;; reschedules is indistinguishable from one that never resumed.
-        (debug-uart-boot-hex-line "TRACE restore-partial-thread"
-                                  (sys.int::lisp-object-address new-thread))
-        (debug-uart-boot-hex-line "TRACE restore-partial-rsp"
-                                  (thread-state-rsp new-thread))
         (%%restore-partial-save-thread new-thread))))
 
 ;;; Stuff.
@@ -640,8 +620,6 @@ Interrupts must be off and the global thread lock must be held."
             (thread-state-r13 thread) 0
             (thread-state-r14-value thread) nil
             (thread-state-r15 thread) 0)
-      (debug-uart-boot-hex-line "TRACE thread-trampoline-object"
-                                 (sys.int::lisp-object-address trampoline))
       (debug-uart-boot-hex-line "TRACE thread-trampoline-entry"
                                  (sys.int::%object-ref-unsigned-byte-64
                                   trampoline sys.int::+function-entry-point+)))
@@ -663,11 +641,11 @@ Interrupts must be off and the global thread lock must be held."
 ;; up when the thread exits (either by normal return or by a throw to terminate-thread).
 (defun thread-entry-trampoline (function)
   (cond ((eq function #'sys.int::initialize-lisp)
-         (debug-uart-boot-line "TRACE thread-entry-function-lisp"))
+         nil)
         ((eq function #'post-boot-worker)
-         (debug-uart-boot-line "TRACE thread-entry-function-post-worker"))
+         nil)
         (t
-         (debug-uart-boot-line "TRACE thread-entry-function-other")))
+         nil))
   (let ((return-values 'terminate-thread))
     (unwind-protect
          (catch 'terminate-thread
@@ -677,8 +655,6 @@ Interrupts must be off and the global thread lock must be held."
                 (progn
                   (when (eql (sys.int::%atomic-fixnum-add-object (current-thread) +thread-inhibit-footholds+ -1) 1)
                     (run-pending-footholds))
-                  (debug-uart-boot-hex-line "TRACE thread-entry-function-object"
-                                             (sys.int::lisp-object-address function))
                   (debug-uart-boot-hex-line "TRACE thread-entry-function-entry"
                                              (sys.int::%object-ref-unsigned-byte-64
                                               function sys.int::+function-entry-point+))
@@ -689,7 +665,7 @@ Interrupts must be off and the global thread lock must be held."
                   ;; the primary return value to continue into cleanup.
                   (call-function-noargs-traced function)
                   (setf return-values nil)
-                  (debug-uart-boot-line "TRACE thread-entry-after-funcall"))
+                  nil)
              ;; Re-inhibit footholds when leaving. This way it is never possible
              ;; to foothold a thread after the TERMINATE-THREAD catch has exited.
              ;; There's still a race here: If TERMINATE-THREAD is thrown to while
@@ -702,7 +678,7 @@ Interrupts must be off and the global thread lock must be held."
 
 (defun call-function-noargs-traced (function)
   (prog1 (sys.int::%call-function-noargs function)
-    (debug-uart-boot-line "TRACE call-function-bridge-return")))
+    nil))
 
 ;; This is seperate from thread-entry-trampoline so steppers can detect it.
 (defun thread-final-cleanup (return-values)
@@ -932,8 +908,8 @@ not and WAIT-P is false."
   ;; allocation-free.
   (safe-without-interrupts (thread)
     (wake-thread-with-interrupts-disabled thread)
-    (debug-uart-boot-line "TRACE wake-after-1"))
-  (debug-uart-boot-line "TRACE wake-exit"))
+    nil)
+  nil)
 
 ;; Wake a waiter while the caller already owns an interrupt-disabled context
 ;; (notably an IRQ handler running on SP_EL1).  Avoid nesting WITHOUT-INTERRUPTS
@@ -942,12 +918,10 @@ not and WAIT-P is false."
   (ensure-interrupts-disabled)
   (with-symbol-spinlock (*global-thread-lock*)
     (wake-thread-1 thread)
-    (debug-uart-boot-line "TRACE wake-disabled-after-1")))
+    nil))
 
 (defun wake-thread-1 (thread)
   "Wake a sleeping thread, with locks held."
-  (debug-uart-boot-hex-line "TRACE wake1-target"
-                            (sys.int::lisp-object-address thread))
   (ensure-interrupts-disabled)
   (ensure-global-thread-lock-held)
   (ensure (not (or (eql (thread-state thread) :runnable)
@@ -956,7 +930,7 @@ not and WAIT-P is false."
   (setf (thread-state thread) :runnable)
   (push-run-queue thread)
   (broadcast-wakeup-ipi)
-  (debug-uart-boot-line "TRACE wake1-ipi"))
+  nil)
 
 (defun initialize-initial-thread ()
   "Called very early after boot to reset the initial thread."

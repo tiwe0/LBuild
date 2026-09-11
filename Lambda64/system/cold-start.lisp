@@ -231,7 +231,6 @@
   "A grab-bag of things that must be done before Lisp will work properly.
 Cold-generator sets up just enough stuff for functions to be called, for
 structures to exist, and for memory to be allocated, but not much beyond that."
-  (mezzano.supervisor::debug-uart-boot-line "TRACE lisp-init-start")
   ;; The cold form vector contains condition definitions whose complete class
   ;; constructors are supplied by warm Closette.  Keep unresolved class
   ;; references non-fatal until the vector has been replayed.

@@ -118,8 +118,15 @@
 If FULL is true, then a major collection will be forced."
   (%gc :reason 'gc :full full :major-required full))
 
-(defun %gc (&key full reason major-required)
-  "Like GC, but internal. This is the entry point the allocation functions use."
+(defun %%gc (full reason major-required)
+  "Positional entry point for %GC.
+
+The allocation failure paths call this when memory is exhausted, and a keyword
+lambda list materialises its argument vector in the general area.  Allocating
+there is what just failed, so the keyword form re-enters the allocator, fails
+again, and calls the collector again: an unbounded MAKE-SIMPLE-VECTOR ->
+%ALLOCATE-OBJECT -> %SLOW-ALLOCATE-FROM-GENERAL-AREA -> %GC recursion that ends
+in a stack overflow rather than a collection."
   (when *gc-enable-logging*
     (mezzano.supervisor:debug-print-line
      (if full "Full " "")
@@ -138,6 +145,11 @@ If FULL is true, then a major collection will be forced."
         (mezzano.supervisor:condition-wait-for (*gc-cvar* *gc-lock*)
                                                (not (eql epoch *gc-epoch*))))))
   (values))
+
+(defun %gc (&key full reason major-required)
+  "Like GC, but internal.  Keyword-compatible wrapper around %%GC.
+Allocation failure paths must call %%GC directly; see its docstring."
+  (%%gc full reason major-required))
 
 (defun gc-worker ()
   (loop

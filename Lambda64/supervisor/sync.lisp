@@ -702,9 +702,6 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
                 +rw-lock-state-unlocked+)
        ;; CAS passed, lock is now write-locked.
        (setf (rw-lock-write-owner rw-lock) (current-thread))
-       (when (and (boundp '*vm-lock*) (eq rw-lock *vm-lock*))
-         (debug-uart-boot-hex-line "TRACE vm-lock-acquire"
-                                   (sys.int::lisp-object-address (current-thread))))
        (return t))
      (when (eql (rw-lock-write-owner rw-lock) (current-thread))
        (if *lock-violations-are-fatal*
@@ -812,9 +809,9 @@ STATE may be any object and will be treated as a generalized boolean by EVENT-WA
           (do ()
               ((null (wait-queue-head event)))
             (wake-thread-with-interrupts-disabled (pop-wait-queue event))))
-        (debug-uart-boot-line "TRACE event-set-wake-done"))
+        )
       (setf (event-%state event) value)
-      (debug-uart-boot-line "TRACE event-set-state-done"))))
+      )))
 
 ;; Keep the standard SETF protocol, but provide a stable ordinary entry point
 ;; for interrupt-context callers.  The latter avoids relying on a cold-image
@@ -884,7 +881,7 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
              (unlock-wait-queue event)
              (release-place-spinlock *big-wait-for-objects-lock*)
              (%reschedule-via-wired-stack sp fp)
-             (debug-uart-boot-line "TRACE event-wait-resumed"))))))
+             )))))
 
 ;;;; A concurrent object pool.
 

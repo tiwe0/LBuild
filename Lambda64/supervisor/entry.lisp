@@ -304,7 +304,7 @@
           ;; Do not let bootstrap-created threads mutate stack mappings under
           ;; VM-LOCK directly while the pager can service another fault.
           (setf *cold-paging-direct-stack-ops* nil)
-          (debug-uart-boot-line "TRACE vm-lock-publish-done"))
+          nil)
         (initialize-paging-system))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
@@ -370,10 +370,10 @@
       ;; The cold image's own freelists are not covered by the area bumps
       ;; above; walk the bins so every range the allocator can split is mapped.
       (mezzano.runtime::prime-freelist-card-tables)
-      (debug-uart-boot-line "TRACE card-prime-done"))
+      nil)
     (when (not (boot-option +boot-option-no-smp+))
       (boot-secondary-cpus)
-      (debug-uart-boot-line "TRACE smp-done"))
+      nil)
     (cond (first-run-p
            (setf *boot-hook-lock* (make-mutex "Boot Hook Lock")
                  *early-boot-hooks* '()
@@ -390,7 +390,7 @@
            (make-thread #'sys.int::initialize-lisp :name "Main thread")
            (setf *post-boot-worker-thread*
                  (make-thread #'post-boot-worker :name "Post-boot worker thread"))
-           (debug-uart-boot-line "TRACE post-worker-done"))
+           nil)
           ((not first-run-p)
            (setf *post-boot-worker-thread* (make-thread #'post-boot-worker :name "Post-boot worker thread")
                  *boot-hook-lock* (make-mutex "Boot Hook Lock")
@@ -400,6 +400,6 @@
            ;; See the first-run branch: this thread must be scavengable.
            (make-thread #'sys.int::initialize-lisp :name "Main thread")
            (setf *cold-boot-in-progress* nil)
-           (debug-uart-boot-line "TRACE main-thread-done"))
+           nil)
           (t (wake-thread *post-boot-worker-thread*)))
     (finish-initial-thread)))

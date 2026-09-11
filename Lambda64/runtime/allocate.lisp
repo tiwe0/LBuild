@@ -362,7 +362,7 @@ of the wired freelist into a bounded per-allocation cost."
        (cond (inhibit-gc
               (setf inhibit-gc nil))
              (t
-              (sys.int::%gc :reason :pinned :major-required t :full (not (zerop i)))))))
+              (sys.int::%%gc (not (zerop i)) :pinned t)))))
 
 (defun %allocate-from-wired-area-unlocked (tag data words)
   (let ((address (%allocate-from-freelist-area tag data words sys.int::*wired-area-free-bins*)))
@@ -398,10 +398,10 @@ of the wired freelist into a bounded per-allocation cost."
            (update-allocation-time start-time)
            (return result)))
        (when (zerop i)
-         (mezzano.supervisor::debug-uart-boot-line "TRACE wired-alloc-miss"))
+         nil)
        (when (> i *maximum-allocation-attempts*)
          (error 'storage-condition))
-       (sys.int::%gc :reason :wired :major-required t :full (not (zerop i)))))
+       (sys.int::%%gc (not (zerop i)) :wired t)))
 
 (defun with-live-objects-helper (&rest objects)
   (declare (ignore objects)))
@@ -645,7 +645,7 @@ of the wired freelist into a bounded per-allocation cost."
        (when (> gc-count *maximum-allocation-attempts*)
          (cerror "Retry allocation" 'storage-condition))
        (incf gc-count)
-       (sys.int::%gc :reason :general :full (not (eql gc-count 1)))
+       (sys.int::%%gc (not (eql gc-count 1)) :general nil)
        (go OUTER-LOOP))))
 
 (defun %allocate-object (tag data size area)
@@ -762,7 +762,7 @@ of the wired freelist into a bounded per-allocation cost."
        (when (> gc-count *maximum-allocation-attempts*)
          (cerror "Retry allocation" 'storage-condition))
        (incf gc-count)
-       (sys.int::%gc :reason :cons :full (not (eql gc-count 1)))
+       (sys.int::%%gc (not (eql gc-count 1)) :cons nil)
        (go OUTER-LOOP))))
 
 (defun sys.int::make-simple-vector (size &optional area)
@@ -934,7 +934,7 @@ of the wired freelist into a bounded per-allocation cost."
        (cond (inhibit-gc
               (setf inhibit-gc nil))
              (t
-              (sys.int::%gc :reason (if wiredp :wired-function :function) :major-required t :full (not (zerop i)))
+              (sys.int::%%gc (not (zerop i)) (if wiredp :wired-function :function) t)
               ;; Try to keep a reasonable amount of space available after collection.
               ;; However, this doesn't account for fragmentation.
               (let* ((words-used (if wiredp
@@ -1024,13 +1024,27 @@ of the wired freelist into a bounded per-allocation cost."
   (and (typep layout 'sys.int::layout)
        (typep (sys.int::layout-heap-size layout) '(integer 2))
        (let ((heap-layout (sys.int::layout-heap-layout layout)))
-         (and (bit-vector-p heap-layout)
-              (>= (length heap-layout)
-                  (sys.int::layout-heap-size layout))
-              ;; Slot zero is a raw entry address; slot one is the boxed
-              ;; function that keeps that target alive.
-              (zerop (bit heap-layout sys.int::+function-entry-point+))
-              (= (bit heap-layout sys.int::+funcallable-instance-function+) 1)))
+         (cond
+           ;; All slots boxed.  COMPUTE-CLASS-SLOT-STORAGE-LAYOUT builds every
+           ;; CLOS class layout with :HEAP-LAYOUT T, so this is the normal
+           ;; representation for a funcallable class, not an exception.
+           ;;
+           ;; Slot zero holds the raw entry point and is covered by that T, but
+           ;; scanning it is harmless: entry points are 16-byte aligned, so they
+           ;; read as fixnums and SCAVENGE-OBJECT returns them untouched.  The
+           ;; collector (SCAN-LAYOUT in gc.lisp) and the CLOS constructor both
+           ;; already treat T as a first-class case.
+           ((eql heap-layout 't) t)
+           ;; Per-slot bit vector: slot zero must be raw and slot one boxed, so
+           ;; the function this instance calls stays reachable.
+           ((bit-vector-p heap-layout)
+            (and (>= (length heap-layout)
+                     (sys.int::layout-heap-size layout))
+                 (zerop (bit heap-layout sys.int::+function-entry-point+))
+                 (= (bit heap-layout sys.int::+funcallable-instance-function+) 1)))
+           ;; NIL means every slot is raw, which would let the collector drop
+           ;; the target function.
+           (t nil)))
        (member (sys.int::layout-area layout) '(nil :pinned :wired))))
 
 (defun funcallable-instance-entry-point (function)
@@ -1044,7 +1058,11 @@ of the wired freelist into a bounded per-allocation cost."
   "Allocate a funcallable instance."
   (check-type function function)
   (assert (valid-funcallable-instance-layout-p layout) (layout)
-          "Invalid funcallable-instance layout ~S." layout)
+          "Invalid funcallable-instance layout ~S (heap-size ~S, heap-layout ~S, area ~S)."
+          layout
+          (and (typep layout 'sys.int::layout) (sys.int::layout-heap-size layout))
+          (and (typep layout 'sys.int::layout) (sys.int::layout-heap-layout layout))
+          (and (typep layout 'sys.int::layout) (sys.int::layout-area layout)))
   (let ((object (%allocate-object sys.int::+object-tag-funcallable-instance+
                                   (sys.int::lisp-object-address layout)
                                   (sys.int::layout-heap-size layout)
@@ -1123,25 +1141,19 @@ of the wired freelist into a bounded per-allocation cost."
   size)
 
 (defun %make-stack (base size)
-  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-constructor-start")
   (let ((stack (%%make-stack base size)))
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-constructor-done")
     stack))
 
 (defun make-stack-object-for-boot (base size)
-  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-wrapper-start")
   (let ((stack (%%make-stack base size)))
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-wrapper-done")
     stack))
 
 (defun make-stack-region-node-for-boot ()
-  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-region-start")
   ;; The initial thread is still on the bootstrap stack and the general
   ;; allocator may need the pager/GC. These nodes are only allocator metadata,
   ;; so keep them in the wired area during cold bootstrap.
   (let* ((reservation (mezzano.runtime::%cons-in-wired-area nil nil))
          (node (mezzano.runtime::%cons-in-wired-area reservation nil)))
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-region-done")
     node))
 
 (defconstant +stack-guard-size+ #x200000
@@ -1209,7 +1221,6 @@ This area exists below the stack and is never allocated or mapped.")
 
 (defun %allocate-stack (size &optional wired)
   (declare (mezzano.compiler::closure-allocation :wired))
-  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-alloc-start")
   (setf size (align-up size #x1000))
   (let* ((gc-count 0)
          (stack-address nil)
@@ -1217,10 +1228,8 @@ This area exists below the stack and is never allocated or mapped.")
          ;; allocator mutex. RELEASE-STACK-VIRTUAL-REGION only relinks them.
          (stack-region-node (make-stack-region-node-for-boot))
          (stack (make-stack-object-for-boot nil size)))
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-done")
     ;; Allocate the stack object & finalizer up-front to prevent any issues
     ;; if the system runs out of memory while allocating the stack.
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-weak-pointer-start")
     (if mezzano.supervisor::*cold-boot-in-progress*
         ;; Weak-pointer allocation touches the finalizer list and is not safe
         ;; while the cold world is stopped. The bootstrap stacks are retained
@@ -1240,7 +1249,6 @@ This area exists below the stack and is never allocated or mapped.")
                           (release-memory-range address size)
                           (release-stack-virtual-region stack-region-node wired))))
          :area :wired))
-    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-weak-pointer-done")
     (tagbody
      RETRY
        (mezzano.supervisor:without-footholds
@@ -1250,15 +1258,11 @@ This area exists below the stack and is never allocated or mapped.")
                   ;; Don't acquire the allocator lock if the world is stopped.
                   ;; This happens when allocating stacks for CPUs during boot.
                   (when (not (eql mezzano.supervisor::*world-stopper* (mezzano.supervisor:current-thread)))
-                    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-lock-start")
                     (acquire-mutex mezzano.runtime::*allocator-lock*))
-                  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-lock-done")
                   (when (< (mezzano.runtime::bytes-remaining) size)
                     (go DO-GC))
-                  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-bytes-done")
                   (multiple-value-bind (addr region-node)
                       (allocate-stack-virtual-region size wired stack-region-node)
-                    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-virtual-done")
                     ;; Commit backing memory only after reserving a unique
                     ;; virtual slot. Failed commits return the reservation.
                     (let ((committed-p nil))
@@ -1274,7 +1278,6 @@ This area exists below the stack and is never allocated or mapped.")
                                                         sys.int::+block-map-wired+
                                                         0)))))
                                (go DO-GC))
-                             (mezzano.supervisor::debug-uart-boot-line "TRACE stack-memory-done")
                              (setf committed-p t)
                              ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* size)
                              (setf (stack-base stack) addr
@@ -1293,7 +1296,7 @@ This area exists below the stack and is never allocated or mapped.")
        (when (> gc-count mezzano.runtime::*maximum-allocation-attempts*)
          (error 'storage-condition))
        (incf gc-count)
-       (sys.int::%gc :reason :stack :full t)
+       (sys.int::%%gc t :stack nil)
        (go RETRY))))
 
 ;;; Card table.

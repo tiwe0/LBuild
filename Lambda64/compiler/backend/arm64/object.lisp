@@ -214,7 +214,7 @@
                       (,additional-inputs (list ,object ,disp-reg)))
                   ,@body)))))))
 
-(defmacro define-object-ref-integer-accessor (name read-op write-op scale box-op unbox-op)
+(defmacro define-object-ref-integer-accessor (name read-op write-op cas-op scale box-op unbox-op)
   `(progn
      (define-builtin ,name ((object index) result)
        (let ((temp (make-instance 'ir:virtual-register :kind :integer)))
@@ -240,27 +240,72 @@
                                 :outputs (list))))
          (emit (make-instance 'ir:move-instruction
                               :source value
+                              :destination result))))
+     ;; The x86-64 backend has had this since the unboxed accessors were
+     ;; introduced; ARM64 never did.  Nothing noticed until (SYS.INT::CAS ...)
+     ;; started expanding through GET-CAS-EXPANSION: the bootstrap shim in
+     ;; compiler/package.lisp used to turn every CAS into a plain SETF, so the
+     ;; missing builtin was unreachable.  SUPERSEDE-INSTANCE needs a real CAS
+     ;; on the object header word to publish an obsolete layout safely.
+     (define-builtin (sys.int::cas ,name) ((old new object index) result)
+       (let ((old-unboxed (make-instance 'ir:virtual-register :kind :integer))
+             (new-unboxed (make-instance 'ir:virtual-register :kind :integer))
+             (current-unboxed (make-instance 'ir:virtual-register :kind :integer))
+             (address (make-instance 'ir:virtual-register :kind :integer)))
+         (emit (make-instance ',unbox-op
+                              :source old
+                              :destination old-unboxed))
+         (emit (make-instance ',unbox-op
+                              :source new
+                              :destination new-unboxed))
+         ;; CASAL needs the address in a single register, while
+         ;; WITH-BUILTIN-OBJECT-ACCESS yields a base/displacement pair.
+         ;; Materialise it.  The constant branch keeps |displacement| <= 256,
+         ;; which fits the ADD/SUB immediate field.
+         (with-builtin-object-access (ea ea-inputs object index ,scale)
+           (let ((base (first ea))
+                 (disp (second ea)))
+             (cond ((integerp disp)
+                    (emit (make-instance 'arm64-instruction
+                                         :opcode (if (minusp disp) 'lap:sub 'lap:add)
+                                         :operands (list address base (abs disp))
+                                         :inputs (list base)
+                                         :outputs (list address))))
+                   (t
+                    (emit (make-instance 'arm64-instruction
+                                         :opcode 'lap:add
+                                         :operands (list address base disp)
+                                         :inputs (list base disp)
+                                         :outputs (list address)))))))
+         (emit (make-instance 'arm64-cas-mem-instruction
+                              :opcode ',cas-op
+                              :address address
+                              :old-value old-unboxed
+                              :new-value new-unboxed
+                              :current-value current-unboxed))
+         (emit (make-instance ',box-op
+                              :source current-unboxed
                               :destination result))))))
 
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8  lap:ldrb  lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16 lap:ldrh  lap:strh  2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32 lap:ldrw  lap:strw  4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-64 lap:ldr   lap:str   8 ir:box-unsigned-byte-64-instruction ir:unbox-unsigned-byte-64-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8 lap:ldrb lap:strb lap:casalb 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16 lap:ldrh lap:strh lap:casalh 2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32 lap:ldrw lap:strw lap:casalw 4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-64 lap:ldr lap:str lap:casal 8 ir:box-unsigned-byte-64-instruction ir:unbox-unsigned-byte-64-instruction)
 
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-8    lap:ldrsb   lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-16   lap:ldrsh   lap:strh  2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-32   lap:ldrsw   lap:strw  4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-64   lap:ldr     lap:str   8 ir:box-signed-byte-64-instruction ir:unbox-signed-byte-64-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-8 lap:ldrsb lap:strb lap:casalb 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-16 lap:ldrsh lap:strh lap:casalh 2 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-32 lap:ldrsw lap:strw lap:casalw 4 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-64 lap:ldr lap:str lap:casal 8 ir:box-signed-byte-64-instruction ir:unbox-signed-byte-64-instruction)
 
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8-unscaled  lap:ldrb  lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16-unscaled lap:ldrh  lap:strh  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32-unscaled lap:ldrw  lap:strw  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-64-unscaled lap:ldr   lap:str   1 ir:box-unsigned-byte-64-instruction ir:unbox-unsigned-byte-64-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-8-unscaled lap:ldrb lap:strb lap:casalb 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-16-unscaled lap:ldrh lap:strh lap:casalh 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-32-unscaled lap:ldrw lap:strw lap:casalw 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-unsigned-byte-64-unscaled lap:ldr lap:str lap:casal 1 ir:box-unsigned-byte-64-instruction ir:unbox-unsigned-byte-64-instruction)
 
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-8-unscaled    lap:ldrsb   lap:strb  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-16-unscaled   lap:ldrsh   lap:strh  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-32-unscaled   lap:ldrsw   lap:strw  1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
-(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-64-unscaled   lap:ldr     lap:str   1 ir:box-signed-byte-64-instruction ir:unbox-signed-byte-64-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-8-unscaled lap:ldrsb lap:strb lap:casalb 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-16-unscaled lap:ldrsh lap:strh lap:casalh 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-32-unscaled lap:ldrsw lap:strw lap:casalw 1 ir:box-fixnum-instruction ir:unbox-fixnum-instruction)
+(define-object-ref-integer-accessor sys.int::%%object-ref-signed-byte-64-unscaled lap:ldr lap:str lap:casal 1 ir:box-signed-byte-64-instruction ir:unbox-signed-byte-64-instruction)
 
 (define-builtin sys.int::%object-ref-t ((object index) result)
   (with-builtin-object-access (ea ea-inputs object index 8)

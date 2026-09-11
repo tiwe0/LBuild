@@ -719,7 +719,15 @@ the old or new values are expected to be unbound.")
         ((funcallable-standard-class-instance-p class)
          (std-slot-value class 'precedence-list))
         (t
-         (class-precedence-list class))))
+         ;; Read the slot directly, as SAFE-CLASS-SLOT-STORAGE-LAYOUT and
+         ;; SAFE-CLASS-HASH already do.  Falling back to the generic reader
+         ;; routed internal callers through ENSURE-FINALIZED-CLASS-READER,
+         ;; which refuses to run mid-finalization -- STD-FINALIZE-INHERITANCE
+         ;; and STD-COMPUTE-SLOTS both read this while finalizing.  The
+         ;; matching setter already writes this slot unconditionally for every
+         ;; metaclass, so reading it is not a new assumption; it removes an
+         ;; asymmetry.
+         (std-slot-value class 'precedence-list))))
 (defun (setf safe-class-precedence-list) (value class)
   (setf (std-slot-value class 'precedence-list) value))
 
@@ -730,7 +738,10 @@ the old or new values are expected to be unbound.")
              (built-in-class-instance-p class))
          (std-slot-value class 'effective-slots))
         (t
-         (class-slots class))))
+         ;; See SAFE-CLASS-PRECEDENCE-LIST: the generic reader is guarded
+         ;; against reads before finalization, which is exactly when
+         ;; STD-FINALIZE-INHERITANCE needs this.
+         (std-slot-value class 'effective-slots))))
 (defun (setf safe-class-slots) (values class)
   (setf (std-slot-value class 'effective-slots) values))
 
@@ -1086,18 +1097,27 @@ Other arguments are included directly."
                (std-slot-value super 'sealed))
       (error "Superclass ~S of ~S is sealed and cannot be inherited from."
              super class)))
-  (setf (safe-class-precedence-list class) (compute-class-precedence-list class))
-  ;; Don't allow exotic function classes to be created.
-  (cond ((typep class 'funcallable-standard-class)
-         (unless (member (find-class 'funcallable-standard-object)
-                         (safe-class-precedence-list class))
-           (error "FUNCALLABLE-STANARD-OBJECT missing from CPL of class ~S, CPL: ~:S"
-                  class (safe-class-precedence-list class))))
-        (t
-         (when (member (find-class 'funcallable-standard-object)
-                       (safe-class-precedence-list class))
-           (error "FUNCALLABLE-STANARD-OBJECT present in CPL of class ~S, CPL: ~:S"
-                  class (safe-class-precedence-list class)))))
+  ;; Use the computed list directly rather than reading it back.  The reader
+  ;; and the writer are not symmetric: (SETF SAFE-CLASS-PRECEDENCE-LIST) always
+  ;; writes the slot, but SAFE-CLASS-PRECEDENCE-LIST falls back to the generic
+  ;; CLASS-PRECEDENCE-LIST for metaclasses outside its three fast paths -- and
+  ;; that reader refuses to run before the class is finalized, which is exactly
+  ;; where we are.  Keeping the fallback intact preserves MOP extensibility for
+  ;; user metaclasses; the fix belongs here, at the caller that already has the
+  ;; value in hand.
+  (let ((precedence-list (compute-class-precedence-list class)))
+    (setf (safe-class-precedence-list class) precedence-list)
+    ;; Don't allow exotic function classes to be created.
+    (cond ((typep class 'funcallable-standard-class)
+           (unless (member (find-class 'funcallable-standard-object)
+                           precedence-list)
+             (error "FUNCALLABLE-STANDARD-OBJECT missing from CPL of class ~S, CPL: ~:S"
+                    class precedence-list)))
+          (t
+           (when (member (find-class 'funcallable-standard-object)
+                         precedence-list)
+             (error "FUNCALLABLE-STANDARD-OBJECT present in CPL of class ~S, CPL: ~:S"
+                    class precedence-list)))))
   (setf (safe-class-slots class) (compute-slots class))
   (setf (safe-class-default-initargs class) (compute-default-initargs class))
   (let ((layout (compute-class-slot-storage-layout class)))

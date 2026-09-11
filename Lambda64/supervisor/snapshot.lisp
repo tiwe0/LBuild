@@ -647,7 +647,7 @@ per-page frames rather than failing the snapshot."
                    (trace-chunk-p (or (= chunk-index 1)
                                       (zerop (logand chunk-index 31)))))
                (when trace-chunk-p
-                 (debug-uart-boot-line "TRACE snapshot-chunk-start"))
+                 nil)
                ;; Pass 1: how many pages are present in this chunk?
                (map-ptes-1
                 range-start chunk-end
@@ -668,7 +668,7 @@ per-page frames rather than failing the snapshot."
                              :wired-backing nil nil)))
                  (when trace-chunk-p
                    (if large-frame
-                       (debug-uart-boot-line "TRACE snapshot-backing-fallback")))
+                       nil))
                  ;; Pass 2: install a backing frame for each present page.
                  (map-ptes-1
                   range-start chunk-end
@@ -687,7 +687,7 @@ per-page frames rather than failing the snapshot."
                                1 :wired-backing "wired backing pages" nil))))))
                   sparse))
                (when trace-chunk-p
-                 (debug-uart-boot-line "TRACE snapshot-chunk-done"))))))
+                 nil)))))
 
 ;; Keep the early bootstrap path positional.  The keyword entry point can
 ;; allocate an argument vector before the normal allocator is live.

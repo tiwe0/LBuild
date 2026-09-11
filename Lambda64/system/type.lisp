@@ -1150,3 +1150,34 @@
          'gc-forwarding-pointer)
         (t
          `(invalid-value ,(%tag-field object)))))
+
+;; Moved here from system/coerce.lisp: that file is warm loaded, but the cold
+;; system/sequence.lisp calls this from MAKE-SEQUENCE.  CLOS reaches
+;; (MAKE-SEQUENCE 'VECTOR ...) during its own warm load, before coerce.lisp
+;; has been loaded, which surfaced as an undefined-function panic.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defun coerce-vector-element-type (type &optional environment)
+  "Figure out the element type of the vector type TYPE."
+  (cond
+    ((or (subtypep type 'base-string environment)
+         (subtypep type 'simple-base-string environment))
+     'base-char)
+    ((or (subtypep type 'string environment)
+         (subtypep type 'simple-string environment))
+     'character)
+    ((or (subtypep type 'bit-vector environment)
+         (subtypep type 'simple-bit-vector environment))
+     'bit)
+    (t (let* ((expanded-type (typeexpand type environment))
+              (element-type (cond ((and (consp expanded-type)
+                                        (member (first expanded-type) '(array simple-array)))
+                                   (parse-array-type expanded-type))
+                                  ((subtypep expanded-type 'vector environment)
+                                   ;; Some generic vector type?
+                                   't)
+                                  (t
+                                   nil))))
+         (if (eql element-type '*)
+             't
+             element-type)))))
+)

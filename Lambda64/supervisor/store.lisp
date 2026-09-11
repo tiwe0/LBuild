@@ -381,7 +381,7 @@
          (setf freelist-block next-block)))
     (when *verbose-store*
       (dump-store-freelist))
-    (debug-uart-boot-line "TRACE store-init-done")))
+    nil))
 
 (defun initialize-freestanding-store ()
   (when (not (boundp '*verbose-store*))

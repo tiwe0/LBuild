@@ -122,7 +122,7 @@ the data. Free the page with FREE-PAGE when done."
                          (ceiling +4k-page-size+ (disk-sector-size *paging-disk*))
                          page)
             (panic "Unable to read page from disk"))
-          (debug-uart-boot-line "TRACE read-block-direct-done"))
+          nil)
         (progn
           (disk-submit-request *pager-disk-request*
                                *paging-disk*
@@ -185,7 +185,7 @@ the data. Free the page with FREE-PAGE when done."
   ;; setup has completed; DEBUG-PRINT-LINE may demand-map dynamic pages while
   ;; the pager is still transitioning to its normal request path.
   (when *paging-read-only*
-    (debug-uart-boot-line "TRACE paging-read-only"))
+    nil)
   (multiple-value-bind (free-blocks total-blocks)
       (store-statistics)
     ;; This is a rough approximation of the total image size.
@@ -196,7 +196,7 @@ the data. Free the page with FREE-PAGE when done."
                                               allocated-blocks))))
             (t
              (setf *store-fudge-factor* (+ allocated-blocks 256))))))
-  (debug-uart-boot-line "TRACE pager-available"))
+  nil)
 
 (defun detect-paging-disk ()
   (debug-print-line "BOOT paging=detect-start")
@@ -389,7 +389,7 @@ materialises its argument vector in the general area -- which panics with
 
 (defun pager-rpc (fn &optional arg1 arg2 arg3)
   (when (eq fn 'allocate-memory-range-in-pager)
-    (debug-uart-boot-line "TRACE pager-rpc-stack-start"))
+    nil)
   (without-footholds
     (let ((self (current-thread)))
       (setf (thread-pager-argument-1 self) arg1
@@ -412,7 +412,7 @@ materialises its argument vector in the general area -- which panics with
 
 (defun allocate-memory-range (base length flags)
   (when (stack-area-p base)
-    (debug-uart-boot-line "TRACE stack-range-start"))
+    nil)
   (cond ((or (stack-area-p base)
              (mark-bit-region-p base))
          (assert (and (page-aligned-p base)
@@ -429,11 +429,11 @@ materialises its argument vector in the general area -- which panics with
                    *cold-paging-direct-stack-ops*)
               (progn
                 (when (stack-area-p base)
-                  (debug-uart-boot-line "TRACE stack-range-direct"))
+                  nil)
                 (allocate-memory-range-in-pager base length flags))
               (pager-rpc 'allocate-memory-range-in-pager base length flags))))
     (when (stack-area-p base)
-      (debug-uart-boot-line "TRACE stack-range-done"))
+      nil)
     result))
 
 (defun map-new-wired-page (address &optional backing-frame)
@@ -474,7 +474,7 @@ materialises its argument vector in the general area -- which panics with
 
 (defun allocate-memory-range-in-pager (base length flags)
   (when (stack-area-p base)
-    (debug-uart-boot-line "TRACE pager-allocate-stack-start"))
+    nil)
   (pager-log-op "Allocate range " base "-" (+ base length) "  " flags)
   (when (logtest flags sys.int::+block-map-wired+)
     (ensure (or (< base #x80000000) ; wired area
@@ -523,7 +523,7 @@ materialises its argument vector in the general area -- which panics with
       (tlb-shootdown-range base length)
       (finish-tlb-shootdown)))
   (when (stack-area-p base)
-    (debug-uart-boot-line "TRACE pager-allocate-stack-done"))
+    nil)
   t)
 
 (defun release-memory-range (base length)

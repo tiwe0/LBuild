@@ -10,32 +10,10 @@
                      (unknown-coercion-object condition)
                      (unknown-coercion-type condition)))))
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-(defun coerce-vector-element-type (type &optional environment)
-  "Figure out the element type of the vector type TYPE."
-  (cond
-    ((or (subtypep type 'base-string environment)
-         (subtypep type 'simple-base-string environment))
-     'base-char)
-    ((or (subtypep type 'string environment)
-         (subtypep type 'simple-string environment))
-     'character)
-    ((or (subtypep type 'bit-vector environment)
-         (subtypep type 'simple-bit-vector environment))
-     'bit)
-    (t (let* ((expanded-type (typeexpand type environment))
-              (element-type (cond ((and (consp expanded-type)
-                                        (member (first expanded-type) '(array simple-array)))
-                                   (parse-array-type expanded-type))
-                                  ((subtypep expanded-type 'vector environment)
-                                   ;; Some generic vector type?
-                                   't)
-                                  (t
-                                   nil))))
-         (if (eql element-type '*)
-             't
-             element-type)))))
-)
+;; COERCE-VECTOR-ELEMENT-TYPE lives in system/type.lisp.  This file is warm
+;; loaded, but the cold system/sequence.lisp calls the helper from
+;; MAKE-SEQUENCE, so it must exist before warm loading begins -- CLOS reaches
+;; (MAKE-SEQUENCE 'VECTOR ...) while closette itself is still loading.
 
 (declaim (inline %coerce-value))
 (defun %coerce-value (object result-type)
