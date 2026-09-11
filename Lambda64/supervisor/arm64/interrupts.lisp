@@ -260,16 +260,6 @@
     (debug-uart-boot-hex-line "TRACE data-abort-pc"
                               (interrupt-frame-raw-register interrupt-frame :rip))
     (debug-uart-boot-hex-line "TRACE data-abort-esr" esr))
-  (when (eql fault-addr #x400000000020)
-    ;; Keep this diagnostic pointer-only.  The fault is often caused by the
-    ;; pager touching a not-yet-mapped thread object, so reading thread slots
-    ;; here would recurse before we can identify the active allocator path.
-    (let ((thread (current-thread))
-          (pager (sys.int::symbol-global-value 'sys.int::*pager-thread*)))
-      (debug-uart-boot-hex-line "TRACE fault-thread"
-                                (sys.int::lisp-object-address thread))
-      (debug-uart-boot-hex-line "TRACE fault-pager"
-                                (sys.int::lisp-object-address pager))))
   (let ((status (ldb (byte 5 0) esr)))
     (case status
       ((#x04 #x05 #x06 #x07) ;; Translation fault (page not mapped).

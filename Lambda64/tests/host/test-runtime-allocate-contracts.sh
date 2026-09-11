@@ -206,6 +206,10 @@ Path(sys.argv[2]).write_text(r'''
 (defun hash-string (string) (sxhash string))
 (defvar *gc-calls* nil)
 (defun %gc (&rest arguments) (push arguments *gc-calls*))
+;; Positional entry point used by the allocator's restricted paths, where a
+;; keyword lambda list would materialise an argument vector and allocate.
+(defun %%gc (full reason major-required)
+  (push (list :full full :reason reason :major-required major-required) *gc-calls*))
 (defun %object-ref-t (object slot) (gethash (list object slot) *memory*))
 (defun (setf %object-ref-t) (v object slot) (setf (gethash (list object slot) *memory*) v))
 (defun %object-header-data (object) (gethash (list :header object) *memory* 0))

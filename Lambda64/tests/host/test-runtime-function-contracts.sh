@@ -15,16 +15,21 @@ start=s.index('(defun (setf funcallable-instance-function)')
 end=s.index('\n(defun compiled-function-p', start)
 form=s[start:end]
 if sys.argv[2]:
-    form=form.replace('(funcallable-instance-entry-point value)', 'sys.int::*funcallable-instance-trampoline*', 1)
+    form=re.sub(r'\((?:[\w.]+::)?funcallable-instance-entry-point value\)',
+                'sys.int::*funcallable-instance-trampoline*', form, count=1)
 required=[
  '(check-type value function)',
  '(%type-check funcallable-instance +object-tag-funcallable-instance+',
  '(%object-ref-unsigned-byte-64',
- '(funcallable-instance-entry-point value)',
  '(%object-ref-t funcallable-instance +funcallable-instance-function+)',
 ]
 for anchor in required:
     if anchor not in form: raise SystemExit(f'missing setter contract: {anchor}')
+# The entry point must come from VALUE, not from the shared trampoline.  Accept
+# an optional package prefix: the call is package-qualified in-tree to
+# disambiguate it from the accessor of the same name in MEZZANO.INTERNALS.
+if not re.search(r'\((?:[\w.]+::)?funcallable-instance-entry-point value\)', form):
+    raise SystemExit('missing setter contract: (funcallable-instance-entry-point value)')
 # Ensure entry is written before boxed target, matching allocation publication order.
 entry=form.index('(%object-ref-unsigned-byte-64')
 boxed=form.index('(%object-ref-t funcallable-instance +funcallable-instance-function+)')

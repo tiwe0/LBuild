@@ -199,8 +199,13 @@
   size
   avail-offset
   used-offset
-  next-free-descriptor
-  last-seen-used)
+  ;; Both counters must start at zero, not NIL.  The positional constructor
+  ;; above takes only the six geometry slots, so anything left without an
+  ;; initform stays NIL and the used-ring comparison
+  ;; (EQL used-idx last-seen-used) never matches -- the RX loop then falls
+  ;; through to descriptor extraction and computes (REM NIL size).
+  (next-free-descriptor 0)
+  (last-seen-used 0))
 
 (defun virtio-ring-size (queue-size)
   "Compute the actual size of a vring from the queue-size field."

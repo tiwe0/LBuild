@@ -201,10 +201,6 @@
         (thread-state self) :sleeping
         (thread-unsleep-helper self) #'acquire-mutex
         (thread-unsleep-helper-argument self) mutex)
-  (debug-uart-boot-hex-line "TRACE mutex-sleep-self"
-                            (sys.int::lisp-object-address self))
-  (debug-uart-boot-hex-line "TRACE mutex-sleep-owner"
-                            (sys.int::lisp-object-address (mutex-owner mutex)))
   (%reschedule-via-wired-stack sp fp))
 
 (defun mutex-held-p (mutex)
@@ -681,16 +677,6 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
           (thread-state self) :sleeping
           (thread-unsleep-helper self) #'rw-lock-write-acquire
           (thread-unsleep-helper-argument self) rw-lock)
-    ;; Name the blocked thread and the current holder.  A sleep here is
-    ;; otherwise an untraced reschedule, which is exactly how a lock-ordering
-    ;; deadlock hides.
-    (debug-uart-boot-hex-line "TRACE rw-write-sleep-self"
-                              (sys.int::lisp-object-address self))
-    (debug-uart-boot-hex-line "TRACE rw-write-sleep-lock"
-                              (sys.int::lisp-object-address rw-lock))
-    (debug-uart-boot-hex-line "TRACE rw-write-sleep-owner"
-                              (sys.int::lisp-object-address
-                               (rw-lock-write-owner rw-lock)))
     ;; Returns NIL (don't retry, lock successful)
     (%reschedule-via-wired-stack sp fp)))
 

@@ -871,19 +871,6 @@ normal coherent memory fabric."
      (%activate-function-reference-full-path fref)
      (%synchronize-function-reference fref))
     ((%object-of-type-p value +object-tag-function+)
-     (when (and (or (eq (%object-ref-t fref +fref-name+)
-                       'sys.int::values-simple-vector)
-                    (eq (%object-ref-t fref +fref-name+)
-                       'sys.int::%%unwind-to))
-                (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
-                mezzano.supervisor::*cold-boot-in-progress*)
-       (mezzano.supervisor::debug-uart-boot-hex-line
-        "TRACE publish-fref" (sys.int::lisp-object-address fref))
-       (mezzano.supervisor::debug-uart-boot-hex-line
-        "TRACE publish-function" (sys.int::lisp-object-address value))
-       (mezzano.supervisor::debug-uart-boot-hex-line
-        "TRACE publish-entry"
-        (%object-ref-unsigned-byte-64 value +function-entry-point+)))
      (setf (%object-ref-t fref +fref-function+) value)
      (sys.int::dma-write-barrier)
      (%activate-function-reference-fast-path

@@ -8,13 +8,22 @@ source_file=${COERCE_SOURCE:-"$repo_root/system/coerce.lisp"}
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/lambda64-coerce-dedup.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 
-python3 - "$source_file" "$tmp_dir/coerce.lisp" "${COERCE_DEDUP_MUTATION_RUN:-}" <<'PY'
+type_file=${COERCE_TYPE_SOURCE:-"$repo_root/system/type.lisp"}
+
+python3 - "$source_file" "$tmp_dir/coerce.lisp" "${COERCE_DEDUP_MUTATION_RUN:-}" "$type_file" <<'PY'
 from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
+# COERCE-VECTOR-ELEMENT-TYPE lives in type.lisp: it is needed during cold load,
+# before coerce.lisp (a warm module) exists.  Search both files for each form.
+type_source = Path(sys.argv[4]).read_text(encoding="utf-8")
 
 def extract(start_marker):
+    text = source if start_marker in source else type_source
+    return _extract_from(text, start_marker)
+
+def _extract_from(source, start_marker):
     start = source.index(start_marker)
     depth = 0
     in_string = False

@@ -81,13 +81,21 @@ if form.count("%synchronize-function-reference fref") != 3:
 if form.count("sys.int::dma-write-barrier") != 3:
     raise SystemExit("function-reference setter must fence each publication branch")
 
-# Each setter branch must publish its target independently.  Counting the
-# writes prevents a branch-local publication from being silently dropped while
-# a later branch's write still satisfies the coarse ordering checks below.
-if form.count("(%object-ref-t fref +fref-function+)") != 3:
+# Each publication branch must publish its target independently.  Count inside
+# the helper alone: the setter additionally performs a benign self-assignment to
+# resolve the snapshot's copy-on-write mapping before masking interrupts, and
+# that pre-touch is not a publication.
+helper_form = source[helper_start:source.index("(defun (setf function-reference-function)")]
+if helper_form.count("(%object-ref-t fref +fref-function+)") != 3:
     raise SystemExit("function-reference setter must publish exactly once per branch")
-if form.count("%activate-function-reference") != 3:
+if helper_form.count("%activate-function-reference") != 3:
     raise SystemExit("function-reference setter must activate exactly once per branch")
+# The setter must keep that copy-on-write pre-touch: without it the write below
+# faults with interrupts masked and %PAGE-FAULT-HANDLER panics.
+setter_form = source[source.index("(defun (setf function-reference-function)"):
+                     source.index("(defun trace-wrapper-p")]
+if setter_form.count("(%object-ref-t fref +fref-function+)") != 2:
+    raise SystemExit("function-reference setter must pre-resolve the copy-on-write mapping")
 
 # The target field must be published before changing executable dispatch bytes.
 for branch in ("((not value)", "((%object-of-type-p value", "(t"):

@@ -141,8 +141,11 @@
                     ,@(when report `(:report-function ,report))
                     ,@(when test `(:test-function ,test)))
             label
+            ;; RESTART-RESULT is (LABEL ARGUMENT-LIST); the arguments are the
+            ;; SECOND element, not the tail -- (REST ...) wraps them in an extra
+            ;; list and every restart is then called with one bogus argument.
             `(apply #'(lambda ,lambda-list ,@forms)
-                    (rest restart-result)))))
+                    (second restart-result)))))
 
 )
 
@@ -157,7 +160,7 @@
           (handle-restart-case-clause clause tag)
         (push binding restart-bindings)
         (push label restart-labels)
-        (push body restart-bodies))
+        (push body restart-bodies)))
     (let* ((restart-bindings (reverse restart-bindings))
            (restart-labels (reverse restart-labels))
            (restart-bodies (reverse restart-bodies))
@@ -193,14 +196,14 @@
                          (multiple-value-call
                              (lambda (&rest values)
                                (list :normal values))
-                           ,wrapped-form)))))
+                           ,wrapped-form))))))
              (if (eq (first restart-result) :normal)
                  (values-list (second restart-result))
                  (cond
                    ,@(loop for label in restart-labels
                            for body in restart-bodies
                            collect `((eq (first restart-result) ',label)
-                                     ,body))))))))))))
+                                     ,body))))))))))
 
 (defmacro with-simple-restart ((name format-control &rest format-arguments) &body forms)
   `(restart-case (progn ,@forms)

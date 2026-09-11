@@ -91,10 +91,8 @@
     ;; hand-off is required to complete the bootstrap transaction.
     (if (and (boundp 'sup::*cold-boot-in-progress*)
              sup::*cold-boot-in-progress*)
-        (progn
-          (loop until (sup:event-state (virtio-block-irq-latch device))
-                do (sys.int::cpu-relax))
-          (sup::debug-uart-boot-line "TRACE virtio-cold-wait-done"))
+        (loop until (sup:event-state (virtio-block-irq-latch device))
+              do (sys.int::cpu-relax))
         (sup:event-wait (virtio-block-irq-latch device)))
     (setf (sup:event-state (virtio-block-irq-latch device)) nil)
     ;; Release the descriptors.
@@ -149,10 +147,8 @@
     (virtio:virtio-kick dev 0)
     (if (and (boundp 'sup::*cold-boot-in-progress*)
              sup::*cold-boot-in-progress*)
-        (progn
-          (loop until (sup:event-state (virtio-block-irq-latch device))
-                do (sys.int::cpu-relax))
-          (sup::debug-uart-boot-line "TRACE virtio-cold-wait-done"))
+        (loop until (sup:event-state (virtio-block-irq-latch device))
+              do (sys.int::cpu-relax))
         (sup:event-wait (virtio-block-irq-latch device)))
     (setf (sup:event-state (virtio-block-irq-latch device)) nil)
     ;; Release the descriptors.
@@ -167,23 +163,8 @@
                 (#.+virtio-block-s-unsup+ :unsupported)
                 (t :unknown))))))
 
-(defun virtio-block-irq-probe ()
-  (sup::debug-uart-boot-line "TRACE virtio-block-irq-probe"))
-
 (defun virtio-block-irq-handler (blk)
-  (let ((latch (virtio-block-irq-latch blk)))
-    (sup:event-state latch)
-    (virtio-block-irq-probe)
-    (let ((fn #'sup::set-event-state))
-      (sup::debug-uart-boot-hex-line "TRACE event-fn-object"
-                                     (sys.int::lisp-object-address fn))
-      (sup::debug-uart-boot-hex-line "TRACE event-fn-entry"
-                                     (sys.int::%object-ref-unsigned-byte-64
-                                      fn sys.int::+function-entry-point+))
-      (sup::debug-uart-boot-hex-line "TRACE event-fn-code-size"
-                                     (mezzano.internals::function-code-size fn)))
-    (sup::set-event-state t latch))
-  (sup::debug-uart-boot-line "TRACE virtio-block-irq-after"))
+  (sup::set-event-state t (virtio-block-irq-latch blk)))
 
 (defun virtio::virtio-block-register (device)
   ;; Wired allocation required for the IRQ handler closure.
