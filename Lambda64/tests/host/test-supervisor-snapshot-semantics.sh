@@ -550,8 +550,15 @@ cat >"$test_file" <<'LISP'
  (lambda ()
    (assert-true *lock-held* "Stable phase released VM lock too early")
    (push :stable *execution-log*)))
-(assert-equal '(:world-enter :lock-acquire :critical :world-exit :stable
-                :lock-release)
+;; The stable phase must run before the world resumes.  The critical phase
+;; ends by marking every non-wired page read-only and copy-on-write, so once
+;; other threads run again the first write to any stack takes a copy-on-write
+;; fault -- and the pager cannot service it while this thread holds *VM-LOCK*.
+;; Letting the world out first (:critical :world-exit :stable) deadlocks with
+;; every thread asleep.  *VM-LOCK* itself cannot simply be dropped either:
+;; STORE-ALLOC, reached from the stable phase, asserts that it is held.
+(assert-equal '(:world-enter :lock-acquire :critical :stable
+                :lock-release :world-exit)
               (reverse *execution-log*)
               "World-stop/VM-lock ordering is incorrect")
 (handler-case
