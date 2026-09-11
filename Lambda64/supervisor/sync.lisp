@@ -111,13 +111,41 @@
   ;; Number of times ACQUIRE-MUTEX failed to immediately acquire the lock.
   (contested-count 0 :type fixnum))
 
+;;; Forensics for the allocator lock only.  Plain global stores, no
+;;; allocation and no locking, so they are safe from any context.
+(sys.int::defglobal *alloc-lock-last-release-thread* nil)
+(sys.int::defglobal *alloc-lock-last-release-path* nil)
+(sys.int::defglobal *alloc-lock-last-owner-setter* nil)
+(sys.int::defglobal *alloc-lock-last-owner-set-path* nil)
+
+(defun allocator-lock-p (mutex)
+  "True for *ALLOCATOR-LOCK* only; keeps the mutex traces off every other lock."
+  (and (boundp 'mezzano.runtime::*allocator-lock*)
+       (eq mutex (sys.int::symbol-global-value 'mezzano.runtime::*allocator-lock*))))
+
 (defun acquire-mutex (mutex &optional (wait-p t))
   (check-type mutex mutex)
   (let ((self (current-thread)))
     ;; Fast path - try to lock.
     (when (eql (sys.int::cas (mutex-state mutex) :unlocked :locked) :unlocked)
       ;; We got it.
+      ;; An :UNLOCKED state must imply no recorded owner.  If some path drops
+      ;; the state without clearing the owner, this CAS hands the lock to a
+      ;; second thread while the first is still inside its critical section --
+      ;; which is how two threads end up expanding the same allocation area.
+      (let ((stale (mutex-owner mutex)))
+        (when stale
+          (panic "ACQUIRE-MUTEX won an :UNLOCKED CAS on " (mutex-name mutex)
+                 " but owner is still " stale
+                 " | last release by " *alloc-lock-last-release-thread*
+                 " via " *alloc-lock-last-release-path*
+                 " | owner last set by " *alloc-lock-last-owner-setter*
+                 " via " *alloc-lock-last-owner-set-path*
+                 " | state now " (mutex-state mutex))))
       (setf (mutex-owner mutex) self)
+      (when (allocator-lock-p mutex)
+        (setf *alloc-lock-last-owner-setter* self
+              *alloc-lock-last-owner-set-path* :fast-acquire))
       (return-from acquire-mutex t))
     ;; Idiot check.
     (unless (not (mutex-held-p mutex))
@@ -136,6 +164,14 @@
       (thread-pool-blocking-hijack acquire-mutex mutex wait-p)
       (%call-on-wired-stack-without-interrupts
        #'acquire-mutex-slow-path nil mutex self)
+      ;; The slow path parks the thread and relies on RELEASE-MUTEX handing
+      ;; ownership over directly.  Any wakeup that does not come from that
+      ;; handoff (a bare WAKE-THREAD, an unsleep helper that raced) resumes
+      ;; here with the mutex still owned by someone else, and returning T
+      ;; would put a second thread inside the critical section.
+      (when (not (eql (mutex-owner mutex) self))
+        (panic "ACQUIRE-MUTEX resumed without ownership of " mutex " "
+               (mutex-name mutex) " owner " (mutex-owner mutex)))
       t)))
 
 (defun acquire-mutex-slow-path (sp fp mutex self)
@@ -147,6 +183,9 @@
   (when (eql (sys.int::atomic-swapf (mutex-state mutex) :contested) :unlocked)
     ;; We got it.
     (setf (mutex-owner mutex) self)
+    (when (allocator-lock-p mutex)
+      (setf *alloc-lock-last-owner-setter* self
+            *alloc-lock-last-owner-set-path* :slow-acquire))
     (unlock-wait-queue mutex)
     (return-from acquire-mutex-slow-path))
   ;; Add to wait queue. Release will directly transfer ownership
@@ -162,6 +201,10 @@
         (thread-state self) :sleeping
         (thread-unsleep-helper self) #'acquire-mutex
         (thread-unsleep-helper-argument self) mutex)
+  (debug-uart-boot-hex-line "TRACE mutex-sleep-self"
+                            (sys.int::lisp-object-address self))
+  (debug-uart-boot-hex-line "TRACE mutex-sleep-owner"
+                            (sys.int::lisp-object-address (mutex-owner mutex)))
   (%reschedule-via-wired-stack sp fp))
 
 (defun mutex-held-p (mutex)
@@ -188,6 +231,9 @@
 (defun release-mutex (mutex)
   (check-type mutex mutex)
   (check-mutex-release-consistence mutex)
+  (when (allocator-lock-p mutex)
+    (setf *alloc-lock-last-release-thread* (current-thread)
+          *alloc-lock-last-release-path* :release-mutex))
   (setf (mutex-owner mutex) nil)
   (when (not (eql (sys.int::cas (mutex-state mutex) :locked :unlocked) :locked))
     ;; Mutex must be in the contested state.
@@ -203,13 +249,21 @@
         (cond (thread
                ;; Found one, wake it & transfer the lock.
                (setf (mutex-owner mutex) thread)
+               (when (allocator-lock-p mutex)
+                 (setf *alloc-lock-last-owner-setter* thread
+                       *alloc-lock-last-owner-set-path* :release-handoff))
                (wake-thread thread))
               (t
                ;; No threads sleeping, just drop the lock.
                ;; Any threads trying to lock will be spinning on the wait queue lock.
+               (when (allocator-lock-p mutex)
+                 (setf *alloc-lock-last-release-path* :release-slow-drop))
                (setf (mutex-state mutex) :unlocked)))))))
 
 (defun release-mutex-for-condition-variable (mutex)
+  (when (allocator-lock-p mutex)
+    (setf *alloc-lock-last-release-thread* (current-thread)
+          *alloc-lock-last-release-path* :release-for-cvar))
   (setf (mutex-owner mutex) nil)
   (when (not (eql (sys.int::cas (mutex-state mutex) :locked :unlocked) :locked))
     ;; Mutex must be in the contested state.
@@ -431,15 +485,18 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
   write-owner)
 
 (defun make-rw-lock (&optional name)
+  (debug-uart-boot-line "TRACE rw-lock-alloc-start")
   (let ((rw-lock (%make-rw-lock name)))
+    (debug-uart-boot-line "TRACE rw-lock-object-ready")
     (setf (rw-lock-writer-wait-queue rw-lock)
-          (make-wait-queue :name (sys.int::list-in-area
-                                  :wired
-                                  :writer rw-lock)))
+          ;; The descriptive list is not part of lock semantics.  Avoid
+          ;; allocating wired cons cells during the first post-paging
+          ;; bootstrap; the lock's wait queue itself is already wired.
+          (%make-wait-queue :writer))
+    (debug-uart-boot-line "TRACE rw-lock-writer-queue-ready")
     (setf (rw-lock-reader-wait-queue rw-lock)
-          (make-wait-queue :name (sys.int::list-in-area
-                                  :wired
-                                  :reader rw-lock)))
+          (%make-wait-queue :reader))
+    (debug-uart-boot-line "TRACE rw-lock-reader-queue-ready")
     rw-lock))
 
 (defun rw-lock-read-acquire-slow (sp fp rw-lock)
@@ -481,6 +538,11 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
           (thread-state self) :sleeping
           (thread-unsleep-helper self) #'rw-lock-read-acquire
           (thread-unsleep-helper-argument self) rw-lock)
+    (debug-uart-boot-hex-line "TRACE rw-read-sleep-self"
+                              (sys.int::lisp-object-address self))
+    (debug-uart-boot-hex-line "TRACE rw-read-sleep-owner"
+                              (sys.int::lisp-object-address
+                               (rw-lock-write-owner rw-lock)))
     ;; Returns NIL (don't retry, lock successful)
     (%reschedule-via-wired-stack sp fp)))
 
@@ -623,6 +685,16 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
           (thread-state self) :sleeping
           (thread-unsleep-helper self) #'rw-lock-write-acquire
           (thread-unsleep-helper-argument self) rw-lock)
+    ;; Name the blocked thread and the current holder.  A sleep here is
+    ;; otherwise an untraced reschedule, which is exactly how a lock-ordering
+    ;; deadlock hides.
+    (debug-uart-boot-hex-line "TRACE rw-write-sleep-self"
+                              (sys.int::lisp-object-address self))
+    (debug-uart-boot-hex-line "TRACE rw-write-sleep-lock"
+                              (sys.int::lisp-object-address rw-lock))
+    (debug-uart-boot-hex-line "TRACE rw-write-sleep-owner"
+                              (sys.int::lisp-object-address
+                               (rw-lock-write-owner rw-lock)))
     ;; Returns NIL (don't retry, lock successful)
     (%reschedule-via-wired-stack sp fp)))
 
@@ -634,6 +706,9 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
                 +rw-lock-state-unlocked+)
        ;; CAS passed, lock is now write-locked.
        (setf (rw-lock-write-owner rw-lock) (current-thread))
+       (when (and (boundp '*vm-lock*) (eq rw-lock *vm-lock*))
+         (debug-uart-boot-hex-line "TRACE vm-lock-acquire"
+                                   (sys.int::lisp-object-address (current-thread))))
        (return t))
      (when (eql (rw-lock-write-owner rw-lock) (current-thread))
        (if *lock-violations-are-fatal*
@@ -654,6 +729,9 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
 
 (defun rw-lock-write-release (rw-lock)
   (let ((current-owner (rw-lock-write-owner rw-lock)))
+    (when (and (boundp '*vm-lock*) (eq rw-lock *vm-lock*)
+               (null current-owner))
+      (debug-uart-boot-line "TRACE vm-lock-release-owner-nil"))
     (cond ((not current-owner)
            (if *lock-violations-are-fatal*
                (panic "Trying to release unheld rw-lock " rw-lock)
@@ -694,6 +772,9 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
 ;;;; to support waiting for multiple objects.
 
 (sys.int::defglobal *big-wait-for-objects-lock*)
+;; Bounded trace for the first early-boot event transition.  Event signalling
+;; can run from an IRQ handler, so keep this allocation-free and finite.
+(sys.int::defglobal *event-trace-count* 0)
 
 (defstruct (event
              (:constructor %make-event (name %state))
@@ -710,12 +791,19 @@ May be used from an interrupt handler, assuming the associated mutex is interrup
   "Return the current state of EVENT."
   (event-%state event))
 
-(defun (setf event-state) (value event)
+(defun set-event-state (value event)
   "Set the state of EVENT.
 STATE may be any object and will be treated as a generalized boolean by EVENT-WAIT and WAIT-FOR-OBJECTS."
+  (debug-uart-boot-line "TRACE event-set-enter")
   (check-type event event)
+  (debug-uart-boot-line "TRACE event-set-checked")
+  ;; Keep tracing allocation-free: this setter can run directly from an IRQ
+  ;; handler, so avoid global counters/closures in the trace path.
+  (debug-uart-boot-line "TRACE event-set-start")
   (safe-without-interrupts (value event)
+    (debug-uart-boot-line "TRACE event-set-safe")
     (with-place-spinlock (*big-wait-for-objects-lock*)
+      (debug-uart-boot-line "TRACE event-set-big-lock")
       (when (and value
                  (not (event-%state event)))
         ;; Moving from the false state to the true state. Wake waiters.
@@ -728,12 +816,22 @@ STATE may be any object and will be treated as a generalized boolean by EVENT-WA
                (with-wait-queue-lock (watcher)
                  (do ()
                      ((null (wait-queue-head watcher)))
-                   (wake-thread (pop-wait-queue watcher))))))
+                   (wake-thread-with-interrupts-disabled (pop-wait-queue watcher))))))
         (with-wait-queue-lock (event)
+          (debug-uart-boot-line "TRACE event-set-event-lock")
           (do ()
               ((null (wait-queue-head event)))
-            (wake-thread (pop-wait-queue event)))))
-      (setf (event-%state event) value))))
+            (debug-uart-boot-line "TRACE event-set-wake")
+            (wake-thread-with-interrupts-disabled (pop-wait-queue event))))
+        (debug-uart-boot-line "TRACE event-set-wake-done"))
+      (setf (event-%state event) value)
+      (debug-uart-boot-line "TRACE event-set-state-done"))))
+
+;; Keep the standard SETF protocol, but provide a stable ordinary entry point
+;; for interrupt-context callers.  The latter avoids relying on a cold-image
+;; SETF FREF dispatch while the function area is still being validated.
+(defun (setf event-state) (value event)
+  (set-event-state value event))
 
 (defmacro event-wait-for ((event &key timeout) &body predicate)
   "As with CONDITION-WAIT-FOR, this waits until PREDICATE is true using EVENT as a way of blocking.
@@ -769,13 +867,20 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
 
 (defun event-wait (event)
   "Wait until EVENT's state is not NIL."
+  (debug-uart-boot-line "TRACE event-wait-enter")
   (check-type event event)
-  (thread-pool-blocking-hijack event-wait event)
+  ;; The cold bootstrap thread is already the supervisor transaction owner;
+  ;; handing its first device wait to the thread pool would recurse into the
+  ;; not-yet-published pager/request machinery.  It must enqueue directly on
+  ;; the event and resume through the normal IRQ wake path.
+  (unless (and (boundp '*cold-boot-in-progress*) *cold-boot-in-progress*)
+    (thread-pool-blocking-hijack event-wait event))
   (%run-on-wired-stack-without-interrupts (sp fp event)
     (acquire-place-spinlock *big-wait-for-objects-lock*)
     (let ((self (current-thread)))
       (lock-wait-queue event)
       (cond ((event-%state event)
+             (debug-uart-boot-line "TRACE event-wait-already-set")
              ;; Event state is non-NIL, don't sleep.
              (unlock-wait-queue event)
              (release-place-spinlock *big-wait-for-objects-lock*))
@@ -789,9 +894,11 @@ EVENT can be any object that supports GET-OBJECT-EVENT."
                    (thread-state self) :sleeping
                    (thread-unsleep-helper self) #'event-wait
                    (thread-unsleep-helper-argument self) event)
+             (debug-uart-boot-line "TRACE event-wait-sleep")
              (unlock-wait-queue event)
              (release-place-spinlock *big-wait-for-objects-lock*)
-             (%reschedule-via-wired-stack sp fp))))))
+             (%reschedule-via-wired-stack sp fp)
+             (debug-uart-boot-line "TRACE event-wait-resumed"))))))
 
 ;;;; A concurrent object pool.
 

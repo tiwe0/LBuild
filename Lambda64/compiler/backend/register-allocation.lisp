@@ -636,6 +636,16 @@
   (expire-old-intervals allocator (length (allocator-instruction-ordering allocator)))
   (assert (endp (allocator-active-ranges allocator))))
 
+(defun interval-at-or-nil (allocator vreg index)
+  "As INTERVAL-AT, but NIL when VREG has no interval covering INDEX.
+Used on the debug-info path, where a missing interval means the value simply
+is not live at that point rather than an inconsistency in the allocator."
+  (loop
+     for interval across (the simple-vector
+                              (gethash vreg (allocator-vreg-ranges allocator) #()))
+     when (<= (live-range-start interval) index (live-range-end interval))
+       do (return interval)))
+
 (defun interval-at (allocator vreg index)
   ;; IMIN/IMAX are inclusive indicies.
   (do* ((intervals (gethash vreg (allocator-vreg-ranges allocator) #()))
@@ -669,7 +679,20 @@
   (let* ((target-index (gethash target (allocator-instruction-to-index-table allocator)))
          (active-vregs (union (remove-if-not (lambda (reg) (typep reg 'ir:virtual-register))
                                              (gethash target (allocator-live-in allocator)))
-                              (virtual-registers-used-by-debug-info allocator inst)))
+                              ;; Debug-info vregs join the fixup only when they
+                              ;; are live at both ends of the edge.  This pass
+                              ;; keeps a value in a consistent location across
+                              ;; a control transfer; a value that is dead at the
+                              ;; target needs no location there, and demanding
+                              ;; an interval for it turns a debug annotation
+                              ;; into a hard compilation failure.
+                              (remove-if-not
+                               (lambda (vreg)
+                                 (and (interval-at-or-nil allocator vreg
+                                                          instruction-index)
+                                      (interval-at-or-nil allocator vreg
+                                                          target-index)))
+                               (virtual-registers-used-by-debug-info allocator inst))))
          (input-intervals (mapcar (lambda (vreg) (interval-at allocator vreg instruction-index))
                                   active-vregs))
          (input-registers (mapcar (lambda (interval)

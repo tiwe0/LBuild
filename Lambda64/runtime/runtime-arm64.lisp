@@ -2,6 +2,18 @@
 
 (in-package :mezzano.runtime)
 
+;; Diagnostic sink used by ARM64's dynamic-call guard.  The guard is only
+;; taken for a malformed entry value; keeping the details here (rather than
+;; in the exception handler) preserves the callable object and target before
+;; the invalid branch can fault.
+(defun sys.int::%invalid-call-target (label target function)
+  (declare (ignore label))
+  (mezzano.supervisor::debug-uart-boot-hex-line
+   "TRACE invalid-call-target" target)
+  (mezzano.supervisor::debug-uart-boot-hex-line
+   "TRACE invalid-call-function" (sys.int::lisp-object-address function))
+  (mezzano.supervisor:panic "Invalid ARM64 indirect call target"))
+
 (defun values-list (values)
   (sys.int::values-simple-vector
    (make-array (length values)
@@ -208,6 +220,15 @@
   (mezzano.lap.arm64:subs :xzr :x5 #.(ash 5 sys.int::+n-fixnum-bits+))
   (mezzano.lap.arm64:b.ls DO-TAIL-CALL)
   (mezzano.lap.arm64:ldr :x9 (:object :x6 0))
+  (mezzano.lap.arm64:ands :x10 :x9 3)
+  (mezzano.lap.arm64:b.eq APPLY-CALL-VALID)
+  ;; Preserve the raw entry and callable in argument registers and trap
+  ;; directly. Calling an ordinary Lisp diagnostic from this partially
+  ;; dismantled %APPLY frame can itself block in stack/GC machinery.
+  (mezzano.lap.arm64:orr :x1 :xzr :x9)
+  (mezzano.lap.arm64:orr :x2 :xzr :x6)
+  (mezzano.lap.arm64:brk 43)
+  APPLY-CALL-VALID
   (mezzano.lap.arm64:blr :x9)
   (:gc :frame)
   ;; Finish up & return.
@@ -221,6 +242,12 @@
   (mezzano.lap.arm64:ldp :x29 :x30 (:post :sp 16))
   (:gc :no-frame :layout #*)
   (mezzano.lap.arm64:ldr :x9 (:object :x6 0))
+  (mezzano.lap.arm64:ands :x10 :x9 3)
+  (mezzano.lap.arm64:b.eq APPLY-TAIL-VALID)
+  (mezzano.lap.arm64:orr :x1 :xzr :x9)
+  (mezzano.lap.arm64:orr :x2 :xzr :x6)
+  (mezzano.lap.arm64:brk 44)
+  APPLY-TAIL-VALID
   (mezzano.lap.arm64:br :x9)
   ;; X0 = function, X1 = arg-list.
   ;; (raise-type-error arg-list 'proper-list)
@@ -399,6 +426,22 @@
   (:gc :no-frame :layout #* :incoming-arguments :rcx)
   (mezzano.lap.arm64:stp :x29 :x30 (:pre :sp -16))
   (:gc :no-frame :layout #*00 :incoming-arguments :rcx)
+  ;; During cold bootstrap the pager may need to allocate while servicing the
+  ;; first demand-mapped page.  Keep that narrow window out of the TLAB; after
+  ;; INITIALIZE-LISP clears the flag, use the normal fast allocator below.
+  (mezzano.lap.arm64:ldr :x6 (:symbol-global-cell mezzano.supervisor::*cold-boot-in-progress*))
+  (mezzano.lap.arm64:ldr :x6 (:object :x6 #.sys.int::+symbol-value-cell-value+))
+  (mezzano.lap.arm64:subs :xzr :x6 :x26)
+  (mezzano.lap.arm64:b.ne COLD-WIRED)
+  ;; Once normal cold initialization starts, page-fault handling still runs
+  ;; on the pager thread.  Do not inspect a thread slot here: the pager's
+  ;; thread object can itself be demand-paged while it is servicing a fault,
+  ;; which would recurse into the page-fault handler.  Comparing the current
+  ;; thread pointer in X28 with the wired pager global avoids that dereference.
+  (mezzano.lap.arm64:ldr :x6 (:symbol-global-cell sys.int::*pager-thread*))
+  (mezzano.lap.arm64:ldr :x6 (:object :x6 #.sys.int::+symbol-value-cell-value+))
+  (mezzano.lap.arm64:subs :xzr :x28 :x6)
+  (mezzano.lap.arm64:b.eq COLD-WIRED)
   ;; Attempt to quickly allocate from the general area. Will call
   ;; %SLOW-ALLOCATE-FROM-GENERAL-AREA if things get too hairy.
   ;; R8 = tag; R9 = data; R10 = words
@@ -459,7 +502,11 @@
   SLOW-PATH-BAD-ARGS
   (mezzano.lap.arm64:ldp :x29 :x30 (:post :sp 16))
   (:gc :no-frame :layout #* :incoming-arguments :rcx)
-  (mezzano.lap.arm64:named-tail-call %slow-allocate-from-general-area))
+  (mezzano.lap.arm64:named-tail-call %slow-allocate-from-general-area)
+  COLD-WIRED
+  (mezzano.lap.arm64:ldp :x29 :x30 (:post :sp 16))
+  (:gc :no-frame :layout #* :incoming-arguments :rcx)
+  (mezzano.lap.arm64:named-tail-call %allocate-from-wired-area))
 
 (sys.int::define-lap-function %do-slow-allocate-from-general-area ((tag data words))
   (:gc :no-frame :layout #*)

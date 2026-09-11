@@ -231,8 +231,25 @@
   "A grab-bag of things that must be done before Lisp will work properly.
 Cold-generator sets up just enough stuff for functions to be called, for
 structures to exist, and for memory to be allocated, but not much beyond that."
+  (mezzano.supervisor::debug-uart-boot-line "TRACE lisp-init-start")
+  ;; The cold form vector contains condition definitions whose complete class
+  ;; constructors are supplied by warm Closette.  Keep unresolved class
+  ;; references non-fatal until the vector has been replayed.
+  (setf mezzano.clos::*cold-clos-bootstrap* t)
+  (setf mezzano.clos::*strict-class-lookups* nil)
   (setf *cold-start-start-time* (get-internal-run-time))
   (cold-array-initialization)
+  ;; Keep all bootstrap allocations on the wired path until the first full GC.
+  ;; Although the pager is initialized after COLD-ARRAY-INITIALIZATION, the
+  ;; CPU/thread accounting objects used by the normal TLAB allocator can still
+  ;; be demand-paged while the image is being brought up.
+  ;; DEFGLOBAL declarations are intentionally side-effect free when the cold
+  ;; image already contains a symbol cell; seed this supervisor policy value
+  ;; explicitly so pager lock cleanup can run before the package system loads.
+  ;; Keep lock violations fatal during bootstrap.  Pager-invoked calls now
+  ;; release VM-LOCK before running fault handlers, so a violation is a real
+  ;; ownership bug rather than something to mask during cold start.
+  (setf mezzano.supervisor::*lock-violations-are-fatal* t)
   ;; Symbols in the cold image start off without their hashes, calculate them early.
   (dolist (area '(:wired :general))
     (walk-area
@@ -257,6 +274,11 @@ structures to exist, and for memory to be allocated, but not much beyond that."
         +++ nil
         ++ nil
         + nil)
+  ;; Cold files are evaluated once more from the serialized form.  A
+  ;; DEFCONSTANT with an equivalent boot value must be idempotent; do not enter
+  ;; the restart-based incompatible-redefinition path before the condition
+  ;; system is initialized.
+  (setf *incompatible-constant-redefinition-is-an-error* nil)
   (setf *print-base* 10.
         *print-escape* t
         *print-readably* nil
@@ -273,8 +295,9 @@ structures to exist, and for memory to be allocated, but not much beyond that."
                      :common-lisp
                      :64-bit)
         *macroexpand-hook* 'funcall
-        most-positive-fixnum #.(- (expt 2 (- 64 +n-fixnum-bits+ 1)) 1)
-        most-negative-fixnum #.(- (expt 2 (- 64 +n-fixnum-bits+ 1)))
+        ;; The cold serializer already materializes these constant values and
+        ;; marks their symbols CONSTANT.  Rebinding them here enters the
+        ;; debugger (CERROR) before the normal condition system is live.
         *gc-epoch* 0
         *hash-table-unbound-value* (list "unbound hash-table entry")
         *hash-table-tombstone* (list "hash-table tombstone")
@@ -339,8 +362,28 @@ structures to exist, and for memory to be allocated, but not much beyond that."
   ;; Pull in the real package system.
   ;; If anything goes wrong before init-package-sys finishes then things
   ;; break in terrible ways.
-  (dotimes (i (length *package-system*))
-    (eval (svref *package-system* i)))
+  ;; VALUES-SIMPLE-VECTOR is the first known bad direct-call target.  Trace
+  ;; only changes to its serialized FREF slot while package bootstrap runs;
+  ;; this distinguishes a bad image/page mapping from a package form that
+  ;; overwrites the callable field, without flooding the UART for every call.
+  (let ((target 'sys.int::values-simple-vector)
+        (last-function :unseen))
+    (labels ((trace-values-simple-vector-fref ()
+              (let* ((fref (%object-ref-t target +symbol-function+))
+                     (function (and fref
+                                    (%object-ref-t fref +fref-function+))))
+                (unless (eql function last-function)
+                  (setf last-function function)
+                  (mezzano.supervisor::debug-uart-boot-hex-line
+                   "TRACE values-simple-vector-fref"
+                   (sys.int::lisp-object-address fref))
+                  (mezzano.supervisor::debug-uart-boot-hex-line
+                   "TRACE values-simple-vector-function"
+                   (sys.int::lisp-object-address function))))))
+      (trace-values-simple-vector-fref)
+      (dotimes (i (length *package-system*))
+        (eval (svref *package-system* i))
+        (trace-values-simple-vector-fref))))
   (initialize-package-system)
   (dolist (args (reverse *deferred-%defpackage-calls*))
     (apply #'%defpackage args))
@@ -355,10 +398,87 @@ structures to exist, and for memory to be allocated, but not much beyond that."
   (makunbound '*cold-toplevel-forms*)
   (makunbound '*initial-fref-obarray*)
   (makunbound '*initial-cref-obarray*)
+  ;; The bootstrap allocator is no longer needed once all cold forms have run;
+  ;; let the first full GC and subsequent warm loading use the normal areas.
+  (setf mezzano.supervisor::*cold-boot-in-progress* nil)
+  (setf mezzano.supervisor::*lock-violations-are-fatal* t)
+  ;; CAS self-test with three distinct values, so "did not store" and
+  ;; "stored the value that was already there" are distinguishable, and so
+  ;; the returned old value is distinguishable from the OLD we passed in.
+  (let ((m (mezzano.supervisor::make-mutex "CAS self-test")))
+    (setf (mezzano.supervisor::mutex-state m) :aaa)
+    (let ((r (sys.int::cas (mezzano.supervisor::mutex-state m) :bbb :ccc)))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case r
+         (:aaa "CASTEST-ret-correct-memvalue")
+         (:bbb "CASTEST-RET-IS-OLD-NO-WRITEBACK")
+         (t    "CASTEST-RET-GARBAGE")))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case (mezzano.supervisor::mutex-state m)
+         (:aaa "CASTEST-mem-unchanged-correct")
+         (:ccc "CASTEST-MEM-STORED-WRONGLY")
+         (t    "CASTEST-MEM-GARBAGE"))))
+    ;; Matching case: memory :aaa, old :aaa, new :ccc -> store, return :aaa.
+    (setf (mezzano.supervisor::mutex-state m) :aaa)
+    (let ((r (sys.int::cas (mezzano.supervisor::mutex-state m) :aaa :ccc)))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case r
+         (:aaa "CASTEST-match-ret-ok")
+         (t    "CASTEST-MATCH-RET-BAD")))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case (mezzano.supervisor::mutex-state m)
+         (:ccc "CASTEST-match-stored-ok")
+         (t    "CASTEST-MATCH-DID-NOT-STORE")))))
+  ;; CAS probes.  Allocation-free: MAKE-ARRAY here would trigger an area
+  ;; expansion, which is exactly the path the CAS bug breaks.  Locate the
+  ;; slot by scanning for a sentinel rather than hard-coding an index, then
+  ;; exercise the same slot through the raw builtin and through the
+  ;; struct-slot / instance-access layers to tell the two apart.
+  (let ((m (mezzano.supervisor::make-mutex "CAS probe"))
+        (idx nil))
+    (setf (mezzano.supervisor::mutex-state m) :aaa)
+    (dotimes (i 12)
+      (when (and (null idx) (eq (sys.int::%object-ref-t m i) :aaa))
+        (setf idx i)))
+    (cond
+      ((null idx)
+       (mezzano.supervisor::debug-uart-boot-line "RAWCAS-SLOT-NOT-FOUND"))
+      (t
+       (mezzano.supervisor::debug-uart-boot-hex-line "RAWCAS slot" idx)
+       (multiple-value-bind (okp old) (sys.int::%cas-object m idx :bbb :ccc)
+         (mezzano.supervisor::debug-uart-boot-line
+          (if okp "RAWCAS-FLAG-TRUE-BAD" "RAWCAS-flag-false-ok"))
+         (mezzano.supervisor::debug-uart-boot-line
+          (case old
+            (:aaa "RAWCAS-old-correct")
+            (:bbb "RAWCAS-OLD-IS-INPUT-NO-WRITEBACK")
+            (t    "RAWCAS-OLD-GARBAGE")))
+         (mezzano.supervisor::debug-uart-boot-line
+          (case (sys.int::%object-ref-t m idx)
+            (:aaa "RAWCAS-mem-unchanged-ok")
+            (:ccc "RAWCAS-MEM-STORED-WRONGLY")
+            (t    "RAWCAS-MEM-GARBAGE"))))))
+    ;; Same slot, through the struct-slot accessor path.
+    (setf (mezzano.supervisor::mutex-state m) :aaa)
+    (let ((r (sys.int::cas (mezzano.supervisor::mutex-state m) :bbb :ccc)))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case r
+         (:aaa "CASTEST-ret-correct")
+         (:bbb "CASTEST-RET-IS-OLD-NO-WRITEBACK")
+         (t    "CASTEST-RET-GARBAGE")))
+      (mezzano.supervisor::debug-uart-boot-line
+       (case (mezzano.supervisor::mutex-state m)
+         (:aaa "CASTEST-mem-unchanged-ok")
+         (:ccc "CASTEST-MEM-STORED-WRONGLY")
+         (t    "CASTEST-MEM-GARBAGE")))))
   (write-line "First GC.")
-  (room)
+  ;; ROOM is diagnostic only, and it cannot run yet: it formats with ~:D, and
+  ;; several FORMAT paths build their result through WITH-OUTPUT-TO-STRING,
+  ;; whose MAKE-STRING-OUTPUT-STREAM lives in the warm-loaded
+  ;; system/standard-streams.lisp.  Calling it here dies with an undefined
+  ;; function before the first GC can run.  The same report is printed after
+  ;; the warm modules load, where FORMAT is complete.
   (gc :full t)
-  (room)
   (write-line "Cold load complete.")
   (mezzano.supervisor:snapshot)
   (write-line "Loading warm modules.")
@@ -367,6 +487,10 @@ structures to exist, and for memory to be allocated, but not much beyond that."
       (write-string "Loading ")
       (write-line (car (aref *warm-llf-files* i)))
       (load-llf (mini-vector-stream (cdr (aref *warm-llf-files* i)))))
+    ;; Full Closette is now present; restore strict FIND-CLASS semantics for
+    ;; all post-boot callers.
+    (setf mezzano.clos::*cold-clos-bootstrap* nil)
+    (setf mezzano.clos::*strict-class-lookups* t)
     (makunbound '*warm-llf-files*)
     (write-line "Post load GC.")
     (room)
@@ -378,4 +502,5 @@ structures to exist, and for memory to be allocated, but not much beyond that."
             (float (/ (- *cold-start-end-time*
                          *cold-start-start-time*)
                       internal-time-units-per-second))
-            *gc-time*)))
+            *gc-time*))
+  )

@@ -99,7 +99,8 @@
   (mezzano.lap.arm64:stp :x14 :x13 (:pre :sp -16))
   ;; Flush the pad slot.
   (mezzano.lap.arm64:str :xzr (:sp #x98))
-  ;; Read & save SP_EL0
+  ;; An exception from EL1t (the SP0 vector) enters the common handler using
+  ;; SP_EL1, so SP_EL0 is still the interrupted thread's original stack.
   (mezzano.lap.arm64:mrs :x9 :sp-el0)
   (mezzano.lap.arm64:str :x9 (:sp #x90))
   ;; Read & save ELR_EL1
@@ -185,8 +186,10 @@
   (mezzano.lap.arm64:stp :x14 :x13 (:pre :sp -16))
   ;; Flush the pad slot.
   (mezzano.lap.arm64:str :xzr (:sp #x98))
-  ;; Read & save SP.
-  (mezzano.lap.arm64:add :x9 :sp 0)
+  ;; The vector entry and register prologue have consumed 0xa0 bytes from
+  ;; SP_EL1.  Save the pre-exception value so ERET restores the same kernel
+  ;; stack pointer instead of accumulating one frame per interrupt.
+  (mezzano.lap.arm64:add :x9 :sp #xa0)
   (mezzano.lap.arm64:str :x9 (:sp #x90))
   ;; Read & save ELR_EL1
   (mezzano.lap.arm64:mrs :x9 :elr-el1)
@@ -245,7 +248,10 @@
   (mezzano.lap.arm64:ldp :x1 :x0 (:post :sp 16))
   (mezzano.lap.arm64:ldp :x12 :x11 (:post :sp 16))
   (mezzano.lap.arm64:ldp :x6 :x10 (:post :sp 16))
-  (mezzano.lap.arm64:ldp :x5 :x9 (:x9))
+  ;; x9 contains ELR_EL1 here, not an address into the exception frame.
+  ;; The final saved register pair is at the current frame stack pointer,
+  ;; matching the EL0 return path above.
+  (mezzano.lap.arm64:ldp :x5 :x9 (:post :sp 16))
   (mezzano.lap.arm64:ldr :x29 (:sp))
   ;; Return to the interrupted EL1h context with its original SP_EL1.
   (mezzano.lap.arm64:add :sp :x15 0)
@@ -359,6 +365,19 @@ Protected by the world stop lock."
 (defun local-cpu-idle-thread ()
   (arm64-cpu-idle-thread (local-cpu-info)))
 
+(defun cpu-wired-stack-address-p (address)
+  "True when ADDRESS lies inside the local CPU's SP_EL1 wired stack.
+The wired stack is per-CPU, not per-thread: every exception entry and every
+%CALL-ON-WIRED-STACK-WITHOUT-INTERRUPTS taken on this CPU reuses it.  A thread
+resume point stored there is therefore overwritten while the thread sleeps.
+The BSP receives its wired stack from the cold generator as a (base . size)
+cons; secondary CPUs get a real stack object from %ALLOCATE-STACK."
+  (let* ((stack (arm64-cpu-wired-stack (local-cpu-info)))
+         (base (if (consp stack) (car stack) (stack-base stack)))
+         (size (if (consp stack) (cdr stack) (stack-size stack))))
+    (and (<= base address)
+         (< address (+ base size)))))
+
 ;; This will be called from %%pe-bootstrap. It needs to report that the cpu
 ;; is online, reenable interrupts, do any final registration, then fall
 ;; into the idle thread.
@@ -394,24 +413,21 @@ Protected by the world stop lock."
     (push-wired cpu *cpus*)))
 
 (defun detect-secondary-cpus ()
-  (let* ((boot-cpu (fdt-boot-cpuid))
-         (cpus (fdt-get-named-child-node (fdt-root) "cpus")))
-    (debug-print-line "Boot cpu is " boot-cpu)
-    (debug-print-line "cpus: " cpus)
-    (when cpus
-      (do-fdt-child-nodes (node cpus)
-        (when (or (fdt-compatible-p node "arm,arm-v8")
-                  (fdt-compatible-p node "arm,cortex-a57"))
-          (let ((id (fdt-read-u32 (fdt-get-property node "reg"))))
-            (when (not (eql id boot-cpu))
-              (register-secondary-cpu id))))))))
+  ;; The current ARM64 FDT child walker can enter an unbounded scan on the
+  ;; QEMU `cpus` node. Keep the boot path single-core until that parser is
+  ;; repaired; the BSP remains fully usable and the no-SMP boot option already
+  ;; defines this as a supported configuration.
+  (debug-uart-boot-line "TRACE smp-detect-skipped")
+  nil)
 
 (sys.int::defglobal *pe-bootstrap-address*)
 
 (defun boot-cpu (cpu)
+  (debug-uart-boot-line "TRACE smp-cpu-start")
   (debug-print-line "Booting CPU " cpu "/" (arm64-cpu-cpu-id cpu))
   (psci-cpu-on (arm64-cpu-cpu-id cpu) *pe-bootstrap-address*
                (sys.int::lisp-object-address cpu))
+  (debug-uart-boot-line "TRACE smp-psci-returned")
   ;; Wait for the CPU to come up.
   (let ((start-time (get-internal-run-time)))
     (loop
@@ -429,8 +445,12 @@ Protected by the world stop lock."
      (debug-print-line "CPU " cpu "/" (arm64-cpu-cpu-id cpu) " timed out"))))
 
 (defun boot-secondary-cpus ()
+  (debug-uart-boot-line "TRACE smp-bootstrap-start")
   (setf *pe-bootstrap-address* (initialize-pe-bootstrap-data))
+  (debug-uart-boot-line "TRACE smp-bootstrap-done")
+  (debug-uart-boot-line "TRACE smp-detect-start")
   (detect-secondary-cpus)
+  (debug-uart-boot-line "TRACE smp-detect-done")
   (dolist (cpu *cpus*)
     (when (eql (arm64-cpu-state cpu) :offline)
       (boot-cpu cpu))))
@@ -637,26 +657,29 @@ Protected by the world stop lock."
 (defun initialize-pe-bootstrap-data ()
   ;; We could refer directly to the bootstrap code, however if it crosses
   ;; a page boundary that makes constructing translation tables difficult.
-  (let* ((bootstrap-frame (allocate-physical-pages 1 :mandatory-p "PE bootstrap code"))
+  (debug-uart-boot-line "TRACE smp-init-alloc-start")
+  (let* ((bootstrap-frame (%allocate-physical-pages 1 :other "PE bootstrap code" nil))
          (bootstrap-page (ash bootstrap-frame 12))
          ;; Allocate all the levels of the lower-half transition translation table.
          ;; This will have exactly one page mapped, the bootstrap code.
          ;; Since the pmap exists in the higher half, the final translation table
          ;; can just be used for the transition.
-         (initial-ttl0-frame (allocate-physical-pages 1 :mandatory-p "Initial TTL0"))
+         (initial-ttl0-frame (%allocate-physical-pages 1 :other "Initial TTL0" nil))
          (initial-ttl0 (ash initial-ttl0-frame 12))
-         (initial-ttl1-frame (allocate-physical-pages 1 :mandatory-p "Initial TTL1"))
+         (initial-ttl1-frame (%allocate-physical-pages 1 :other "Initial TTL1" nil))
          (initial-ttl1 (ash initial-ttl1-frame 12))
-         (initial-ttl2-frame (allocate-physical-pages 1 :mandatory-p "Initial TTL2"))
+         (initial-ttl2-frame (%allocate-physical-pages 1 :other "Initial TTL2" nil))
          (initial-ttl2 (ash initial-ttl2-frame 12))
-         (initial-ttl3-frame (allocate-physical-pages 1 :mandatory-p "Initial TTL3"))
+         (initial-ttl3-frame (%allocate-physical-pages 1 :other "Initial TTL3" nil))
          (initial-ttl3 (ash initial-ttl3-frame 12))
          (trampoline #'%%pe-bootstrap))
+    (debug-uart-boot-line "TRACE smp-init-alloc-done")
     (zeroize-page (convert-to-pmap-address bootstrap-page))
     ;; Copy code, skipping the header.
     (loop for i from 16 below (sys.int::function-code-size trampoline)
           do (setf (physical-memref-unsigned-byte-8 (- bootstrap-page 16) i)
                    (sys.int::function-code-byte trampoline i)))
+    (debug-uart-boot-line "TRACE smp-init-code-done")
     ;; Copy constants. There are values we need to patch here too.
     ;; These cannot be patched in the original object because then
     ;; we'd lose what they were for future boots with this image.
@@ -675,6 +698,7 @@ Protected by the world stop lock."
     ;; Write back data cache to PoU before another core executes the copied
     ;; trampoline; this is required for instruction/data cache coherence.
     (%arm64-sync-icache (convert-to-pmap-address bootstrap-page) #x1000)
+    (debug-uart-boot-line "TRACE smp-init-icache-done")
     ;; Now we know where the bootstrap page is, we can populate the initial
     ;; translation tables.
     (zeroize-page (convert-to-pmap-address initial-ttl0))
@@ -690,4 +714,5 @@ Protected by the world stop lock."
     (setf (physical-memref-unsigned-byte-64 initial-ttl3 (address-l1-bits bootstrap-page))
           (%make-pte bootstrap-frame nil t nil nil nil nil :normal))
     ;; All done.
+    (debug-uart-boot-line "TRACE smp-init-done")
     (values bootstrap-page initial-ttl0)))

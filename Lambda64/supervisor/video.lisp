@@ -7,7 +7,10 @@
 Can be :TOP to position them at the top of the screen, :BOTTOM to position them at the bottom, or NIL to disable them entirely.")
 
 (defstruct (framebuffer
-             (:area :wired))
+             (:area :wired)
+             (:constructor %make-framebuffer
+                 (base-address width height bytes-per-pixel pitch layout
+                  damage-fn blit-fn fill-fn device boot-id)))
   base-address
   width
   height
@@ -51,23 +54,15 @@ Can be :TOP to position them at the top of the screen, :BOTTOM to position them 
   (declare (ignore x y w h in-unsafe-context-p)))
 
 (defun video-set-framebuffer (phys width height pitch layout &key damage-fn device)
-  (debug-print-line "Configured new framebuffer at " phys "  " width "x" height "  layout " layout "  pitch " pitch)
+  (debug-uart-boot-line "TRACE framebuffer-config")
   (multiple-value-bind (bytes-per-pixel blit-fn fill-fn)
       (ecase layout
         (:x8r8g8b8 (values 4 #'%%bitblt-row-x8r8g8b8 #'%%bitset-row-x8r8g8b8))
         (:r8g8b8   (values 3 #'%%bitblt-row-r8g8b8   #'%%bitset-row-r8g8b8)))
-    (setf *current-framebuffer* (make-framebuffer :base-address phys
-                                                  :width width
-                                                  :height height
-                                                  :bytes-per-pixel bytes-per-pixel
-                                                  :pitch pitch
-                                                  :layout layout
-                                                  :damage-fn (or damage-fn
-                                                                 #'framebuffer-dummy-damage)
-                                                  :device device
-                                                  :blit-fn blit-fn
-                                                  :fill-fn fill-fn
-                                                  :boot-id (current-boot-id))))
+    (setf *current-framebuffer*
+          (%make-framebuffer phys width height bytes-per-pixel pitch layout
+                             (or damage-fn #'framebuffer-dummy-damage)
+                             blit-fn fill-fn device (current-boot-id))))
   (set-run-light t)
   (setf *debug-video-x* 0
         *debug-video-y* 0

@@ -132,13 +132,16 @@
 (sys.int::defglobal *post-boot-worker-thread*)
 
 (defun post-boot-worker ()
+  (debug-uart-boot-line "TRACE post-worker-entry")
   (loop
      ;; Run deferred boot actions first.
      (dolist (action *deferred-boot-actions*)
        (funcall action))
+     (debug-uart-boot-line "TRACE post-worker-deferred-done")
      (makunbound '*deferred-boot-actions*)
      ;; Now normal boot hooks.
      (run-boot-hooks)
+     (debug-uart-boot-line "TRACE post-worker-hooks-done")
      ;; Sleep til next boot.
      (%run-on-wired-stack-without-interrupts (sp fp)
       (let ((self (current-thread)))
@@ -158,17 +161,27 @@
     ;; post-snapshot boundary below.
     (%disable-interrupts)
     (initialize-boot-cpu)
+    (setf *cold-boot-in-progress* t)
+    (setf *cold-paging-direct-stack-ops* t)
     (initialize-debug-log)
     (initialize-fdt boot-information-page)
     (initialize-platform-early-console boot-information-page)
+    (debug-uart-boot-line "TRACE early-console")
+    (debug-print-line "BOOT-MARK early-console")
     (initialize-initial-thread)
+    (debug-uart-boot-line "TRACE initial-thread")
+    (debug-print-line "BOOT-MARK initial-thread")
     (setf *boot-information-page* boot-information-page
           *cold-unread-char* nil
           mezzano.runtime::*paranoid-allocation* nil
           *deferred-boot-actions* '()
           *paging-disk* nil)
     (initialize-physical-allocator)
+    (debug-uart-boot-line "TRACE physical")
+    (debug-print-line "BOOT-MARK physical")
     (initialize-early-video)
+    (debug-uart-boot-line "TRACE early-video")
+    (debug-print-line "BOOT-MARK early-video")
     ;; A serialized cold image may leave BOOT-ID bound to a non-event object.
     ;; Treat that state as an uninitialized first boot; relying on BOUNDP alone
     ;; incorrectly selected the warm-boot path and reused stale thread queues.
@@ -181,7 +194,9 @@
               (and (boundp '*initial-boot-event*)
                    (eq *boot-id* *initial-boot-event*)))
       (setf first-run-p t)
+      (debug-print-line "BOOT-MARK first-run")
       (mezzano.runtime::first-run-initialize-allocator)
+      (debug-print-line "BOOT-MARK allocator")
       ;; These globals are intentionally reset at first supervisor boot. The
       ;; current cold generator does not emit their initialized values, and
       ;; moving this reset would require extending the generated-image ABI.
@@ -226,8 +241,10 @@
             (sys.int::symbol-global-value 'mezzano.runtime::*maximum-allocation-attempts*) 5
             (sys.int::symbol-global-value 'mezzano.runtime::*maximum-young-generation-size*) #x20000000
             *big-wait-for-objects-lock* (place-spinlock-initializer)))
+    (debug-print-line "BOOT-MARK globals")
     (debug-print-line "first-run=" first-run-p " boot-id-event=" (and (boundp '*boot-id*) (event-p *boot-id*)))
     (initialize-early-platform)
+    (debug-uart-boot-line "TRACE early-platform")
     (when (boundp '*boot-id*)
       (setf (event-state *boot-id*) t))
     (setf *boot-id* (if (and first-run-p (boundp '*initial-boot-event*))
@@ -242,7 +259,9 @@
     ;; The allocator can now grow during bootstrap, so publish the queue
     ;; latch before any disk worker can enter POP-DISK-REQUEST.
     (initialize-disk first-run-p)
+    (debug-uart-boot-line "TRACE disk")
     (initialize-pager first-run-p first-run-p first-run-p first-run-p)
+    (debug-uart-boot-line "TRACE pager")
     ;; IRQs are enabled before paging discovery so the pager can make
     ;; progress.  Pseudo-atomic entry may then queue a world-stopper, so the
     ;; cold bootstrap must publish these wired wait queues before that first
@@ -258,9 +277,22 @@
     ;;(debug-set-output-pseudostream (lambda (op &optional arg) (declare (ignore op arg))))
     (initialize-efi)
     (initialize-virtio)
+    (debug-uart-boot-line "TRACE virtio")
     (initialize-platform)
+    (debug-uart-boot-line "TRACE platform")
+    ;; The platform scan installs the architected timer and VirtIO/GIC
+    ;; handlers.  Partition probing performs synchronous VirtIO reads, which
+    ;; may sleep until their IRQ arrives; keeping DAIF.I masked here strands
+    ;; the bootstrap thread after it switches to idle and no progress event
+    ;; can be delivered.  Make this the explicit interrupt-enable boundary
+    ;; before any device operation that may wait.
+    (debug-uart-boot-line "TRACE interrupts-before-partitions")
+    (%enable-interrupts)
     (when (not (boot-option +boot-option-no-detect+))
+      (debug-uart-boot-line "TRACE partitions-start")
       (detect-disk-partitions))
+    (debug-uart-boot-line "TRACE partitions-done")
+    (debug-uart-boot-line "TRACE partitions")
     ;; Device probing may leave interrupts masked after its critical sections;
     ;; re-enable them at the exact point where paging discovery can block on
     ;; PAGER-RPC so the pager is guaranteed to be schedulable.
@@ -279,11 +311,19 @@
           (setf *vm-lock* (%make-rw-lock '*vm-lock*))
           (setf (rw-lock-state *vm-lock*) +rw-lock-mode-write-locked+
                 (rw-lock-write-owner *vm-lock*) (current-thread))
+          (debug-uart-boot-line "TRACE paging-start")
           (initialize-paging-system-1)
+          (debug-uart-boot-line "TRACE paging-done")
           ;; The direct bootstrap phase is complete.  Publish the normal lock
           ;; shape before any subsequent general-area operation can contend
           ;; for VM-LOCK or enqueue a waiter.
-          (setf *vm-lock* (make-rw-lock '*vm-lock*)))
+          (debug-uart-boot-line "TRACE vm-lock-publish-start")
+          (setf *vm-lock* (make-rw-lock '*vm-lock*))
+          ;; From this point the pager is runnable and owns all VM mutations.
+          ;; Do not let bootstrap-created threads mutate stack mappings under
+          ;; VM-LOCK directly while the pager can service another fault.
+          (setf *cold-paging-direct-stack-ops* nil)
+          (debug-uart-boot-line "TRACE vm-lock-publish-done"))
         (initialize-paging-system))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
@@ -291,41 +331,56 @@
     ;; with no paging backend and stranded the bootstrap thread in idle.
     (when (null *disk-request-queue-latch*)
       (setf *disk-request-queue-latch*
-            (make-event :name "Disk request queue notifier")))
+            (%make-event "Disk request queue notifier" nil)))
+    (debug-uart-boot-line "TRACE queue-ready")
     (when (and (boundp '*pager-disk-request*)
                (null *pager-disk-request*))
-      (setf *pager-disk-request* (make-disk-request)))
+      (setf *pager-disk-request* (make-disk-request t)
+            (disk-request-latch *pager-disk-request*)
+            (%make-event "Pager disk request notifier" nil)))
+    (debug-uart-boot-line "TRACE pager-request-ready")
     (when first-run-p
       (wake-thread sys.int::*disk-io-thread*))
+    (debug-uart-boot-line "TRACE disk-thread-woken")
     (when (and first-run-p
                (not (boundp 'mezzano.runtime::*allocator-lock*)))
       (setf mezzano.runtime::*allocator-lock*
             (make-mutex "Allocator")))
+    (debug-uart-boot-line "TRACE allocator-lock-ready")
     (when (or (not (boundp '*vm-lock*))
               (null *vm-lock*))
       (setf *vm-lock* (make-rw-lock '*vm-lock*)))
+    (debug-uart-boot-line "TRACE vm-lock-ready")
     ;; The pager thread must be schedulable before hosted paging discovery;
     ;; that phase can block the bootstrap thread in PAGER-RPC.  The ARM timer
     ;; handler tolerates the still-unbound time queues during this window.
     (%enable-interrupts)
+    (debug-uart-boot-line "TRACE interrupts-enabled")
     ;; ACPI diagnostics allocate debug buffers.  Run ACPI discovery only after
     ;; the paging backend is ready so a missing/invalid RSDP cannot recurse
     ;; into PAGER-RPC during cold bootstrap.
     (initialize-acpi)
+    (debug-uart-boot-line "TRACE acpi-done")
     ;; Framebuffer mapping takes the VM lock and therefore requires the
     ;; paging backend and its lock to exist first.
     (initialize-video)
+    (debug-uart-boot-line "TRACE video-done")
     ;; INITIALIZE-TIME creates the heartbeat wait queue and timer queue.  Both
     ;; may require general-area allocation, so initialize them only after the
     ;; paging backend and bootstrap synchronization objects are available.
     (initialize-time)
+    (debug-uart-boot-line "TRACE time-done")
     ;; Debug output allocates a general-area buffer.  Keep this historical
     ;; marker after the paging backend and its bootstrap objects are ready.
-    (debug-print-line "Hello, Debug World!")
+    (debug-uart-boot-line "TRACE hello-debug-world")
+    (debug-uart-boot-line "TRACE debug-done")
     (when (boot-option +boot-option-video-console+)
       (debug-set-output-pseudostream #'debug-video-stream))
     (initialize-time-late)
+    (debug-uart-boot-line "TRACE time-late-done")
+    (debug-uart-boot-line "TRACE snapshot-call-start")
     (initialize-snapshot)
+    (debug-uart-boot-line "TRACE snapshot-done")
     ;; The scheduler/pager bootstrap objects are now published, so device and
     ;; time initialization may safely receive their interrupts.  Keep the
     ;; original startup boundary here; leaving interrupts masked through
@@ -336,16 +391,48 @@
     ;; enter GC, and deadlock in a pager RPC.  Warm boots retain the original
     ;; no-op behavior because FIRST-RUN-P is false there.
     (initialize-sync first-run-p)
+    (debug-uart-boot-line "TRACE sync-done")
     (when first-run-p
-      (initialize-pager-dirty-bits))
+      (debug-uart-boot-line "TRACE dirty-bits-start")
+      (initialize-pager-dirty-bits)
+      (debug-uart-boot-line "TRACE dirty-bits-done")
+      ;; The freelist allocator writes card-table entries with interrupts
+      ;; masked on the wired stack, where a fault is fatal.  Make those pages
+      ;; resident now, while faults can still be serviced.
+      (debug-uart-boot-line "TRACE card-prime-start")
+      (mezzano.runtime::prime-card-table-pages
+       sys.int::*wired-area-base* sys.int::*wired-area-bump*)
+      (mezzano.runtime::prime-card-table-pages
+       sys.int::*wired-function-area-limit* sys.int::*function-area-base*)
+      ;; The cold image's own freelists are not covered by the area bumps
+      ;; above; walk the bins so every range the allocator can split is mapped.
+      (mezzano.runtime::prime-freelist-card-tables)
+      (debug-uart-boot-line "TRACE card-prime-done"))
     (when (not (boot-option +boot-option-no-smp+))
-      (boot-secondary-cpus))
+      (debug-uart-boot-line "TRACE smp-start")
+      (boot-secondary-cpus)
+      (debug-uart-boot-line "TRACE smp-done"))
     (cond (first-run-p
+           (debug-uart-boot-line "TRACE post-worker-start")
+           (setf *boot-hook-lock* (make-mutex "Boot Hook Lock")
+                 *early-boot-hooks* '()
+                 *boot-hooks* '()
+                 *late-boot-hooks* '())
+           (debug-uart-boot-line "TRACE main-thread-start")
+           (make-thread #'sys.int::initialize-lisp :name "Main thread" :priority :supervisor)
+           (debug-uart-boot-line "TRACE main-thread-done")
+           (setf *post-boot-worker-thread*
+                 (make-thread #'post-boot-worker :name "Post-boot worker thread"))
+           (debug-uart-boot-line "TRACE post-worker-done"))
+          ((not first-run-p)
            (setf *post-boot-worker-thread* (make-thread #'post-boot-worker :name "Post-boot worker thread")
                  *boot-hook-lock* (make-mutex "Boot Hook Lock")
                  *early-boot-hooks* '()
                  *boot-hooks* '()
                  *late-boot-hooks* '())
-           (make-thread #'sys.int::initialize-lisp :name "Main thread"))
+           (make-thread #'sys.int::initialize-lisp :name "Main thread" :priority :supervisor)
+           (setf *cold-boot-in-progress* nil)
+           (debug-uart-boot-line "TRACE main-thread-done"))
           (t (wake-thread *post-boot-worker-thread*)))
+    (debug-uart-boot-line "TRACE before-finish")
     (finish-initial-thread)))

@@ -539,16 +539,38 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
                                         *defconstant-redefinition-comparator*)
                                    #'eql)
                                old-value value))
-             (when *incompatible-constant-redefinition-is-an-error*
+             ;; Cold images replay serialized top-level forms after the
+             ;; supervisor has already materialized constants.  That replay
+             ;; must be idempotent and cannot enter the restart system before
+             ;; conditions are initialized; retain strict diagnostics for the
+             ;; normal (post-cold-boot) loader only.
+             (when (and *incompatible-constant-redefinition-is-an-error*
+                        (not (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+                                  mezzano.supervisor::*cold-boot-in-progress*)))
                (cerror "Redefine the constant"
                        'defconstant-uneql
                        :name name
                        :old-value old-value
                        :new-value value))
              (setf (symbol-mode name) :special)
-             (setf (symbol-value name) value))))
+             ;; SYMBOL-VALUE performs the user-facing constant mutation
+             ;; check.  We have already validated/reclassified the symbol
+             ;; above; write its value cell directly so replaying a serialized
+             ;; DEFCONSTANT cannot re-enter MODIFYING-SYMBOL-VALUE while the
+             ;; cold condition system is still incomplete.
+             (setf (mezzano.runtime::symbol-value-cell-value
+                    (mezzano.runtime::symbol-value-cell name))
+                   value))))
         (t
-         (setf (symbol-value name) value)))
+         ;; The serializer may preserve CONSTANT mode while leaving the
+         ;; value cell unbound.  Treat that as a fresh definition rather than
+         ;; routing through the public setter, which quite correctly rejects
+         ;; writes to constants.
+         (when (mezzano.runtime::symbol-constant-p name)
+           (setf (symbol-mode name) :special))
+         (setf (mezzano.runtime::symbol-value-cell-value
+                (mezzano.runtime::symbol-value-cell name))
+               value)))
   (setf (symbol-mode name) :constant)
   (when docstring
     (set-variable-docstring name docstring))
@@ -639,9 +661,31 @@ of MACRO-FUNCTION and COMPILER-MACRO-FUNCTION is only defined globally."
    16))
 
 (defun make-function-reference (name)
-  (let ((fref (mezzano.runtime::%allocate-function
-               +object-tag-function-reference+ 0 8 t)))
+    ;; Cold ARM64 bootstrap may not yet have a usable wired-function freelist;
+    ;; function references are executable in the normal function area as well,
+    ;; and keeping them there lets the pager grow the area normally.
+    (let ((fref (mezzano.runtime::%allocate-function
+                 +object-tag-function-reference+ 0 8 nil)))
+      ;; Keep a wired fallback during early bootstrap.  The normal executable
+      ;; area may not have a published free-list entry yet, while the wired
+      ;; function area is already part of the cold image.
+      (unless fref
+        (mezzano.supervisor::debug-uart-boot-line "TRACE fref-normal-nil")
+        (setf fref (mezzano.runtime::%allocate-function
+                    +object-tag-function-reference+ 0 8 t)))
+      (unless fref
+        (mezzano.supervisor::debug-uart-boot-line "TRACE fref-wired-nil")
+        (mezzano.supervisor:panic "Unable to allocate function reference"))
     (setf (%object-ref-t fref +fref-name+) name)
+    ;; Keep bootstrap output focused on the call boundaries under diagnosis;
+    ;; bad non-function publications below remain unconditional traces.
+    (when (or (eq name 'sys.int::values-simple-vector)
+              (eq name 'sys.int::%%unwind-to))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE fref-value" (sys.int::lisp-object-address fref))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE fref-code-address"
+       (mezzano.runtime::%object-slot-address fref sys.int::+fref-code+)))
     ;; Undefined frefs point directly at raise-undefined-function.
     (setf (%object-ref-unsigned-byte-64 fref +fref-undefined-entry-point+)
           (%function-reference-code-location
@@ -756,32 +800,68 @@ normal coherent memory fabric."
   #-arm64
   (declare (ignore fref)))
 
+(defun %publish-function-reference-function (value fref)
+  ;; The cold image is single-writer until INITIALIZE-LISP completes.  Keep
+  ;; this operation callable on the ordinary stack during that phase: entering
+  ;; the wired-stack/no-IRQ trampoline can itself touch a demand-mapped fref
+  ;; page and turn a recoverable fault into page-fault-no-irqs.
+  (cond
+    ((not value)
+     (setf (%object-ref-t fref +fref-function+) fref)
+     (sys.int::dma-write-barrier)
+     (%activate-function-reference-full-path fref)
+     (%synchronize-function-reference fref))
+    ((%object-of-type-p value +object-tag-function+)
+     (when (and (or (eq (%object-ref-t fref +fref-name+)
+                       'sys.int::values-simple-vector)
+                    (eq (%object-ref-t fref +fref-name+)
+                       'sys.int::%%unwind-to))
+                (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+                mezzano.supervisor::*cold-boot-in-progress*)
+       (mezzano.supervisor::debug-uart-boot-hex-line
+        "TRACE publish-fref" (sys.int::lisp-object-address fref))
+       (mezzano.supervisor::debug-uart-boot-hex-line
+        "TRACE publish-function" (sys.int::lisp-object-address value))
+       (mezzano.supervisor::debug-uart-boot-hex-line
+        "TRACE publish-entry"
+        (%object-ref-unsigned-byte-64 value +function-entry-point+)))
+     (setf (%object-ref-t fref +fref-function+) value)
+     (sys.int::dma-write-barrier)
+     (%activate-function-reference-fast-path
+      fref (%object-ref-unsigned-byte-64 value +function-entry-point+))
+     (%synchronize-function-reference fref))
+    (t
+     ;; A function-reference setter is typed to FUNCTION or NIL.  If the
+     ;; bootstrap path ever hands us another tagged value, retain the exact
+     ;; pair before publishing it; otherwise the next direct FREF call only
+     ;; reports an instruction abort at the derived (and usually unmapped)
+     ;; entry address.
+     (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+                mezzano.supervisor::*cold-boot-in-progress*)
+       (mezzano.supervisor::debug-uart-boot-hex-line
+        "TRACE publish-nonfunction-fref" (sys.int::lisp-object-address fref))
+       (mezzano.supervisor::debug-uart-boot-hex-line
+        "TRACE publish-nonfunction-value" (sys.int::lisp-object-address value)))
+     (setf (%object-ref-t fref +fref-function+) value)
+     (sys.int::dma-write-barrier)
+     (%activate-function-reference-full-path fref)
+     (%synchronize-function-reference fref))))
+
 (defun (setf function-reference-function) (value fref)
   "Update the function field of a function-reference.
 VALUE may be nil to make the fref unbound."
   (check-type value (or function null))
   (check-type fref function-reference)
-  ;; Writers are serialized on a supervisor spinlock.  Run on the wired stack
-  ;; because acquiring a spinlock requires interrupts to be disabled.
-  (mezzano.supervisor:safe-without-interrupts (fref value)
-    (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
-      (cond
-        ((not value)
-         (setf (%object-ref-t fref +fref-function+) fref)
-         (sys.int::dma-write-barrier)
-         (%activate-function-reference-full-path fref)
-         (%synchronize-function-reference fref))
-        ((%object-of-type-p value +object-tag-function+)
-         (setf (%object-ref-t fref +fref-function+) value)
-         (sys.int::dma-write-barrier)
-         (%activate-function-reference-fast-path
-          fref (%object-ref-unsigned-byte-64 value +function-entry-point+))
-         (%synchronize-function-reference fref))
-        (t
-         (setf (%object-ref-t fref +fref-function+) value)
-         (sys.int::dma-write-barrier)
-         (%activate-function-reference-full-path fref)
-         (%synchronize-function-reference fref)))))
+  ;; Writers are serialized on a supervisor spinlock.  During cold bootstrap
+  ;; there is a single writer and keeping interrupts enabled lets the pager
+  ;; resolve any not-yet-resident fref or function page.  Once the bootstrap
+  ;; flag is cleared, retain the normal wired-stack critical section.
+  (if (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+           mezzano.supervisor::*cold-boot-in-progress*)
+      (%publish-function-reference-function value fref)
+      (mezzano.supervisor:safe-without-interrupts (fref value)
+        (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
+          (%publish-function-reference-function value fref))))
   value)
 
 (defun trace-wrapper-p (object)

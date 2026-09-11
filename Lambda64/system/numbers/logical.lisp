@@ -2,6 +2,30 @@
 
 (in-package :mezzano.internals.numbers.logical)
 
+;; The logical-number package is replayed before the full package system is
+;; installed.  Its top-level shadowing-import declaration is metadata for the
+;; later package registry; keep the bootstrap evaluation side-effect free and
+;; let SYSTEM/PACKAGES install the complete implementation afterward.
+(defun shadowing-import (&rest symbols)
+  (declare (ignore symbols))
+  nil)
+
+;; Package declarations are replayed before SYSTEM/PACKAGES installs their
+;; mutating operators.  The cold image already carries the package graph, so
+;; these metadata-only calls can safely be deferred to the real definitions.
+(defun export (&rest symbols)
+  (declare (ignore symbols))
+  nil)
+(defun import (&rest symbols)
+  (declare (ignore symbols))
+  nil)
+(defun use-package (&rest packages)
+  (declare (ignore packages))
+  nil)
+(defun find-symbol (&rest arguments)
+  (declare (ignore arguments))
+  (values nil nil))
+
 ;; Boundary: LARGE-BYTE remains a separate representation until the built-in
 ;; BYTE class can be extended without redefining the package-local BYTE type.
 (defstruct (large-byte (:constructor make-large-byte (size position)))

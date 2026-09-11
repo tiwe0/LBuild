@@ -248,7 +248,7 @@ allocate a temporary vector while the VM lock is held."
                           (min end (+ i #x0000000040000000))
                           fn)))))
 
-(defun map-ptes (start end fn &key sparse)
+(defun map-ptes-1 (start end fn sparse)
   "Visit all visible page table entries from START to END.
 If SPARSE is true, then PTEs that don't exist in the range won't be visited;
 otherwise FN will be called with a NIL PTE for those entries."
@@ -271,4 +271,10 @@ otherwise FN will be called with a NIL PTE for those entries."
             for page from start below end by #x1000
             for pte = (get-pte-for-address page nil)
             when (or (not sparse) pte)
-            do (funcall fn page pte)))))
+         do (funcall fn page pte)))))
+
+;; Keyword dispatch allocates a temporary argument vector, which is unsafe
+;; during the first snapshot bootstrap.  Keep the public compatibility entry
+;; point, and expose a positional worker for that early path.
+(defun map-ptes (start end fn &key sparse)
+  (map-ptes-1 start end fn sparse))

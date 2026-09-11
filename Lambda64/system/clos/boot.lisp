@@ -13,6 +13,8 @@
 
 (sys.int::defglobal *class-reference-table*)
 (sys.int::defglobal *class-reference-table-lock*)
+(sys.int::defglobal *cold-clos-bootstrap* nil)
+(sys.int::defglobal *strict-class-lookups* nil)
 
 (defstruct class-reference
   name
@@ -47,9 +49,50 @@
 (defun raise-unknown-class (name)
   (error 'unknown-class :name name))
 
+;; DEFCLASS/DEFINE-CONDITION forms are replayed from the cold top-level form
+;; vector before the full Closette implementation is warm-loaded.  The cold
+;; image already contains the primordial class objects produced by the cold
+;; generator, so bootstrap ENSURE-CLASS only needs to resolve those objects;
+;; the complete class-construction protocol is installed by CLOS warm load.
+(defun ensure-class (name &rest initargs &key &allow-other-keys)
+  (declare (ignore initargs))
+  ;; Classes introduced by supervisor modules (notably DMA error
+  ;; conditions) are completed by the warm Closette loader.  Registering a
+  ;; missing class reference now is sufficient for replaying its cold
+  ;; DEFCLASS form; forcing full class construction here would pull the
+  ;; post-boot generic-function machinery into the bootstrap dependency
+  ;; graph.
+  (find-class name nil))
+
+;; DEFINE-CONDITION report clauses expand to DEFMETHOD-1 in the cold form
+;; vector.  Generic-function installation belongs to the warm Closette phase;
+;; keep the replay side-effect free until that implementation is loaded.
+(defun defmethod-1 (&rest arguments)
+  (declare (ignore arguments))
+  nil)
+
 (defun find-class-in-reference (reference &optional (errorp t))
   (or (class-reference-class reference)
+      ;; Cold top-level forms may mention condition classes introduced by a
+      ;; supervisor module whose full CLOS definition is deliberately warm
+      ;; loaded.  Preserve the normal error contract after bootstrap, but let
+      ;; those references remain unresolved during replay.
+      (and (boundp '*cold-clos-bootstrap*)
+           *cold-clos-bootstrap*
+           nil)
+      ;; The definitive phase probe is the full Closette protocol itself: it
+      ;; is not fbound until warm modules load.  This also covers serialized
+      ;; images whose bootstrap flag cell predates the current boot epoch.
+      (and (not (fboundp 'ensure-class-using-class))
+           nil)
+      ;; During the bootstrap replay a missing class is completed by the
+      ;; warm loader.  The boot implementation cannot construct a full
+      ;; metaobject without pulling in Closette, so return NIL here; the warm
+      ;; implementation provides strict unknown-class signalling afterwards.
+      (and (null (class-reference-class reference))
+           nil)
       (and errorp
+           *strict-class-lookups*
            (raise-unknown-class (class-reference-name reference)))))
 
 (defun find-class (symbol &optional (errorp t) environment)

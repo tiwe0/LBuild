@@ -113,6 +113,11 @@ cat >"$test_file" <<'LISP'
 (in-package :mezzano.internals)
 (declaim (declaration lambda-name))
 
+;; The real source implements CL:FORMAT, which cannot be redefined on the
+;; host, so this scaffold shadows it.  That intentionally differs from the
+;; source's own DEFPACKAGE; downgrade the resulting variance report so the
+;; difference does not have to be papered over in the target source.
+(setf sb-ext:*on-package-variance* '(:warn t))
 (defpackage :mezzano.format
   (:use :cl)
   (:shadow #:format #:formatter))

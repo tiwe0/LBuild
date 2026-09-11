@@ -42,7 +42,7 @@ required_fragments = [
     "(page-dirty-p pte)",
     ":sparse t",
     "(world-stopped-p)",
-    "(allocate-physical-pages +snapshot-large-backing-page-count+",
+    "(%allocate-physical-pages +snapshot-large-backing-page-count+",
     "(rw-lock-write-acquire *vm-lock*)",
     "(store-free block-id 1)",
     "(sys.int::cas",
@@ -104,7 +104,8 @@ prefixes = [
     "(defun snapshot-copy-wired-area",
     "(defun snapshot-install-wired-backing-page",
     "(defun snapshot-allocate-backing-for-pages",
-    "(defun allocate-snapshot-wired-backing-pages",
+    "(defun allocate-snapshot-wired-backing-pages-1",
+    "(defun allocate-snapshot-wired-backing-pages (start",
     "(defun snapshot-largest-wired-free-region",
     "(defun ensure-snapshot-wired-reserve",
     "(defun call-with-snapshot-vm-stable",
@@ -223,12 +224,15 @@ cat >"$test_file" <<'LISP'
 (defun (setf physical-page-frame-block-id) (value frame)
   (setf (gethash frame *frame-block-id*) value))
 
-(defun allocate-physical-pages (count &key type mandatory-p)
-  (declare (ignore mandatory-p))
+(defun %allocate-physical-pages (count type mandatory-p 32-bit-only)
+  (declare (ignore mandatory-p 32-bit-only))
   (push (list count type) *allocations*)
   (cond ((and (= count 512) *fail-large-allocation*) nil)
         ((= count 512) 1000)
         (t (prog1 *next-single-frame* (incf *next-single-frame*)))))
+
+(defun allocate-physical-pages (count &key type mandatory-p 32-bit-only)
+  (%allocate-physical-pages count type mandatory-p 32-bit-only))
 
 (defun page-present-p (pte &optional index)
   (declare (ignore index))
@@ -245,11 +249,22 @@ cat >"$test_file" <<'LISP'
 (defun pte-physical-address (value)
   (logand value (lognot #xfff)))
 
-(defun update-pte (pte &key dirty)
+(defun %make-pte (frame writable present block wired dirty copy-on-write cache-mode)
+  (declare (ignore writable block wired cache-mode))
+  (vector (logior (ash frame 12)
+                  (if present 1 0)
+                  (if dirty 2 0)
+                  (if copy-on-write 4 0))))
+
+(defun %update-pte (pte writable writablep dirty dirtyp)
+  (declare (ignore writable writablep))
   (setf (aref pte 0)
-        (if dirty
+        (if (and dirtyp dirty)
             (logior (aref pte 0) 2)
             (logandc2 (aref pte 0) 2))))
+
+(defun update-pte (pte &key (dirty nil dirtyp))
+  (%update-pte pte nil nil dirty dirtyp))
 
 (defun make-test-pte (frame &key (dirty nil))
   (vector (logior (ash frame 12) 1 (if dirty 2 0))))
@@ -257,11 +272,19 @@ cat >"$test_file" <<'LISP'
 (defvar *mapped-ptes* '())
 (defvar *map-log* '())
 
-(defun map-ptes (start end function &key sparse)
+(defun map-ptes-1 (start end function sparse)
   (push (list start end sparse) *map-log*)
   (dolist (entry *mapped-ptes*)
     (when (<= start (car entry) (1- end))
       (funcall function (car entry) (cdr entry)))))
+
+(defun map-ptes (start end function &key sparse)
+  (map-ptes-1 start end function sparse))
+
+;; Boot tracing is a no-op on the host.
+(defun debug-uart-boot-line (string) (declare (ignore string)) nil)
+(defun debug-uart-boot-hex-line (label value)
+  (declare (ignore label value)) nil)
 
 (defun align-down (value alignment)
   (- value (mod value alignment)))
@@ -393,9 +416,12 @@ cat >"$test_file" <<'LISP'
 (defun snapshot-block-map () *new-block-map*)
 (defun snapshot-freelist () (values *new-freelist* '(:deferred)))
 (defun snapshot-write-back-pages () nil)
-(defun pager-allocate-page (&key new-type)
+(defun %pager-allocate-page (new-type)
   (declare (ignore new-type))
   *header-frame*)
+
+(defun pager-allocate-page (&key new-type)
+  (%pager-allocate-page new-type))
 (defun free-page (page)
   (push page *freed-pages*)
   (push (list :free-page page) *take-log*))

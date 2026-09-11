@@ -286,6 +286,27 @@
           (t
            forms))))
 
+;; A .llf is the output of the cross compiler, so it is stale whenever the
+;; compiler that produced it is newer than the object file -- not only when its
+;; own source changes.  Without this, editing the code generator (for example
+;; LAP-ARM64) silently leaves hundreds of object files holding instructions the
+;; current compiler no longer emits, and the resulting image executes opcodes
+;; that exist nowhere in the tree.
+(defvar *compiler-source-write-date* nil)
+
+(defun compiler-source-write-date ()
+  (or *compiler-source-write-date*
+      (setf *compiler-source-write-date*
+            (let ((newest 0))
+              (dolist (path (directory
+                             (merge-pathnames
+                              #p"compiler/**/*.lisp"
+                              (asdf:system-source-directory :lispos)))
+                            newest)
+                (let ((date (file-write-date path)))
+                  (when (and date (> date newest))
+                    (setf newest date))))))))
+
 (defun maybe-compile-file (path environment &key force package)
   (let ((llf-path (merge-pathnames (make-pathname :type "llf" :defaults path)
                                    (build-directory environment))))
@@ -300,7 +321,8 @@
             (delete-file s)))))
     (when (or force
               (not (probe-file llf-path))
-              (<= (file-write-date llf-path) (file-write-date path)))
+              (<= (file-write-date llf-path) (file-write-date path))
+              (<= (file-write-date llf-path) (compiler-source-write-date)))
       (format t "~A is out of date will be recompiled.~%" llf-path)
       (let ((mezzano.compiler::*target-architecture* (env:environment-target environment))
             (cross-cl:*features* (list* (env:environment-target environment) cross-cl:*features*)))

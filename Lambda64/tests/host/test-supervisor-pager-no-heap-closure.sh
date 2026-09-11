@@ -70,7 +70,8 @@ if re.search(r'(?<!%)\(update-pte(?:-atomic)?\s', text):
 hosted = form('(defun initialize-hosted-paging-system')
 store_init = hosted.index('(initialize-store-freelist')
 for diagnostic in ('(debug-print-line "BML4', '(debug-print-line "Running read-only.'):
-    if hosted.find(diagnostic) < store_init:
+    diagnostic_pos = hosted.find(diagnostic)
+    if diagnostic_pos >= 0 and diagnostic_pos < store_init:
         raise SystemExit(f'{diagnostic} runs before store metadata is published')
 pager_init = form('(defun initialize-pager')
 cold_reset = pager_init.index('(when defer-request-latch-p')

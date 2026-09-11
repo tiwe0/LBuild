@@ -274,7 +274,29 @@ Must be performed after SSA conversion."
       (when (typep inst 'bind-local-instruction)
         (push inst to-convert)))
     (dolist (binding to-convert)
-      (lower-one-local-variable backend-function binding))))
+      (lower-one-local-variable backend-function binding))
+    ;; LOWER-ONE-LOCAL-VARIABLE removes each binding together with its loads,
+    ;; stores and unbinds, so anything still naming a local here is an orphan:
+    ;; an earlier pass deleted the block holding its BIND-LOCAL while this
+    ;; reference survived in a block that is only entered non-locally.
+    ;;
+    ;; A store or unbind to a binding that no longer exists is dead -- no load
+    ;; can observe it -- and no backend has a lowering for it, so it would
+    ;; otherwise reach code generation as an unhandled instruction.  Drop it.
+    ;; A *load* is different: its destination feeds other instructions, so a
+    ;; missing binding there is a real inconsistency and must not pass
+    ;; silently.
+    (let ((orphans '()))
+      (do-instructions (inst backend-function)
+        (typecase inst
+          ((or store-local-instruction unbind-local-instruction)
+           (push inst orphans))
+          (load-local-instruction
+           (error "Load from a removed local binding ~S in ~S"
+                  (load-local-local inst)
+                  (backend-function-name backend-function)))))
+      (dolist (inst orphans)
+        (remove-instruction backend-function inst)))))
 
 (defun rest-arg-safe-to-make-dx-p (backend-function uses)
   "Return true if the rest arg or it's spine is never captured by something with effectively non-dynamic extent and if the spine is never modified."

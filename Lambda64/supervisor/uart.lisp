@@ -64,6 +64,38 @@
       (dotimes (i (string-length string))
         (debug-uart-write-char-1 (char string i))))))
 
+;; Boot tracing is also used immediately after a demand-paged function is
+;; entered.  MASKING interrupts around STRING-LENGTH would make a fault on a
+;; cold string unserviceable (the page-fault handler deliberately rejects
+;; faults whose saved DAIF has IRQs masked).  The bootstrap path is single
+;; threaded at this point, so write directly without taking the UART lock.
+(defun debug-uart-write-string-boot-raw (string)
+  (dotimes (i (string-length string))
+    (debug-uart-write-char-1 (char string i))))
+
+;; Early cold-boot tracing must not go through DEBUG-PRINT-LINE: before the
+;; paging disk is published that path may recurse through the pager.  This
+;; writes directly to the already initialized UART and is intentionally kept
+;; until the QEMU boot oracle is green.
+(defun debug-uart-boot-line (string)
+  (when (and (boundp '*debug-uart-base*) *debug-uart-base*)
+    (debug-uart-write-string-boot-raw string)
+    (debug-uart-write-char #\Newline)))
+
+;; Numeric companion for fault-path tracing.  Keep this allocation-free so it
+;; is safe from an exception handler before the pager can service the fault.
+(defun debug-uart-boot-hex-line (label value)
+  (when (and (boundp '*debug-uart-base*) *debug-uart-base*)
+    (debug-uart-write-string-boot-raw label)
+    (debug-uart-write-char #\Space)
+    (dotimes (i 16)
+      (let ((digit (logand (ash value (- (* (- 15 i) 4))) #xF)))
+        (debug-uart-write-byte
+         (if (< digit 10)
+             (+ #x30 digit)
+             (+ #x41 (- digit 10))))))
+    (debug-uart-write-char #\Newline)))
+
 (defun debug-uart-flush-buffer (buf)
   (safe-without-interrupts (buf)
     (with-symbol-spinlock (*debug-uart-lock*)

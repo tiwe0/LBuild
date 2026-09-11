@@ -786,6 +786,11 @@
     ;; Now import all the symbols.
     (dotimes (i (length *initial-obarray*))
       (let ((sym (aref *initial-obarray* i)))
+        (when (eq sym 'sys.int::values-simple-vector)
+          (let ((fref (%object-ref-t sym +symbol-function+)))
+            (mezzano.supervisor::debug-uart-boot-hex-line
+             "TRACE values-simple-vector-before-import"
+             (sys.int::lisp-object-address (%object-ref-t fref +fref-function+)))))
         (let* ((package-keyword (symbol-package sym))
                (package (find-package (string package-keyword))))
           (when (not package)
@@ -793,5 +798,10 @@
           (setf (symbol-package sym) nil)
           (import-one-symbol sym package)
           (when (member package-keyword '(:common-lisp :keyword))
-            (export-one-symbol sym package))))))
+            (export-one-symbol sym package)))
+        (when (eq sym 'sys.int::values-simple-vector)
+          (let ((fref (%object-ref-t sym +symbol-function+)))
+            (mezzano.supervisor::debug-uart-boot-hex-line
+             "TRACE values-simple-vector-after-import"
+             (sys.int::lisp-object-address (%object-ref-t fref +fref-function+))))))))
   (values))

@@ -7,8 +7,15 @@ from pathlib import Path
 import sys
 s = Path(sys.argv[1]).read_text()
 assert '(defglobal *function-reference-lock* :unlocked)' in s
-start = s.index('(defun (setf function-reference-function)')
-form = s[start:s.index('\n(defun trace-wrapper-p', start)]
+# The three publication branches live in %PUBLISH-FUNCTION-REFERENCE-FUNCTION;
+# the setter calls it under the writer spinlock.  Span both so the ordering
+# contract is checked wherever it is spelled.
+setter_start = s.index('(defun (setf function-reference-function)')
+helper_start = s.index('(defun %publish-function-reference-function')
+assert '%publish-function-reference-function' in s[setter_start:], \
+    'setter must delegate to the publication helper'
+start = min(setter_start, helper_start)
+form = s[start:s.index('\n(defun trace-wrapper-p', setter_start)]
 assert 'safe-without-interrupts' in form
 assert 'with-symbol-spinlock (*function-reference-lock*)' in form
 assert 'FIXME: FREF should be locked' not in form

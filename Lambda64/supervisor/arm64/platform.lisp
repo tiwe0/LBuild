@@ -18,7 +18,8 @@
 (defun initialize-fdt-pl011 (fdt-node address-cells size-cells)
   (let* ((reg (fdt-get-property fdt-node "reg"))
          (base-address (fdt-read-integer reg address-cells 0)))
-    (initialize-debug-uart base-address)))
+    (initialize-debug-uart base-address)
+    (debug-print-line "BOOT-MARK uart-ready")))
 
 (defun initialize-platform-early-console (boot-information-page)
   (declare (ignore boot-information-page))

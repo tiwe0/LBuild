@@ -26,7 +26,17 @@ for name, value in (("+fref-undefined-entry-point+", "0"),
 for helper in ("%activate-function-reference-full-path", "%activate-function-reference-fast-path"):
     if source.count(helper) < 3:
         raise SystemExit(f"missing activation helper contract: {helper}")
-start = source.index("(defun (setf function-reference-function)")
+# The three publication branches now live in %PUBLISH-FUNCTION-REFERENCE-FUNCTION,
+# which (SETF FUNCTION-REFERENCE-FUNCTION) calls under the writer spinlock.
+# Check the setter and that helper together so the protocol is still verified
+# wherever it is spelled.
+setter_start = source.index("(defun (setf function-reference-function)")
+helper_start = source.find("(defun %publish-function-reference-function")
+if helper_start < 0:
+    raise SystemExit("function-reference publication helper missing")
+if "%publish-function-reference-function" not in source[setter_start:]:
+    raise SystemExit("function-reference setter must delegate to the publication helper")
+start = min(setter_start, helper_start)
 # Extract one balanced Lisp form, ignoring strings and comments.
 depth = 0
 string = comment = esc = False
@@ -50,7 +60,7 @@ for i, c in enumerate(source[start:], start):
             break
 if end is None:
     raise SystemExit("unterminated function-reference setter")
-form = source[start:end]
+form = source[start:max(end, source.index("(defun trace-wrapper-p"))]
 if mutation:
     replacements = {
         "lock": "with-symbol-spinlock (*function-reference-lock*)",

@@ -93,10 +93,23 @@
   (with-utf-8-bytes (char byte)
     (debug-log-buffer-write-byte byte)))
 
+;; Declared before its first use: PANIC-PRINTING-P below reads it.
+(sys.int::defglobal *panic-in-progress* nil)
+
+(defun panic-printing-p ()
+  "True once a panic has taken over the debug output path.
+
+While panicking, the log ring buffer must be skipped: its spinlock may already
+be held by this CPU, and ACQUIRE-PLACE-SPINLOCK panics on a self-held lock --
+a second panic that halts before the first has printed anything."
+  (and (boundp '*panic-in-progress*) *panic-in-progress*))
+
 (defun debug-write-string (string &optional buf)
   (cond (buf
          (dotimes (i (string-length string))
            (debug-write-char (char string i) buf)))
+        ((panic-printing-p)
+         (call-debug-pseudostream :write-string string))
         (t
          (dotimes (i (string-length string))
            (debug-log-buffer-write-char (char string i)))
@@ -116,6 +129,8 @@
                    (setf current 0))
                  (setf (aref buf-data (the fixnum current)) byte)
                  (setf (cdr buf) (1+ current)))))))
+        ((panic-printing-p)
+         (call-debug-pseudostream :write-char char))
         (t
          (debug-log-buffer-write-char char)
          (call-debug-pseudostream :write-char char))))
@@ -202,15 +217,16 @@
            (debug-write-string ">" buf))))
 
 (defun debug-flush-buffer (buf)
-  (let ((buf-data (car buf)))
-    (declare (type (simple-array (unsigned-byte 8) (*)) buf-data)
-             (optimize speed (safety 0)))
-    ;; Keep a complete buffered record contiguous in the shared ring.
-    (safe-without-interrupts (buf)
-      (with-symbol-spinlock (*supervisor-log-buffer-lock*)
-        (dotimes (i (cdr buf))
-          (debug-log-buffer-write-byte-1
-           (aref buf-data (the fixnum i)))))))
+  (when (not (panic-printing-p))
+    (let ((buf-data (car buf)))
+      (declare (type (simple-array (unsigned-byte 8) (*)) buf-data)
+               (optimize speed (safety 0)))
+      ;; Keep a complete buffered record contiguous in the shared ring.
+      (safe-without-interrupts (buf)
+        (with-symbol-spinlock (*supervisor-log-buffer-lock*)
+          (dotimes (i (cdr buf))
+            (debug-log-buffer-write-byte-1
+             (aref buf-data (the fixnum i))))))))
   (call-debug-pseudostream :flush-buffer buf))
 
 (defun debug-print-line-1 (things)
@@ -227,6 +243,15 @@
   ;; Debug output is used during boot before the pager and dynamic areas are
   ;; initialized.  Keep the short-lived formatting buffer in wired memory so
   ;; early diagnostics do not recurse through the general allocator/pager.
+  (when (panic-printing-p)
+    ;; No wired allocation while panicking: MAKE-SIMPLE-BYTE-VECTOR goes
+    ;; through the allocator mutex, which the panicking thread may already
+    ;; hold, and any fault it takes cannot be serviced with the world stopped.
+    ;; Write straight through to the (raw UART) pseudostream instead.
+    (dolist (thing things)
+      (debug-write thing 0 nil))
+    (debug-write-char #\Newline)
+    (return-from debug-print-line-1 nil))
   (let* ((buf-data (sys.int::make-simple-byte-vector 100 :wired))
          (buf (cons buf-data 0)))
     (declare (dynamic-extent buf-data buf))
@@ -246,7 +271,6 @@
 (defun debug-force-output ()
   (call-debug-pseudostream :force-output))
 
-(sys.int::defglobal *panic-in-progress* nil)
 
 (defun panic-print-backtrace-function (return-address)
   (debug-write return-address)
@@ -371,20 +395,73 @@
   (debug-print-line "---- End magic button dump ----")
   (resume-other-cpus-for-debug-magic-button))
 
+(defun panic-uart-pseudostream (op &optional arg)
+  "Debug pseudostream that writes straight to the UART.
+
+Installed for the duration of a panic.  The normal pseudostream is a Lisp
+stream once the cold image is up; writing through it allocates, and an
+allocation here faults, enters PAGER-RPC and blocks the panicking thread --
+with the world stopped that is fatal, and the panic report is lost before
+even the banner is printed.  These writes allocate nothing and touch only the
+already-mapped UART."
+  ;; Use the lock-free variants: a panic can happen while this CPU already
+  ;; holds the UART spinlock, and re-taking it would deadlock the report.
+  ;; The world is stopped here, so no other writer can interleave.
+  (case op
+    (:write-char (debug-uart-write-char-1 arg))
+    (:write-string (debug-uart-write-string-boot-raw arg))
+    (:flush-buffer
+     ;; Buffered callers hand over (DATA . COUNT); emit it byte for byte.
+     ;; Dropping this silently is how the panic banner went missing.
+     (let ((data (car arg)))
+       (dotimes (i (cdr arg))
+         (debug-uart-write-byte (aref data i)))))
+    (:start-line-p nil)
+    (t nil)))
+
+;; CI-EXIT is a semihosting call on ARM64.  A hypervisor that does not
+;; implement semihosting (HVF) raises an unknown-reason exception instead,
+;; which panics again -- and that nested panic calls CI-EXIT again.  One real
+;; fault then becomes an endless nest of panics that scrolls the original
+;; report off the serial line.  Attempt the exit at most once per boot.
+(sys.int::defglobal *ci-exit-attempted*)
+
+(defun panic-ci-exit-once (errorp)
+  (when (not (and (boundp '*ci-exit-attempted*) *ci-exit-attempted*))
+    (setf *ci-exit-attempted* t)
+    (ci-exit errorp)))
+
 (defun panic-1 (things extra)
+  ;; Announce on the raw UART before touching anything that can fault.  Every
+  ;; step below -- the IPI broadcast, stopping the world, the debug stream --
+  ;; can fail in the very contexts panics come from, and a panic that produces
+  ;; no output at all is indistinguishable from a hang.
+  (debug-uart-boot-line "PANIC-ENTRY")
   (safe-without-interrupts (things extra)
+    ;; Step markers on the raw UART.  Each step below has been observed to
+    ;; fault in some panic context, and a second panic here takes the nested
+    ;; branch and halts -- losing the original report entirely.  The markers
+    ;; make the failing step obvious instead of leaving a silent hang.
+    (debug-uart-boot-line "PANIC-STEP-ipi")
     (broadcast-panic-ipi)
     (when (and (boundp '*panic-in-progress*)
                *panic-in-progress*)
+      (debug-uart-boot-line "PANIC-STEP-nested")
       (arch-pre-panic)
-      (ci-exit t)
+      (panic-ci-exit-once t)
       (loop (%arch-panic-stop)))
     ;; Stop the world, just in case printing the backtrace requires paging stuff in.
     (setf *world-stopper* (current-thread)
           *panic-in-progress* t)
+    (debug-uart-boot-line "PANIC-STEP-force-output")
     (debug-force-output)
+    (debug-uart-boot-line "PANIC-STEP-light")
     (set-panic-light)
+    (debug-uart-boot-line "PANIC-STEP-arch-pre")
     (arch-pre-panic)
+    ;; From here on everything must reach the serial line without allocating.
+    (debug-set-output-pseudostream #'panic-uart-pseudostream)
+    (debug-uart-boot-line "PANIC-STEP-banner")
     (debug-print-line "----- PANIC -----")
     (with-page-fault-hook
         (()
@@ -394,7 +471,7 @@
       (when extra
         (funcall extra)))
     (debug-dump)
-    (ci-exit t)
+    (panic-ci-exit-once t)
     (loop (%arch-panic-stop))))
 
 (defmacro ensure (condition &rest things)

@@ -293,10 +293,27 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
           ;; Emit NLX dispatch tables after the function body so they do not
           ;; occupy the hot instruction stream. ADR remains valid as long as
           ;; the assembler's architectural range check accepts the trailer.
+          ;;
+          ;; INVOKE-NLX indexes this table by the target's position in
+          ;; BEGIN-NLX-TARGETS, so every target must keep its slot.  Dead-code
+          ;; elimination can leave a target whose label was never emitted;
+          ;; dropping that entry renumbers every following target, and the
+          ;; dispatch then adds whatever word happens to follow the table --
+          ;; typically a literal-pool entry -- to the table base and branches
+          ;; there.  Emit a placeholder instead so the indices stay faithful.
+          ;; The placeholder is deliberately odd: the slot is unreachable by
+          ;; construction, and if that ever stops being true the branch raises
+          ;; a PC alignment fault inside the table rather than running data.
           (dolist (table (reverse *jump-tables*))
             (emit (car table))
             (dolist (target (cdr table))
-              (emit `(:d64/le (- ,(resolve-label target) ,(car table))))))
+              (cond ((gethash target *labels*)
+                     (emit `(:d64/le (- ,(resolve-label target) ,(car table)))))
+                    (t
+                     (format *error-output*
+                             "~&;; NLX-DEAD-TARGET ~S in ~S~%"
+                             target (ir:backend-function-name backend-function))
+                     (emit `(:d64/le 1))))))
           (emit '(:align 16)
                 'literal-pool/128)
           (loop for value across *literals/128* do
@@ -982,12 +999,10 @@ Returns the compacted layout and updates SPILL-LOCATIONS in place."
     (emit `(lap:add ,(ir:nlx-context instruction) :x29 :x9))
     ;; Keep NLX dispatch data out of the hot instruction stream. The table is
     ;; emitted once as a trailer after all function instructions.
-    ;; Dead-code elimination can leave a stale thunk target behind; only
-    ;; retain labels that are still linked into this backend function.
-    (push (cons jump-table
-                (remove-if-not (lambda (target)
-                                 (gethash target *labels*))
-                               (ir:begin-nlx-targets instruction)))
+    ;; Record every target: INVOKE-NLX addresses the table positionally, so the
+    ;; list must not be filtered here.  The trailer emitter substitutes a
+    ;; placeholder for any target whose label dead-code elimination removed.
+    (push (cons jump-table (ir:begin-nlx-targets instruction))
           *jump-tables*)))
 
 (defmethod emit-lap (backend-function (instruction ir:finish-nlx-instruction) uses defs)

@@ -82,6 +82,7 @@
 (defconstant +store-bootstrap-reserved-blocks+ 3)
 
 (defun store-refill-metadata ()
+  (debug-uart-boot-line "TRACE store-refill-start")
   ;; Repopulate freelist.
   (let* ((frame (if (and (boundp '*store-freelist-bootstrap-p*)
                          *store-freelist-bootstrap-p*)
@@ -94,6 +95,7 @@
                     (let ((*store-freelist-recursive-metadata-allocation* t))
                       (%pager-allocate-page :other))))
          (addr (convert-to-pmap-address (ash frame 12))))
+    (debug-uart-boot-line "TRACE store-refill-frame")
     (dotimes (i (truncate #x1000 +freelist-metadata-size+))
       (setf (sys.int::memref-unsigned-byte-64 (+ addr (* i +freelist-metadata-size+)) 0) 0
             (sys.int::memref-unsigned-byte-64 (+ addr (* i +freelist-metadata-size+)) 1) 0
@@ -323,7 +325,9 @@
             (return start)))))))
 
 (defun process-one-freelist-block (block-id)
+  (debug-uart-boot-line "TRACE freelist-block-read")
   (with-disk-block (blk block-id)
+    (debug-uart-boot-line "TRACE freelist-block-ready")
     (let ((next (sys.int::memref-unsigned-byte-64 blk 511)))
       (dotimes (i 255)
         (store-maybe-refill-metadata)
@@ -355,6 +359,7 @@
     (debug-print-line "Range: " (freelist-metadata-start range) "-" (freelist-metadata-end range) ":" (if (freelist-metadata-free-p range) "free" "used"))))
 
 (defun initialize-store-freelist (n-store-blocks freelist-block)
+  (debug-uart-boot-line "TRACE store-init-start")
   (when (not (boundp '*verbose-store*))
     (setf *verbose-store* nil))
   (setf *store-freelist-metadata-freelist* '()
@@ -364,13 +369,17 @@
   ;; pager-driven backing allocation also avoids image-reserved blocks.
   (let ((*store-freelist-bootstrap-p* t))
     (store-refill-metadata)
+    (debug-uart-boot-line "TRACE store-metadata-ready")
     (setf *store-freelist-head* (freelist-alloc-metadata 0 n-store-blocks t)
           *store-freelist-tail* *store-freelist-head*
           *store-deferred-freelist-head* nil
           *store-freelist-n-free-blocks* n-store-blocks
           *store-freelist-n-deferred-free-blocks* 0
           *store-freelist-total-blocks* n-store-blocks)
-    (debug-print-line "Store freelist block is " freelist-block)
+    ;; Keep this phase on raw UART output until the pager request object is
+    ;; published; DEBUG-PRINT-LINE can recurse through PAGER-RPC here.
+    (debug-uart-boot-line "TRACE store-freelist-block")
+    (debug-uart-boot-line "TRACE store-head-ready")
     (loop
        (multiple-value-bind (last-entry-offset next-block)
            (process-one-freelist-block freelist-block)
@@ -380,7 +389,7 @@
          (setf freelist-block next-block)))
     (when *verbose-store*
       (dump-store-freelist))
-    (debug-print-line *store-freelist-n-free-blocks* "/" *store-freelist-total-blocks* " store blocks free at boot")))
+    (debug-uart-boot-line "TRACE store-init-done")))
 
 (defun initialize-freestanding-store ()
   (when (not (boundp '*verbose-store*))

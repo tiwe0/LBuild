@@ -70,7 +70,10 @@
 
 (defun %arm64-sync-icache (base length)
   ;; Make sure we align base/end to the cache-line boundary so we get everything.
-  (let ((start (logand base (1- +cache-line-size+)))
+  ;; BASE is a tagged fixnum carrying a virtual address.  Align down by
+  ;; clearing the low cache-line bits; masking with the low-bit mask would
+  ;; instead produce an address near zero and make DC CVAU touch FAR=0.
+  (let ((start (logand base (lognot (1- +cache-line-size+))))
         (end (logand (+ base length (1- +cache-line-size+))
                      (lognot (1- +cache-line-size+)))))
     ;; Clear (write dirty data, but don't invalidate) data cache back to

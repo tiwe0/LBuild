@@ -57,8 +57,16 @@ This is required for register allocation, as the allocator
 does not visit unreachable blocks."
   (multiple-value-bind (basic-blocks bb-preds bb-succs)
       (build-cfg backend-function)
-    (declare (ignore bb-preds))
-    (let* ((reachable (discover-reachable-basic-blocks backend-function bb-succs))
+    (declare (ignore bb-preds bb-succs))
+    ;; Reachability must use the *actual* successors, not BUILD-CFG's.
+    ;; BUILD-CFG deliberately omits NLX edges, and an NLX thunk block's only
+    ;; predecessor is the non-local dispatch, so the raw CFG reports every live
+    ;; thunk as unreachable.  Deleting one leaves BEGIN-NLX-TARGETS pointing at
+    ;; a block that no longer exists: the backend then emits a dispatch table
+    ;; with a hole and the exit branches into whatever follows the table.
+    (let* ((actual-succs (compute-actual-successors backend-function))
+           (reachable (discover-reachable-basic-blocks backend-function
+                                                       actual-succs))
            (unreachable (set-difference basic-blocks reachable)))
       (dolist (bb unreachable)
         (remove-basic-block backend-function bb))

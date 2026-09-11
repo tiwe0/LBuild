@@ -88,7 +88,7 @@
 (defun pte-physical-address (pte)
   (logand pte +x86-64-pte-address-mask+))
 
-(defun update-pte (pte &key (writable nil writablep) (dirty nil dirtyp))
+(defun %update-pte (pte writable writablep dirty dirtyp)
   (let ((current-entry (page-table-entry pte)))
     (when writablep
       (if writable
@@ -100,7 +100,11 @@
           (setf current-entry (logand current-entry (lognot +x86-64-pte-dirty+)))))
     (setf (page-table-entry pte) current-entry)))
 
-(defun update-pte-atomic (pte pte-value &key (writable nil writablep) (dirty nil dirtyp))
+(defun update-pte (pte &key (writable nil writablep) (dirty nil dirtyp))
+  "Keyword-compatible PTE update wrapper."
+  (%update-pte pte writable writablep dirty dirtyp))
+
+(defun %update-pte-atomic (pte pte-value writable writablep dirty dirtyp)
   (let ((current-entry pte-value))
     (when writablep
       (if writable
@@ -112,22 +116,24 @@
           (setf current-entry (logand current-entry (lognot +x86-64-pte-dirty+)))))
     (eql (sys.int::cas (page-table-entry pte) pte-value current-entry) pte-value)))
 
-(defun make-pte (frame &key writable (present t) wired dirty copy-on-write (cache-mode :normal))
-  (declare (ignore wired cache-mode))
+(defun update-pte-atomic (pte pte-value &key (writable nil writablep) (dirty nil dirtyp))
+  "Keyword-compatible atomic PTE update wrapper."
+  (%update-pte-atomic pte pte-value writable writablep dirty dirtyp))
+
+(defun %make-pte (frame writable present block wired dirty copy-on-write cache-mode)
+  (declare (ignore block wired cache-mode))
   (logior (ash frame 12)
-          (if present
-              +x86-64-pte-present+
-              0)
-          (if writable
-              +x86-64-pte-write+
-              0)
+          (if present +x86-64-pte-present+ 0)
+          (if writable +x86-64-pte-write+ 0)
           (if dirty
-              (logior +x86-64-pte-dirty+
-                      +x86-64-pte-accessed+)
+              (logior +x86-64-pte-dirty+ +x86-64-pte-accessed+)
               0)
-          (if copy-on-write
-              +x86-64-pte-copy-on-write+
-              0)))
+          (if copy-on-write +x86-64-pte-copy-on-write+ 0)))
+
+(defun make-pte (frame &key writable (present t) block wired dirty copy-on-write (cache-mode :normal))
+  "Keyword-compatible page-table entry constructor."
+  (declare (ignore wired cache-mode))
+  (%make-pte frame writable present block wired dirty copy-on-write cache-mode))
 
 (defun map-ptes-pml2 (pml2 pml2e start end fn)
   (let ((entry (page-table-entry pml2 pml2e)))

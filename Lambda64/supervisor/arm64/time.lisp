@@ -5,6 +5,11 @@
 (sys.int::defglobal *run-time-advance*)
 
 (sys.int::defglobal *rtc-adjust*)
+;; Bounded early-boot trace for diagnosing whether the architected timer and
+;; GIC path can wake the scheduler before normal time queues exist.  Keep the
+;; counter in wired global state and stop after a handful of samples so UART
+;; tracing cannot become the timing perturbation we are trying to measure.
+(sys.int::defglobal *timer-irq-trace-count* 0)
 
 ;; The generated SETF accessors for system registers are represented by a
 ;; function-reference cell.  That cell is not guaranteed to be published
@@ -22,8 +27,19 @@
   (mezzano.lap.arm64:msr :cntv-ctl-el0 :x9)
   (mezzano.lap.arm64:ret))
 
+(sys.int::define-lap-function %read-cntv-ctl-el0 (())
+  (:gc :no-frame :layout #*)
+  (mezzano.lap.arm64:mrs :x9 :cntv-ctl-el0)
+  (mezzano.lap.arm64:add :x0 :xzr :x9 :lsl #.sys.int::+n-fixnum-bits+)
+  (mezzano.lap.arm64:movz :x5 #.(ash 1 sys.int::+n-fixnum-bits+))
+  (mezzano.lap.arm64:ret))
+
 (defun generic-timer-irq-handler (interrupt-frame irq)
   (declare (ignore irq))
+  (when (and (boundp '*timer-irq-trace-count*)
+             (< *timer-irq-trace-count* 8))
+    (debug-uart-boot-line "TRACE timer-irq")
+    (incf *timer-irq-trace-count*))
   (%write-cntv-tval-el0 *generic-timer-reset-value*)
   (%isb)
   ;; The timer is enabled before INITIALIZE-TIME so PAGER-RPC can schedule
@@ -45,25 +61,38 @@
          (timer-rate (%cntfrq-el0))
          (tick-rate 100))
     (debug-print-line "Timer irq: " irq)
+    (debug-uart-boot-hex-line "TRACE timer-irq-number" irq)
     (debug-print-line "Timer frequency: " timer-rate " Hz")
     (setf *generic-timer-rate* timer-rate)
+    (setf *timer-irq-trace-count* 0)
     (setf *generic-timer-reset-value* (truncate timer-rate tick-rate))
     (setf *run-time-advance* (truncate internal-time-units-per-second tick-rate))
+    (debug-uart-boot-hex-line "TRACE timer-rate" timer-rate)
+    (debug-uart-boot-hex-line "TRACE timer-reset" *generic-timer-reset-value*)
     (debug-print-line "Timer reset: " *generic-timer-reset-value*)
     (debug-print-line "Timer advance: " *run-time-advance*)
     (when (not (boundp '*rtc-adjust*))
       (setf *rtc-adjust* 0))
-    (irq-attach (platform-irq irq)
-                #'generic-timer-irq-handler
-                fdt-node
-                t)
+    (let ((attachment (irq-attach (platform-irq irq)
+                                  #'generic-timer-irq-handler
+                                  fdt-node
+                                  t)))
+      (debug-uart-boot-hex-line "TRACE timer-attach"
+                                (if attachment 1 0))
+      ;; GICD_ISENABLER0 covers SGIs/PPIs.  Read it back to prove the timer
+      ;; PPI was actually unmasked, rather than inferring that from the
+      ;; software attachment object alone.
+      (debug-uart-boot-hex-line "TRACE gic-enable0"
+                                (gic-dist-reg +gicd-isenabler0+)))
     ;; Enable the timer now so scheduler rescheduling can service PAGER-RPC
     ;; while the paging system is being initialized.  The IRQ handler guards
     ;; heartbeat access until INITIALIZE-TIME binds its queues.
     (%write-cntv-tval-el0 *generic-timer-reset-value*)
     (%isb)
+    (debug-uart-boot-hex-line "TRACE timer-count" (%cntvct-el0))
     (%write-cntv-ctl-el0 1)
-    (%isb)))
+    (%isb)
+    (debug-uart-boot-hex-line "TRACE timer-ctl" (%read-cntv-ctl-el0))))
 
 (sys.int::defglobal *pl031-rtc-base*)
 

@@ -917,12 +917,13 @@ the cold serializer without duplicating their definitions here."
     ;; And :pinned as well, but that matters less.
     (allocate (* 64 1024 1024) image :wired 0)
     (allocate (* 1 1024 1024) image :pinned 0)
-    ;; Even an image with no regular compiled functions needs one aligned
-    ;; object-sized region for the function-area freelist entry written below.
-    ;; Without this seed allocation, an empty :function area has a zero-length
-    ;; byte vector and INIT-FREELIST attempts to write past its end.
-    (when (zerop (length (area-data (image-function-area image))))
-      (allocate 4 image :function 0))
+    ;; Even an image with no regular compiled functions needs room for the
+    ;; function-area freelist and for the early cold-start function references
+    ;; created before the pager can reliably grow executable memory.  A tiny
+    ;; four-word seed leaves the freelist empty, so reserve a modest bootstrap
+    ;; slab instead; the remainder is published as a normal free-list entry.
+    (when (< (length (area-data (image-function-area image))) (* 1024 1024))
+      (allocate (* 1024 1024) image :function 0))
     ;; No further allocation permitted beyond this point.
     (setf (slot-value image '%finalizedp) t)
     ;; Make sure all symbols that are about to be touched are present in-image.

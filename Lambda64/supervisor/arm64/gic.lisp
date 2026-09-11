@@ -41,6 +41,9 @@
 (sys.int::defglobal *gic-distributor-base*)
 (sys.int::defglobal *gic-cpu-interface-base*)
 (sys.int::defglobal *gic-irqs*)
+;; Bounded early-boot trace at the GIC boundary.  This distinguishes a
+;; missing hardware IRQ from a handler/queue problem without flooding UART.
+(sys.int::defglobal *gic-irq-trace-count* 0)
 
 ;;; Indicies of our software-generated interrupts
 (defconstant +panic-sgi-id+ 1)
@@ -76,6 +79,7 @@
 (defun initialize-gic (distributor-address cpu-address)
   (setf *gic-distributor-base* distributor-address
         *gic-cpu-interface-base* cpu-address)
+  (setf *gic-irq-trace-count* 0)
   ;; The table and IRQ records are wired objects, so they can be created during
   ;; the early pass.  VirtIO block discovery depends on PLATFORM-IRQ before
   ;; paging is initialized.
@@ -134,6 +138,10 @@
 (defun gic-handle-interrupt (interrupt-frame)
   (let* ((iar (gic-cpui-reg +gicc-iar+))
          (vector (ldb (byte 9 0) iar)))
+    (when (and (boundp '*gic-irq-trace-count*)
+               (< *gic-irq-trace-count* 16))
+      (debug-uart-boot-hex-line "TRACE gic-irq" vector)
+      (incf *gic-irq-trace-count*))
     (when (eql (ldb (byte 23 0) iar) 1023)
       ;; Spurious interrupt.
       (return-from gic-handle-interrupt))

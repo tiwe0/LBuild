@@ -457,8 +457,15 @@
 ;; These devices must be probed late because their drivers may not be in wired memory.
 (defun virtio-late-probe ()
   (setf *virtio-bootstrap-p* nil)
-  (with-virtio-registry-lock
-    (dolist (dev *virtio-late-probe-devices*)
+  ;; Hold the registry lock only long enough to read the pending list.  The
+  ;; driver probes below allocate, and allocation can expand an area, which
+  ;; goes through PAGER-RPC and reschedules.  Doing that under a spinlock with
+  ;; interrupts disabled means the reschedule happens on the per-CPU wired
+  ;; stack, so the thread's resume SP is saved into storage another thread
+  ;; immediately reuses.  The lock exists to protect the registry lists, not
+  ;; to serialize arbitrary driver callbacks.
+  (let ((pending (with-virtio-registry-lock *virtio-late-probe-devices*)))
+    (dolist (dev pending)
       (dolist (drv *virtio-drivers*
                (progn
                  (sup:debug-print-line "Unknown virtio device type " (virtio-device-did dev))

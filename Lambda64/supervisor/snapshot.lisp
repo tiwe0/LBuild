@@ -2,6 +2,7 @@
 
 (in-package :mezzano.supervisor)
 
+
 (sys.int::defglobal *snapshot-in-progress* nil)
 (sys.int::defglobal *snapshot-state*)
 (sys.int::defglobal *snapshot-inhibit*)
@@ -575,81 +576,153 @@ This event will be signalled when the epoch changes."
        (%run-on-wired-stack-without-interrupts (sp fp)
          (%reschedule-via-wired-stack sp fp)))))
 
-(defun snapshot-install-wired-backing-page (page backing-frame)
+(defun snapshot-install-wired-backing-page (physical-frame virtual-page backing-frame)
   (setf (physical-page-frame-type backing-frame) :wired-backing
-        (physical-page-frame-next (car page)) backing-frame
-        (physical-page-virtual-address backing-frame) (cdr page)))
+        (physical-page-frame-next physical-frame) backing-frame
+        (physical-page-virtual-address backing-frame) virtual-page))
 
 (defun snapshot-allocate-backing-for-pages (pages)
-  "Allocate backing frames, preferring an aligned contiguous 2MB run."
+  "Allocate backing frames for a list of (PHYSICAL-FRAME . VIRTUAL-PAGE) pairs.
+A complete, 2MB-aligned run is backed by one contiguous physical allocation so
+the snapshot copy walks a single extent instead of 512 scattered frames.  The
+dense attempt is not mandatory: a fragmented physical heap simply degrades to
+per-page frames rather than failing the snapshot."
   (let ((large-frame
           (and (eql (length pages) +snapshot-large-backing-page-count+)
                (zerop (logand (cdr (first pages)) (1- (* 2 1024 1024))))
-               (allocate-physical-pages +snapshot-large-backing-page-count+
-                                        :type :wired-backing))))
+               ;; Positional entry point; the keyword one materializes an
+               ;; argument vector, which is not safe this early in boot.
+               (%allocate-physical-pages +snapshot-large-backing-page-count+
+                                         :wired-backing nil nil))))
     (cond (large-frame
            (loop for page in pages
                  for frame from large-frame
-                 do (snapshot-install-wired-backing-page page frame)))
+                 do (snapshot-install-wired-backing-page
+                     (car page) (cdr page) frame)))
           (t
            (dolist (page pages)
              (snapshot-install-wired-backing-page
-              page
-              (allocate-physical-pages 1
-                                       :mandatory-p "wired backing pages"
-                                       :type :wired-backing)))))))
+              (car page)
+              (cdr page)
+              (%allocate-physical-pages 1 :wired-backing
+                                        "wired backing pages" nil)))))))
 
+(defun allocate-snapshot-wired-backing-pages-1 (start end sparse)
+  ;; Same dense-first policy as SNAPSHOT-ALLOCATE-BACKING-FOR-PAGES, but driven
+  ;; straight off the page tables instead of a materialized page list.
+  ;;
+  ;; Walk in 2MB chunks and make two passes over each: count the present pages,
+  ;; then install their backing frames.  Counting needs no storage, so the whole
+  ;; traversal allocates nothing but the backing frames themselves.  Building a
+  ;; per-chunk list here instead stalls cold boot -- INITIALIZE-SNAPSHOT covers
+  ;; the entire wired area, and consing through the general allocator at that
+  ;; point re-enters the paging/GC machinery that is still coming up.
+  (let ((chunk-size (* 2 1024 1024))
+        (chunk-index 0))
+    (loop for chunk-start from (align-down start chunk-size)
+          below end by chunk-size
+          for chunk-end = (min end (+ chunk-start chunk-size))
+          do (incf chunk-index)
+             (let ((range-start (max start chunk-start))
+                   (page-count 0)
+                   (large-frame nil)
+                   (large-index 0)
+                   (trace-chunk-p (or (= chunk-index 1)
+                                      (zerop (logand chunk-index 31)))))
+               (when trace-chunk-p
+                 (debug-uart-boot-line "TRACE snapshot-chunk-start"))
+               ;; Pass 1: how many pages are present in this chunk?
+               (map-ptes-1
+                range-start chunk-end
+                (dx-lambda (wired-page pte)
+                  (when (not pte)
+                    (panic "No page table entry for wired page " wired-page))
+                  (when (page-present-p pte)
+                    (incf page-count)))
+                sparse)
+               (when (plusp page-count)
+                 ;; A complete, aligned chunk takes one contiguous run.  Not
+                 ;; mandatory: a fragmented physical heap falls back below.
+                 (setf large-frame
+                       (and (eql page-count +snapshot-large-backing-page-count+)
+                            (zerop (logand range-start (1- chunk-size)))
+                            (%allocate-physical-pages
+                             +snapshot-large-backing-page-count+
+                             :wired-backing nil nil)))
+                 (when trace-chunk-p
+                   (if large-frame
+                       (debug-uart-boot-line "TRACE snapshot-backing-large")
+                       (debug-uart-boot-line "TRACE snapshot-backing-fallback")))
+                 ;; Pass 2: install a backing frame for each present page.
+                 (map-ptes-1
+                  range-start chunk-end
+                  (dx-lambda (wired-page pte)
+                    (when (page-present-p pte)
+                      (snapshot-install-wired-backing-page
+                       (ash (pte-physical-address
+                             (sys.int::memref-unsigned-byte-64 pte 0))
+                            -12)
+                       wired-page
+                       (cond (large-frame
+                              (prog1 (+ large-frame large-index)
+                                (incf large-index)))
+                             (t
+                              (%allocate-physical-pages
+                               1 :wired-backing "wired backing pages" nil))))))
+                  sparse))
+               (when trace-chunk-p
+                 (debug-uart-boot-line "TRACE snapshot-chunk-done"))))))
+
+;; Keep the early bootstrap path positional.  The keyword entry point can
+;; allocate an argument vector before the normal allocator is live.
 (defun allocate-snapshot-wired-backing-pages (start end &key sparse)
-  (loop for chunk-start from (align-down start (* 2 1024 1024))
-        below end by (* 2 1024 1024)
-        for chunk-end = (min end (+ chunk-start (* 2 1024 1024)))
-        do
-           (let ((pages '()))
-             (map-ptes
-              (max start chunk-start)
-              chunk-end
-              (dx-lambda (wired-page pte)
-                (when (not pte)
-                  (panic "No page table entry for wired page " wired-page))
-                (when (page-present-p pte)
-                  (push (cons (ash (pte-physical-address
-                                    (sys.int::memref-unsigned-byte-64 pte 0))
-                                   -12)
-                              wired-page)
-                        pages)))
-              :sparse sparse)
-             (when pages
-               (snapshot-allocate-backing-for-pages (nreverse pages))))))
+  (allocate-snapshot-wired-backing-pages-1 start end sparse))
 
 (defun initialize-snapshot ()
+  (debug-uart-boot-line "TRACE snapshot-init-start")
   (when (not (boundp '*snapshot-state*))
-    (setf *snapshot-state* (make-event :name 'snapshot-not-in-progress)))
+    (setf *snapshot-state* (%make-event 'snapshot-not-in-progress nil)))
+  (debug-uart-boot-line "TRACE snapshot-state-ready")
   (setf (event-state *snapshot-state*) nil)
   (cond ((boundp '*snapshot-epoch*)
          (setf (event-state *snapshot-epoch*) t)
          (setf *snapshot-epoch* *snapshot-next-epoch*))
-        (t
-         (setf *snapshot-epoch* (make-event :name 'snapshot-epoch))))
-  (setf *snapshot-disk-request* (make-disk-request))
+  (t
+         (setf *snapshot-epoch* (%make-event 'snapshot-epoch nil))))
+  (debug-uart-boot-line "TRACE snapshot-epoch-ready")
+  (setf *snapshot-disk-request* (make-disk-request t)
+        (disk-request-latch *snapshot-disk-request*)
+        (%make-event "Snapshot disk request notifier" nil))
+  (debug-uart-boot-line "TRACE snapshot-request-ready")
   (setf *snapshot-in-progress* nil)
   (setf *snapshot-inhibit* 1)
   (setf *enable-snapshot-cow-fast-path* nil)
+  (debug-uart-boot-line "TRACE snapshot-flags-ready")
   ;; Allocate pages to copy the wired area into.
-  (allocate-snapshot-wired-backing-pages sys.int::*wired-area-base* sys.int::*wired-area-bump*)
-  (allocate-snapshot-wired-backing-pages sys.int::*wired-function-area-limit* sys.int::*function-area-base*)
+  (debug-uart-boot-line "TRACE snapshot-wired-start")
+  (allocate-snapshot-wired-backing-pages-1
+   sys.int::*wired-area-base* sys.int::*wired-area-bump* nil)
+  (debug-uart-boot-line "TRACE snapshot-wired-done")
+  (debug-uart-boot-line "TRACE snapshot-function-start")
+  (allocate-snapshot-wired-backing-pages-1
+   sys.int::*wired-function-area-limit* sys.int::*function-area-base* nil)
+  (debug-uart-boot-line "TRACE snapshot-function-done")
+  (debug-uart-boot-line "TRACE snapshot-card-start")
   ;; MAP-PTES skips absent page-table branches for the mostly sparse card table.
-  (allocate-snapshot-wired-backing-pages sys.int::+card-table-base+
-                                         (+ sys.int::+card-table-base+ sys.int::+card-table-size+)
-                                         :sparse t)
+  (allocate-snapshot-wired-backing-pages-1
+   sys.int::+card-table-base+
+   (+ sys.int::+card-table-base+ sys.int::+card-table-size+)
+   t)
+  (debug-uart-boot-line "TRACE snapshot-card-done")
   ;; ### same here.
-  (setf *snapshot-bounce-buffer-page* (allocate-physical-pages 1
-                                                               :mandatory-p "snapshot bounce page")))
+  (setf *snapshot-bounce-buffer-page*
+        (%allocate-physical-pages 1 :other "snapshot bounce page" nil)))
 
 (defun snapshot ()
   ;; Run a GC before snapshotting to reduce the amount of space required.
   (sys.int::gc :full t)
   (let* ((next-epoch (make-event :name 'snapshot-epoch))
-         (did-wake (safe-without-interrupts ()
+         (did-wake (safe-without-interrupts (next-epoch)
                      (snapshot-claim-request next-epoch))))
     (when did-wake
       (thread-yield))))

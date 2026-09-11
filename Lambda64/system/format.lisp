@@ -1,12 +1,16 @@
 ;;;; Early FORMAT
 
 (defpackage :mezzano.format
-  (:use :cl)
-  ;; FORMAT and FORMATTER are implemented by this package rather than
-  ;; inherited from COMMON-LISP.  Declare the shadowing explicitly so host
-  ;; implementations do not report package-variance warnings when this file
-  ;; is loaded after the test harness package scaffold.
-  (:shadow #:format #:formatter))
+  (:use :cl))
+
+;;; This file implements COMMON-LISP:FORMAT itself -- the cold system calls it
+;;; through the inherited CL symbol.  Do NOT add (:shadow #:format), however
+;;; tempting it is for silencing host package-variance warnings: shadowing
+;;; makes DEFUN below define MEZZANO.FORMAT:FORMAT, a symbol nothing calls,
+;;; and leaves CL:FORMAT undefined until the warm XP-FORMAT files load.  Cold
+;;; start calls ROOM before that point, so the image dies on the first GC.
+;;; Host harnesses that cannot redefine their own CL:FORMAT must shadow in
+;;; their scaffold and muffle the variance warning instead.
 
 (in-package :mezzano.format)
 

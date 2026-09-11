@@ -93,6 +93,10 @@ cat > "$tmp_dir/run.lisp" <<'EOF_LISP'
   (:export #:ensure #:event-state #:event #:make-event #:event-wait))
 (in-package :mezzano.supervisor)
 (defun ensure (value) (unless value (error "ENSURE failed")) value)
+;; Boot tracing is a no-op on the host; the driver under test emits it.
+(defun debug-uart-boot-line (string) (declare (ignore string)) nil)
+(defun debug-uart-boot-hex-line (label value)
+  (declare (ignore label value)) nil)
 (defstruct event (state nil))
 
 (defpackage :mezzano.supervisor.virtio

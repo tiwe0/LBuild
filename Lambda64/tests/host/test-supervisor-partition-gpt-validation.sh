@@ -107,6 +107,7 @@ cat >"$test_file" <<'LISP'
   t)
 
 (defun debug-print-line (&rest arguments) (declare (ignore arguments)))
+(defun debug-uart-boot-line (&rest arguments) (declare (ignore arguments)))
 (defun panic (control &rest arguments) (apply #'error control arguments))
 
 (load (or (sb-ext:posix-getenv "PARTITION_SOURCE")

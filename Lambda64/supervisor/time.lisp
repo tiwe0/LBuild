@@ -21,7 +21,7 @@
 
 (defun initialize-time ()
   (when (not (boundp '*run-time*))
-    (setf *heartbeat-wait-queue* (make-wait-queue :name "Heartbeat wait queue"))
+    (setf *heartbeat-wait-queue* (%make-wait-queue "Heartbeat wait queue"))
     (setf *run-time* 0)
     (setf sys.int::*rtc-is-utc* t
           sys.int::*time-zone* 0)

@@ -233,6 +233,22 @@
   (check-type hash-table hash-table)
   (let ((fast-fn (hash-table-gethash-fn hash-table)))
     (declare (optimize speed (safety 0)))
+    ;; During cold package bootstrap, a hash table's dispatch closure is
+    ;; called before warm generic-function machinery is available.  If its
+    ;; entry slot contains a tagged Lisp object instead of an aligned code
+    ;; address, the subsequent FUNCALL becomes an indirect jump to object+tag
+    ;; (the characteristic ESR 0x8A000000 seen in QEMU).  Keep this narrow
+    ;; diagnostic so the allocator/callable boundary is observable without
+    ;; flooding normal runtime logs.
+    (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+               mezzano.supervisor::*cold-boot-in-progress*)
+      (let ((entry (sys.int::%object-ref-unsigned-byte-64
+                    fast-fn sys.int::+function-entry-point+)))
+        (when (not (zerop (logand entry 3)))
+          (mezzano.supervisor::debug-uart-boot-hex-line
+           "TRACE bad-gethash-fn" (sys.int::lisp-object-address fast-fn))
+          (mezzano.supervisor::debug-uart-boot-hex-line
+           "TRACE bad-gethash-entry" entry))))
     (funcall (the function fast-fn) key hash-table default)))
 
 (defun (setf gethash) (value key hash-table &optional default)

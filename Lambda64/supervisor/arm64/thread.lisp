@@ -95,6 +95,19 @@
   (mezzano.lap.arm64:orr :x28 :xzr :x0)
   (mezzano.lap.arm64:ret))
 
+;; The generic ARM64 FUNCALL path is intentionally optimized around the
+;; compiler's x6 function register.  A fresh thread enters through a saved
+;; register frame rather than a normal call site, so use a tiny explicit
+;; no-argument bridge for the first function invocation.  This guarantees the
+;; function object is installed in x6 before loading its entry point.
+(sys.int::define-lap-function sys.int::%call-function-noargs ((function))
+  (:gc :no-frame :layout #*)
+  (mezzano.lap.arm64:orr :x6 :xzr :x0)
+  (mezzano.lap.arm64:orr :x5 :xzr :xzr)
+  (mezzano.lap.arm64:ldr :x9 (:object :x6 #.sys.int::+function-entry-point+))
+  (mezzano.lap.arm64:blr :x9)
+  (mezzano.lap.arm64:ret))
+
 (sys.int::define-lap-function %%restore-full-save-thread ((thread))
   ;; Drop the global thread lock.
   ;; This must be done here, not in %%switch-to-thread-common to prevent

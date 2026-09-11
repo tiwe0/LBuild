@@ -94,6 +94,8 @@ runtime=[form(x) for x in (
 )]
 supervisor=[form('(defun allocate-stack-virtual-region'),
             form('(defun release-stack-virtual-region'),
+            form('(defun make-stack-object-for-boot'),
+            form('(defun make-stack-region-node-for-boot'),
             form('(defun %allocate-stack')]
 internals=[form('(defun atomic-update-card-table-dirty-gen'),
            form('(defun (setf card-table-dirty-gen)')]
@@ -228,6 +230,7 @@ Path(sys.argv[2]).write_text(r'''
 (defvar *mapping-calls* nil)
 (defvar *released-ranges* nil)
 (defvar *world-stopper* nil)
+(defvar *cold-boot-in-progress* nil)
 (defvar *thread* :thread)
 (defvar *cpu-bytes* 0)
 (defvar *thread-bytes* 0)
@@ -255,6 +258,8 @@ Path(sys.argv[2]).write_text(r'''
     (if (eq result :error) (error "injected mapping exception") result)))
 (defun release-memory-range (base size) (push (list base size) *released-ranges*))
 (defun debug-print-line (&rest things) (declare (ignore things)))
+(defun debug-uart-boot-line (&rest things) (declare (ignore things)))
+(defun debug-uart-boot-hex-line (&rest things) (declare (ignore things)))
 (defun get-high-precision-timer () 0)
 (defun current-thread () *thread*)
 (defun local-cpu () :cpu)
@@ -272,7 +277,7 @@ Path(sys.argv[2]).write_text(r'''
 (defun align-down (v a) (logand v (lognot (1- a))))
 (defconstant +stack-guard-size+ #x200000)
 (defconstant +stack-region-alignment+ #x200000)
-(defstruct (stack (:constructor %make-stack (base size))) base size)
+(defstruct (stack (:constructor %%make-stack (base size))) base size)
 
 (defpackage :mezzano.runtime
  (:use :cl)
@@ -314,6 +319,8 @@ Path(sys.argv[2]).write_text(r'''
 (defun finish-expand-freelist-area (&rest args) (declare (ignore args)) (incf *normal-finish-count*))
 (defun %allocate-function-1 (&rest args) (declare (ignore args)) (pop *function-results*))
 (defun update-allocation-time (start) (declare (ignore start)))
+(defun %cons-in-wired-area (car cdr)
+  (mezzano.supervisor::cons car cdr))
 '''+"\n\n".join(runtime)+r'''
 
 (defun check (value description) (unless value (error "~A" description)))

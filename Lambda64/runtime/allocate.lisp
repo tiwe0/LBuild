@@ -19,6 +19,8 @@
 (sys.int::defglobal sys.int::*wired-stack-free-regions*)
 (sys.int::defglobal sys.int::*stack-free-regions*)
 
+(sys.int::defglobal *direct-stack-range* nil)
+
 (sys.int::defglobal sys.int::*general-area-young-gen-bump*)
 (sys.int::defglobal sys.int::*general-area-young-gen-limit*)
 (sys.int::defglobal sys.int::*general-area-old-gen-bump*)
@@ -129,8 +131,64 @@
                                                              (ash (ldb (byte (- 32 sys.int::+object-data-shift+) 0) data) sys.int::+object-data-shift+))
         (sys.int::memref-unsigned-byte-32 address 1) (ldb (byte 32 (- 32 sys.int::+object-data-shift+)) data)))
 
-(defun update-freelist-card-offsets (start end)
-  "Point every card boundary in [START, END) back at the freelist entry at START."
+(defun prime-card-table-pages (start end)
+  "Make the card-table pages describing [START, END) resident.
+
+The allocator updates card entries from %FREELIST-ALLOCATE-INTERNAL, which runs
+on the wired stack with interrupts masked; a fault there cannot be serviced and
+becomes an unhandled data abort.  Until UPDATE-FREELIST-CARD-OFFSETS was bounded
+these pages were mapped incidentally, because every split rewrote the entire
+remaining freelist.  Do it deliberately instead, once, from a context that can
+take a fault.  It is cheap: the table stores four bytes per card, so even a
+several-hundred-megabyte area needs only a few hundred pages."
+  (when (< start end)
+    (let ((first-page (mezzano.supervisor::align-down
+                       (+ sys.int::+card-table-base+
+                          (* (truncate start sys.int::+card-size+) 4))
+                       #x1000))
+          (last-page (mezzano.supervisor::align-down
+                      (+ sys.int::+card-table-base+
+                         (* (truncate (1- end) sys.int::+card-size+) 4))
+                      #x1000)))
+      (loop
+         for page from first-page to last-page by #x1000
+         ;; Read-modify-write the first byte: this maps the page without
+         ;; disturbing any entry already recorded in it.
+         do (setf (sys.int::memref-unsigned-byte-8 page 0)
+                  (sys.int::memref-unsigned-byte-8 page 0))))))
+
+(defun prime-freelist-card-tables ()
+  "Make the card-table pages describing every existing freelist entry resident.
+
+The freelist areas that come from the cold image were never walked by
+FINISH-EXPAND-FREELIST-AREA, which is what maps card-table pages for regions
+grown at runtime.  Their pages used to be mapped incidentally, because every
+split rewrote the whole remaining entry; with that bounded, prime them here
+instead.  Iterating the bins covers exactly the ranges the split path can
+touch, whichever area they belong to, and it must run with interrupts enabled
+so the faults can be serviced."
+  (dolist (bins (list sys.int::*wired-area-free-bins*
+                      sys.int::*pinned-area-free-bins*
+                      sys.int::*wired-function-area-free-bins*
+                      sys.int::*function-area-free-bins*))
+    (when bins
+      (dotimes (bin (length bins))
+        (do ((entry (svref bins bin) (freelist-entry-next entry)))
+            ((not entry))
+          (prime-card-table-pages entry
+                                  (+ entry (* (freelist-entry-size entry) 8))))))))
+
+(defun update-freelist-card-offsets (start end &optional tail-already-covered)
+  "Point every card boundary in [START, END) back at the freelist entry at START.
+
+TAIL-ALREADY-COVERED asserts that this range was already described by an entry
+beginning at or before START.  The card-table offset field is 16 bits, so only
+the first (2^16-1)*16 bytes -- about 1MB, or 256 cards -- can hold a real
+back-offset; every card past that stores the sentinel no matter where the entry
+begins.  Splitting a freelist entry only moves START forward, so those far
+cards already hold the sentinel from the previous owner and rewriting them is
+pure work.  Skipping them turns bootstrap allocation from quadratic in the size
+of the wired freelist into a bounded per-allocation cost."
   ;; The public CARD-TABLE-OFFSET setter is intentionally general, but it
   ;; divides the address by CARD-SIZE on every call.  This function runs while
   ;; splitting the cold image's large wired-area freelist, so that division can
@@ -146,13 +204,21 @@
     (loop
        while (< card end)
        for delta = (- start card) then (- delta sys.int::+card-size+)
-       do (setf (sys.int::memref-unsigned-byte-16 sys.int::+card-table-base+
-                                                   table-index)
-                (if (> delta minimum-offset)
-                    ;; CARD-SIZE and START are page/alignment multiples, so
-                    ;; the representable offset is exactly a 16-byte unit.
-                    (ash (- delta) -4)
-                    sentinel))
+       do (cond ((> delta minimum-offset)
+                 ;; CARD-SIZE and START are page/alignment multiples, so
+                 ;; the representable offset is exactly a 16-byte unit.
+                 (setf (sys.int::memref-unsigned-byte-16
+                        sys.int::+card-table-base+ table-index)
+                       (ash (- delta) -4)))
+                (tail-already-covered
+                 ;; Out of representable range, and the caller guarantees the
+                 ;; previous owner started no later than START -- so every
+                 ;; remaining card already holds the sentinel.
+                 (return))
+                (t
+                 (setf (sys.int::memref-unsigned-byte-16
+                        sys.int::+card-table-base+ table-index)
+                       sentinel)))
           (incf card sys.int::+card-size+)
           (incf table-index 2))))
 
@@ -171,7 +237,9 @@
                                                               (ash (- size words) sys.int::+object-data-shift+))
             (sys.int::memref-t next 1) (svref bins new-bin))
       (setf (svref bins new-bin) next)
-      (update-freelist-card-offsets next (+ next (* new-size 8)))))
+      ;; A split only advances the entry start within a range this freelist
+      ;; already described, so the out-of-range tail is known-good.
+      (update-freelist-card-offsets next (+ next (* new-size 8)) t)))
   ;; Write object header.
   (set-allocated-object-header freelist tag data)
   ;; Clear data.
@@ -329,6 +397,8 @@
          (when result
            (update-allocation-time start-time)
            (return result)))
+       (when (zerop i)
+         (mezzano.supervisor::debug-uart-boot-line "TRACE wired-alloc-miss"))
        (when (> i *maximum-allocation-attempts*)
          (error 'storage-condition))
        (sys.int::%gc :reason :wired :major-required t :full (not (zerop i)))))
@@ -471,6 +541,23 @@
                  sys.int::+allocation-minimum-alignment+)))
     (when sys.int::*gc-enable-logging*
       (mezzano.supervisor:debug-print-line "Expanding " name " area by " expansion " [remaining " remaining "]"))
+    ;; Every caller reaches here under *ALLOCATOR-LOCK*.  CURRENT-LIMIT was
+    ;; read above and is used as the base of the new mapping, so two threads
+    ;; running this concurrently map the same range twice and trip the pager's
+    ;; "entry not zero" check.
+    (when (not (mezzano.supervisor::mutex-held-p *allocator-lock*))
+      (mezzano.supervisor:panic "EXPAND-ALLOCATION-AREA without the allocator lock"))
+    ;; Raw UART only.  This point is reached precisely when the area is
+    ;; exhausted, so anything that formats through the general allocator
+    ;; recurses back into EXPAND-ALLOCATION-AREA and overflows the stack.
+    (mezzano.supervisor::debug-uart-boot-hex-line
+     "EXPAND-ENTER thread "
+     (sys.int::lisp-object-address (mezzano.supervisor:current-thread)))
+    (mezzano.supervisor::debug-uart-boot-hex-line
+     "EXPAND-ENTER owner "
+     (sys.int::lisp-object-address (mezzano.supervisor::mutex-owner *allocator-lock*)))
+    (mezzano.supervisor::debug-uart-boot-hex-line
+     "EXPAND-ENTER limit " current-limit)
     (cond ((and (allocation-area-growth-permitted-p
                  (young-generation-size) expansion remaining)
                 (mezzano.supervisor:allocate-memory-range
@@ -485,13 +572,20 @@
            (setf (sys.int::symbol-global-value granularity-symbol) (* expansion 2))
            ;; Atomically store the new limit, other CPUs may be reading the value.
            (sys.int::%atomic-fixnum-add-symbol limit-symbol expansion)
+           (mezzano.supervisor:debug-print-line
+            "EXPAND-OK base " current-limit " len " expansion
+            " limit-now " (sys.int::symbol-global-value limit-symbol))
            (when sys.int::*gc-enable-logging*
              (mezzano.supervisor:debug-print-line "new remaining: " (bytes-remaining)))
            t)
           (t
            ;; Expansion failed, either not enough space or rejected by the pager.
-           (when sys.int::*gc-enable-logging*
-             (mezzano.supervisor:debug-print-line "A-M-R failed."))
+           (mezzano.supervisor:debug-print-line
+            "EXPAND-FAIL base " current-limit " len " expansion
+            " permitted " (if (allocation-area-growth-permitted-p
+                               (young-generation-size) expansion remaining)
+                              1 0)
+            " limit-now " (sys.int::symbol-global-value limit-symbol))
            nil))))
 
 (defun %do-get-new-tlab ()
@@ -550,8 +644,12 @@
                                                  '*general-area-expansion-granularity*
                                                  'sys.int::*general-area-young-gen-limit*
                                                  sys.int::+address-tag-general+)
-                     ;; Successfully expanded the area. Retry the allocation.
-                     (go INNER-LOOP))
+                    ;; Successfully expanded the area. Leave the
+                    ;; pseudo-atomic/allocator-lock region before retrying.
+                    ;; The newly allocated dynamic pages are demand-mapped;
+                    ;; retrying here would touch them with IRQs masked and
+                    ;; turn the first cold cons into an unhandled page fault.
+                    (go OUTER-LOOP))
                     (t
                      ;; No memory do expand, bail out and run the GC.
                      ;; This cannot be done when pseudo-atomic.
@@ -635,6 +733,16 @@
 (defun slow-cons (car cdr)
   (when sys.int::*gc-in-progress*
     (mezzano.supervisor:panic "Allocating during GC!"))
+  ;; During first-boot cold initialization the dynamic cons area is still
+  ;; demand-mapped and invoking the normal expansion/GC path can trap through
+  ;; the syscall entry before the runtime is ready.  Keep bootstrap conses in
+  ;; the wired freelist; normal post-boot cons allocation is unchanged.
+  (when (or (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+                 mezzano.supervisor::*cold-boot-in-progress*)
+            (eql (mezzano.supervisor::thread-priority
+                  (mezzano.supervisor::current-thread))
+                 :supervisor))
+    (return-from slow-cons (%cons-in-wired-area car cdr)))
   (log-allocation-profile-entry 2)
   (let ((gc-count 0)
         (start-time (mezzano.supervisor:get-high-precision-timer)))
@@ -660,8 +768,10 @@
                                                  '*cons-area-expansion-granularity*
                                                  'sys.int::*cons-area-young-gen-limit*
                                                  sys.int::+address-tag-cons+)
-                         ;; Successfully expanded the area Retry the allocation.
-                         (go INNER-LOOP))
+                         ;; Leave pseudo-atomic before retrying so the first
+                         ;; touch of the demand-mapped page can be serviced by
+                         ;; the page-fault/pager path.
+                         (go OUTER-LOOP))
                         (t
                          ;; No memory do expand, bail out and run the GC.
                          ;; This cannot be done when pseudo-atomic.
@@ -693,6 +803,17 @@
          (entry-point (sys.int::%object-ref-unsigned-byte-64
                        function
                        sys.int::+function-entry-point+)))
+    ;; AArch64 instruction addresses must be 4-byte aligned.  Keep this
+    ;; bootstrap diagnostic: an odd entry here means a callable object (often
+    ;; a still-unresolved FREF) was copied as if it were a compiled function,
+    ;; which later presents as an address-size fault at PC=object+tag.
+    (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+               mezzano.supervisor::*cold-boot-in-progress*
+               (not (zerop (logand entry-point 3))))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE bad-closure-source" (sys.int::lisp-object-address function))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE bad-closure-entry" entry-point))
     (setf
      ;; Entry point
      (sys.int::%object-ref-unsigned-byte-64 closure sys.int::+function-entry-point+) entry-point
@@ -792,23 +913,23 @@
                                   (- sys.int::*wired-function-area-limit* grow-by)
                                   sys.int::*function-area-limit*)))
               (when (mezzano.supervisor:allocate-memory-range
-                   range-base
-                   grow-by
-                   (logior sys.int::+block-map-present+
-                           sys.int::+block-map-writable+
-                           sys.int::+block-map-zero-fill+
-                           sys.int::+block-map-track-dirty+))
-              (when sys.int::*gc-enable-logging*
-                (mezzano.supervisor:debug-print-line
-                 "Expanded " (if wiredp "wired-function" "function")
-                 " area by " grow-by))
-              ;; Success.
-              (if wiredp
-                  (finish-expand-wired-function-area range-base grow-by)
-                  (finish-expand-freelist-area
-                   grow-by 'sys.int::*function-area-limit*
-                   sys.int::*function-area-free-bins*))
-              t))))))))
+                      range-base
+                      grow-by
+                      (logior sys.int::+block-map-present+
+                              sys.int::+block-map-writable+
+                              sys.int::+block-map-zero-fill+
+                              sys.int::+block-map-track-dirty+))
+                (when sys.int::*gc-enable-logging*
+                  (mezzano.supervisor:debug-print-line
+                   "Expanded " (if wiredp "wired-function" "function")
+                   " area by " grow-by))
+                ;; Success.
+                (if wiredp
+                    (finish-expand-wired-function-area range-base grow-by)
+                    (finish-expand-freelist-area
+                     grow-by 'sys.int::*function-area-limit*
+                     sys.int::*function-area-free-bins*))
+                t))))))))
 
 ;; Also used for allocating function-references
 (defun %allocate-function (tag data words wiredp)
@@ -950,6 +1071,13 @@
                                   (sys.int::layout-heap-size layout)
                                   (sys.int::layout-area layout)))
         (entry-point (funcallable-instance-entry-point function)))
+    (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
+               mezzano.supervisor::*cold-boot-in-progress*
+               (not (zerop (logand entry-point 3))))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE bad-funcallable-source" (sys.int::lisp-object-address function))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "TRACE bad-funcallable-entry" entry-point))
     (setf
      ;; Compiled functions can be entered directly. Closures and nested
      ;; funcallable instances still require the trampoline to load their
@@ -1010,10 +1138,32 @@
 (in-package :mezzano.supervisor)
 
 (defstruct (stack
-             (:constructor %make-stack (base size))
+             (:constructor %%make-stack (base size))
              (:area :wired))
   base
   size)
+
+(defun %make-stack (base size)
+  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-constructor-start")
+  (let ((stack (%%make-stack base size)))
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-constructor-done")
+    stack))
+
+(defun make-stack-object-for-boot (base size)
+  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-wrapper-start")
+  (let ((stack (%%make-stack base size)))
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-wrapper-done")
+    stack))
+
+(defun make-stack-region-node-for-boot ()
+  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-region-start")
+  ;; The initial thread is still on the bootstrap stack and the general
+  ;; allocator may need the pager/GC. These nodes are only allocator metadata,
+  ;; so keep them in the wired area during cold bootstrap.
+  (let* ((reservation (mezzano.runtime::%cons-in-wired-area nil nil))
+         (node (mezzano.runtime::%cons-in-wired-area reservation nil)))
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-region-done")
+    node))
 
 (defconstant +stack-guard-size+ #x200000
   "Size of the hard guard area.
@@ -1080,29 +1230,38 @@ This area exists below the stack and is never allocated or mapped.")
 
 (defun %allocate-stack (size &optional wired)
   (declare (mezzano.compiler::closure-allocation :wired))
+  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-alloc-start")
   (setf size (align-up size #x1000))
   (let* ((gc-count 0)
          (stack-address nil)
          ;; Allocate both cons cells before entering WITHOUT-FOOTHOLDS or the
          ;; allocator mutex. RELEASE-STACK-VIRTUAL-REGION only relinks them.
-         (stack-region-node (cons (cons nil nil) nil))
-         (stack (%make-stack nil size)))
+         (stack-region-node (make-stack-region-node-for-boot))
+         (stack (make-stack-object-for-boot nil size)))
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-object-done")
     ;; Allocate the stack object & finalizer up-front to prevent any issues
     ;; if the system runs out of memory while allocating the stack.
-    (sys.int::make-weak-pointer
-     stack
-     :finalizer (lambda ()
-                  (when stack-address
-                    ;; Clear the captured address before releasing anything so
-                    ;; an accidentally repeated finalizer invocation is a
-                    ;; no-op instead of returning the same reservation twice.
-                    (let ((address stack-address))
-                      (setf stack-address nil)
-                      (release-memory-range address size)
-                      (release-stack-virtual-region stack-region-node wired))
-                    ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* (- size))
-		    ))
-     :area :wired)
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-weak-pointer-start")
+    (if mezzano.supervisor::*cold-boot-in-progress*
+        ;; Weak-pointer allocation touches the finalizer list and is not safe
+        ;; while the cold world is stopped. The bootstrap stacks are retained
+        ;; for the lifetime of this world; normal post-boot allocations use
+        ;; the finalizer path below.
+        (mezzano.supervisor::debug-uart-boot-line
+         "TRACE stack-weak-pointer-skipped")
+        (sys.int::make-weak-pointer
+         stack
+         :finalizer (lambda ()
+                      (when stack-address
+                        ;; Clear the captured address before releasing anything so
+                        ;; an accidentally repeated finalizer invocation is a
+                        ;; no-op instead of returning the same reservation twice.
+                        (let ((address stack-address))
+                          (setf stack-address nil)
+                          (release-memory-range address size)
+                          (release-stack-virtual-region stack-region-node wired))))
+         :area :wired))
+    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-weak-pointer-done")
     (tagbody
      RETRY
        (mezzano.supervisor:without-footholds
@@ -1112,25 +1271,31 @@ This area exists below the stack and is never allocated or mapped.")
                   ;; Don't acquire the allocator lock if the world is stopped.
                   ;; This happens when allocating stacks for CPUs during boot.
                   (when (not (eql mezzano.supervisor::*world-stopper* (mezzano.supervisor:current-thread)))
+                    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-lock-start")
                     (acquire-mutex mezzano.runtime::*allocator-lock*))
+                  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-lock-done")
                   (when (< (mezzano.runtime::bytes-remaining) size)
                     (go DO-GC))
+                  (mezzano.supervisor::debug-uart-boot-line "TRACE stack-bytes-done")
                   (multiple-value-bind (addr region-node)
                       (allocate-stack-virtual-region size wired stack-region-node)
+                    (mezzano.supervisor::debug-uart-boot-line "TRACE stack-virtual-done")
                     ;; Commit backing memory only after reserving a unique
                     ;; virtual slot. Failed commits return the reservation.
                     (let ((committed-p nil))
                       (unwind-protect
                            (progn
-                             (when (not (allocate-memory-range
-                                         addr size
-                                         (logior sys.int::+block-map-present+
-                                                 sys.int::+block-map-writable+
-                                                 sys.int::+block-map-zero-fill+
-                                                 (if wired
-                                                     sys.int::+block-map-wired+
-                                                     0))))
+                             (when (not (let ((*direct-stack-range* t))
+                                           (allocate-memory-range
+                                            addr size
+                                            (logior sys.int::+block-map-present+
+                                                    sys.int::+block-map-writable+
+                                                    sys.int::+block-map-zero-fill+
+                                                    (if wired
+                                                        sys.int::+block-map-wired+
+                                                        0)))))
                                (go DO-GC))
+                             (mezzano.supervisor::debug-uart-boot-line "TRACE stack-memory-done")
                              (setf committed-p t)
                              ;; (sys.int::%atomic-fixnum-add-symbol 'sys.int::*bytes-allocated-to-stacks* size)
                              (setf (stack-base stack) addr

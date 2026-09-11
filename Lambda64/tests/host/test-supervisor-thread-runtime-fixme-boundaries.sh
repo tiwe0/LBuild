@@ -83,7 +83,17 @@ if not (lock < dead < unlock < event < relock):
 # wait-queue lock; wake-thread then acquires the global thread lock.  Taking
 # the global lock first in cleanup would therefore invert this established
 # order and can deadlock on SMP.
-event_setter = sync[sync.index("(defun (setf event-state)"):]
+# The setter body now lives in the ordinary function SET-EVENT-STATE, with
+# (SETF EVENT-STATE) delegating to it so interrupt-context callers do not have
+# to go through a cold-image SETF fref.  Follow the delegation and check
+# whichever definition actually carries the lock graph.
+setf_event_state = sync[sync.index("(defun (setf event-state)"):]
+if "set-event-state" not in setf_event_state[:240]:
+    raise SystemExit("(setf event-state) must delegate to set-event-state")
+setter_start = sync.find("(defun set-event-state")
+if setter_start < 0:
+    setter_start = sync.index("(defun (setf event-state)")
+event_setter = sync[setter_start:]
 if event_setter.find("with-place-spinlock (*big-wait-for-objects-lock*)") < 0:
     raise SystemExit("event-state lock graph lost big wait-object lock")
 if event_setter.find("with-wait-queue-lock") < 0 or event_setter.find("wake-thread") < 0:
