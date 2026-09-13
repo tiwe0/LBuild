@@ -915,6 +915,18 @@ VALUE may be nil to make the fref unbound."
         ;; to a page that is already private and resident.
         (setf (%object-ref-t fref +fref-function+)
               (%object-ref-t fref +fref-function+))
+        ;; Fault VALUE in as well.  %PUBLISH-FUNCTION-REFERENCE-FUNCTION reads
+        ;; its object header and, for a plain function, the entry point word.
+        ;; VALUE lives in the pageable function area, so once the system has run
+        ;; long enough for those pages to be evicted, that read happens inside
+        ;; the no-IRQ region below -- and %PAGE-FAULT-HANDLER refuses to service
+        ;; a fault taken with interrupts masked.  The comparison exists to force
+        ;; the read; a null entry point is not reachable, but reporting it is
+        ;; better than discarding the load.
+        (when (and value
+                   (%object-of-type-p value +object-tag-function+)
+                   (eql (%object-ref-unsigned-byte-64 value +function-entry-point+) 0))
+          (error "Function ~S has a null entry point." value))
         (mezzano.supervisor:safe-without-interrupts (fref value)
           (mezzano.supervisor:with-symbol-spinlock (*function-reference-lock*)
             (%publish-function-reference-function value fref)))))

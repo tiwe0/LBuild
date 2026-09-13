@@ -387,7 +387,14 @@
            ;; pointers.  Marking it :SUPERVISOR meant the collector never
            ;; scanned it, and every young-generation pointer on it dangled
            ;; after the first cycle.
-           (make-thread #'sys.int::initialize-lisp :name "Main thread")
+           ;; A larger stack than *DEFAULT-STACK-SIZE*: this thread compiles the
+           ;; whole stage-four dependency tree, and the compiler walks quoted
+           ;; constants recursively.  babel's jpn-table.lisp alone is one list
+           ;; of ~8000 elements, which overflows a 1MB stack partway through.
+           ;; Stacks are zero-fill-on-demand, so the reservation costs address
+           ;; space and block-map entries rather than physical memory.
+           (make-thread #'sys.int::initialize-lisp :name "Main thread"
+                        :stack-size (* 16 1024 1024))
            (setf *post-boot-worker-thread*
                  (make-thread #'post-boot-worker :name "Post-boot worker thread"))
            nil)
@@ -398,7 +405,14 @@
                  *boot-hooks* '()
                  *late-boot-hooks* '())
            ;; See the first-run branch: this thread must be scavengable.
-           (make-thread #'sys.int::initialize-lisp :name "Main thread")
+           ;; A larger stack than *DEFAULT-STACK-SIZE*: this thread compiles the
+           ;; whole stage-four dependency tree, and the compiler walks quoted
+           ;; constants recursively.  babel's jpn-table.lisp alone is one list
+           ;; of ~8000 elements, which overflows a 1MB stack partway through.
+           ;; Stacks are zero-fill-on-demand, so the reservation costs address
+           ;; space and block-map entries rather than physical memory.
+           (make-thread #'sys.int::initialize-lisp :name "Main thread"
+                        :stack-size (* 16 1024 1024))
            (setf *cold-boot-in-progress* nil)
            nil)
           (t (wake-thread *post-boot-worker-thread*)))

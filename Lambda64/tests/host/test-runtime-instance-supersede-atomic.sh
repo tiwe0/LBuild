@@ -13,20 +13,23 @@ start=s.index('(defun supersede-instance')
 end=s.index('\n(in-package :mezzano.internals)', start)
 form=s[start:end]
 if sys.argv[2]:
-    form=form.replace('(sys.int::cas\n                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', '(setf (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', 1)
+    form=form.replace('(sys.int::cas\n                            (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', '(setf (sys.int::%object-ref-unsigned-byte-64 old-instance -1)', 1)
 if 'TODO' in form or 'FIXME' in form:
     raise SystemExit('supersede-instance retains TODO/FIXME')
 if 'tagged T slots' not in s:
     raise SystemExit('DCAS capability rationale missing')
 for anchor in (
     '(loop',
-    '(sys.int::cas\n                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)',
-    '(sys.int::cas (sys.int::layout-new-instance layout)',
+    # Both CAS results must be EQL-tested against the expected old value; CAS
+    # returns the previous contents, so using it as a boolean inverts the test.
+    # See test-runtime-supersede-cas.sh.
+    '(eql (sys.int::cas\n                            (sys.int::%object-ref-unsigned-byte-64 old-instance -1)',
+    '(eql (sys.int::cas (sys.int::layout-new-instance layout)',
     '(with-live-objects (new-layout)',
 ):
     if anchor not in form:
         raise SystemExit(f'missing atomic publication anchor: {anchor}')
-if form.index('(with-live-objects (new-layout)') > form.index('(sys.int::cas\n                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)'):
+if form.index('(with-live-objects (new-layout)') > form.index('(eql (sys.int::cas\n                            (sys.int::%object-ref-unsigned-byte-64 old-instance -1)'):
     raise SystemExit('new layout must be rooted before header CAS')
 print('instance supersede atomic publication contract passed')
 PY
