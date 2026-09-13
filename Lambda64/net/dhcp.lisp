@@ -293,9 +293,13 @@
              (lambda ()
                (deconfigure-interface-1 interface))
              net::*network-serial-queue*)
+	    ;; Retry quickly at first (2, 4, 8, 16 seconds), then fall back to a
+	    ;; five-minute poll.  The comparison operands were reversed, which
+	    ;; inverted the schedule: the first four attempts slept five minutes
+	    ;; each and only later ones used the short delays.
 	    (loop for pause = 2 then (* 2 pause)
 	       until lease
-	       if (<= 16 pause) do
+	       if (<= pause 16) do
 		 (setf lease (acquire-lease interface))
                  (unless lease
                    (sleep pause))

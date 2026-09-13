@@ -426,7 +426,13 @@ RESUME must be called before tasks are executed."
 (defun dispatch-after (function run-time queue)
   "Submits a function for asynchronous execution on a dispatch queue after the specified time."
   (let* ((timer (mezzano.supervisor:make-timer :deadline run-time))
+         ;; :TARGET must be QUEUE.  MAKE-SOURCE otherwise defaults the target to
+         ;; (GLOBAL-QUEUE), which reads *LOCAL-CONTEXT* -- NIL in any thread that
+         ;; is not itself running under a dispatch context.  IP schedules
+         ;; retransmits from its own threads, so the default produced
+         ;; "no applicable method for CONTEXT-GLOBAL-QUEUE when called with (NIL)".
          (source (make-source timer nil
+                              :target queue
                               :cancellation-handler (lambda ()
                                                       ;; Return the timer to the pool after the source
                                                       ;; is fully canceled.
@@ -449,7 +455,10 @@ RESUME must be called before tasks are executed."
 
 (defun dispatch-delayed (function delay queue)
   "Submits a function for asynchronous execution on a dispatch queue after the specified delay."
-  (dispatch-at function (delay-to-run-time delay) queue)
+  ;; DISPATCH-AFTER, not DISPATCH-AT: no such function exists, so every delayed
+  ;; submission died with an undefined-function error.  IP's retransmit and
+  ;; outstanding-send expiry are both scheduled this way.
+  (dispatch-after function (delay-to-run-time delay) queue)
   (values))
 
 ;;; Sources

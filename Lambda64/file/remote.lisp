@@ -189,13 +189,24 @@ the server instead of reconnecting for each operation.")
            RETRY
              (when (remote-host-connection host)
                ;; Tickle any existing connection to make sure it's still open.
+               ;; Note this only catches a connection that is already torn down
+               ;; locally: a zero-length READ-SEQUENCE never touches the socket,
+               ;; so a peer that has closed since the last command is not
+               ;; detected here.  The retry paths below handle that case.
+               ;; STREAM-ERROR as well as CONNECTION-ERROR: the file server
+               ;; drops idle connections, and a connection that is already
+               ;; closed makes READ-SEQUENCE signal STREAM-ERROR from
+               ;; FROB-INPUT-STREAM, not a TCP condition.  Catching only the
+               ;; latter turned "reconnect" into a fatal error partway through
+               ;; stage-four dependency loading.
                (handler-case
                    (read-sequence (load-time-value
                                    (make-array 0 :element-type '(unsigned-byte 8)))
                                   (remote-host-connection host))
-                 (mezzano.network.tcp:connection-error ()
-                   (close (remote-host-connection host) :abort t)
-                   (setf (remote-host-connection host) nil))))
+                 ((or mezzano.network.tcp:connection-error stream-error) ()
+                   (let ((connection (remote-host-connection host)))
+                     (setf (remote-host-connection host) nil)
+                     (ignore-errors (close connection :abort t))))))
              (when (not (remote-host-connection host))
                (setf (remote-host-connection host)
                      (mezzano.network.tcp:tcp-stream-connect
@@ -223,10 +234,21 @@ the server instead of reconnecting for each operation.")
                              ;; Due to unwind-protect forms and this being a handler-bind, not a handler-case
                              ;; it is possible for this handler to be recursively reentered along the error
                              ;; path. Avoid closing the connection twice when this happens.
-                             (when (remote-host-connection host)
-                               (close (remote-host-connection host))
-                               (setf (remote-host-connection host) nil))
-                             (when (and (typep c 'mezzano.network.tcp:connection-error)
+                             ;; Clear the slot before closing: CLOSE can itself
+                             ;; fail on a dead socket, and unwinding with a
+                             ;; closed stream still recorded makes the next
+                             ;; operation's tickle signal instead of reconnect.
+                             (let ((connection (remote-host-connection host)))
+                               (when connection
+                                 (setf (remote-host-connection host) nil)
+                                 (ignore-errors (close connection :abort t))))
+                             ;; A dropped connection surfaces as END-OF-FILE
+                             ;; (reply never arrived) or STREAM-ERROR (stream
+                             ;; already closed) as often as a TCP condition.
+                             ;; Retry once for all three.
+                             (when (and (typep c '(or mezzano.network.tcp:connection-error
+                                                   end-of-file
+                                                   stream-error))
                                         auto-restart)
                                (setf auto-restart nil)
                                (go RETRY)))))
@@ -263,7 +285,13 @@ the server instead of reconnecting for each operation.")
       ;; the connection is working.
       (when (not (eql (block nil
                         (handler-bind
-                            ((mezzano.network.tcp:connection-error
+                            ;; END-OF-FILE and STREAM-ERROR mean the same thing
+                            ;; here as a TCP condition: the file server dropped
+                            ;; this connection (it times out idle ones) and the
+                            ;; command got no reply.  Retrying re-opens it.
+                            (((or mezzano.network.tcp:connection-error
+                                  end-of-file
+                                  stream-error)
                               (lambda (c)
                                 (declare (ignore c))
                                 (when (not did-retry-connection)

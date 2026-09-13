@@ -264,16 +264,31 @@
                                           sys.int::+object-type-shift+)
                                      (ash sys.int::+object-tag-instance+
                                           sys.int::+object-type-shift+)))))
-                (when (sys.int::cas
-                       (sys.int::%object-ref-unsigned-byte-64 old-instance -1)
-                       old-header new-header)
+                ;; CAS returns the PREVIOUS contents of the place, not a
+                ;; success flag.  Compare it against the expected value; using
+                ;; it as a boolean inverts the test, because a successful swap
+                ;; of a NIL place reports false and a failed swap reports true.
+                (when (eql (sys.int::cas
+                            (sys.int::%object-ref-unsigned-byte-64 old-instance -1)
+                            old-header new-header)
+                           old-header)
                   (return))))))
          (t
-          ;; Already-obsolete instances update the private replacement slot.
-          ;; CAS makes a racing updater retry instead of overwriting it.
-          (when (sys.int::cas (sys.int::layout-new-instance layout)
-                              nil replacement)
-            (return))))
+          ;; Already-obsolete instance: repoint its private forwarding slot at
+          ;; the new replacement.  The slot is non-NIL by definition on this
+          ;; branch, so a NIL-expected CAS can never succeed -- and with the
+          ;; inverted success test above it reported that failure as success
+          ;; and returned having done nothing.  A second CHANGE-CLASS on the
+          ;; same object was therefore silently ignored, which is exactly what
+          ;; ASDF's RESET-SYSTEM-CLASS does:
+          ;;   (change-class (change-class system 'proto-system) new-class)
+          ;; leaving every system stuck as a PROTO-SYSTEM.
+          ;; CAS from the value just observed so a racing updater retries.
+          (let ((current (sys.int::layout-new-instance layout)))
+            (when (eql (sys.int::cas (sys.int::layout-new-instance layout)
+                                     current replacement)
+                       current)
+              (return)))))
   (values)))
 
 (in-package :mezzano.internals)

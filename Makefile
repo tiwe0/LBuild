@@ -99,6 +99,8 @@ test-unit: test-scripts
 test-codegen:
 	@LAMBDA64_QUICKLISP_SETUP="$(QUICKLISP_SETUP)" \
 		$(LAMBDA64_ROOT)/tools/ci/test-arm64-scavenge-codegen.sh "$(LAMBDA64_ROOT)"
+	@LAMBDA64_QUICKLISP_SETUP="$(QUICKLISP_SETUP)" \
+		$(LAMBDA64_ROOT)/tools/ci/test-arm64-nlx-ssa-codegen.sh "$(LAMBDA64_ROOT)"
 
 test-fast: test-unit test-codegen
 	@echo "Local fast test layers passed"

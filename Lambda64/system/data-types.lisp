@@ -5,6 +5,14 @@
 (defconstant +n-fixnum-bits+ 1)
 (defconstant +fixnum-tag-mask+ (1- (ash 1 +n-fixnum-bits+)))
 
+;; A fixnum is a 64-bit word with +N-FIXNUM-BITS+ tag bits and the rest a
+;; two's-complement value.  CROSS-BOOT.LISP defines these for the cross-compiler,
+;; but nothing defined them in the target image: every reader-evaluated
+;; #.MOST-POSITIVE-FIXNUM -- ASDF's among them -- hit an unbound variable during
+;; stage-four dependency loading.
+(defconstant most-positive-fixnum (1- (ash 1 (- 64 +n-fixnum-bits+ 1))))
+(defconstant most-negative-fixnum (- (ash 1 (- 64 +n-fixnum-bits+ 1))))
+
 ;;; Fields in the object header.
 (defconstant +object-type-shift+ 2)
 (defconstant +object-type-size+ 6)

@@ -20,10 +20,21 @@
          (setf active-bb (next-instruction backend-function inst))
          (when active-bb
            (push active-bb basic-blocks)))
-        ;; BEGIN-NLX only establishes a dynamic context; it is not a control
-        ;; transfer.  NLX target edges are added to the *actual* CFG for call
-        ;; instructions by COMPUTE-ACTUAL-SUCCESSORS instead.
-        (begin-nlx-instruction nil)))
+        ;; BEGIN-NLX's targets ARE CFG edges here, even though control reaches
+        ;; them asynchronously.  SSA construction and DYNAMIC-CONTOURS both walk
+        ;; this graph: without these edges an NLX thunk has no predecessor, the
+        ;; binding stack is never propagated into it, and the phi-placement test
+        ;; in SSA-CONVERT-ONE-LOCAL-LOCATE-BINDING-STORING-BASIC-BLOCKS rejects
+        ;; every block reachable through the thunk.  The missing phi leaves such
+        ;; blocks reading a variable's entry definition forever, so assignments
+        ;; in a loop after a HANDLER-CASE that unwinds are silently discarded
+        ;; and the loop never terminates.
+        (begin-nlx-instruction
+         (dolist (succ (begin-nlx-targets inst))
+           (assert (typep succ 'label))
+           (pushnew succ targets)
+           (pushnew succ (gethash active-bb successors))
+           (pushnew active-bb (gethash succ predecessors))))))
     (dolist (targ targets)
       (assert (member targ basic-blocks)))
     (values (reverse basic-blocks) predecessors successors)))

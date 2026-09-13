@@ -154,7 +154,14 @@
   ;; All initialzation work complete, now safe to run tasks.
   (mezzano.sync.dispatch:resume *network-serial-queue*))
 
-(defvar *network-dispatch-context*
+;; DEFPARAMETER, not DEFVAR: the cold image serialises variable cells, so this
+;; symbol can already be BOUNDP when the warm load reaches this form, and DEFVAR
+;; would then skip its initform entirely.  No dispatch context is created, no
+;; manager thread exists to run INITIALIZE-NETWORK-STACK, and the NIC that the
+;; virtio driver registered is never taken up -- the machine reports "No network
+;; cards detected!" with the card attached and its worker thread running.
+;; INITIALIZE-PAGER carries the same warning for the same reason.
+(defparameter *network-dispatch-context*
   (mezzano.sync.dispatch:make-dispatch-context
    :initial-work #'initialize-network-stack
    :name "Network stack"))
