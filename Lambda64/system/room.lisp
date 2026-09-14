@@ -302,8 +302,15 @@ FN will be called with the world stopped, it must not allocate."
              (add-class (class)
                (let* ((address (class-address class))
                       (length (length allocated-classes))
-                      (index (bsearch address allocated-classes
-                                      :stride 2 :key #'class-address)))
+                      ;; %BSEARCH, not BSEARCH: this runs inside
+                      ;; CALL-WITH-WORLD-STOPPED, and the keyword form
+                      ;; materialises its argument vector in the general area.
+                      ;; Allocating there panics with "Going PA with world
+                      ;; stopped!".  The surrounding code already pre-allocates
+                      ;; ALLOCATED-CLASSES for the same reason; this call was
+                      ;; the one remaining allocation on the path.
+                      (index (%bsearch address allocated-classes
+                                       0 nil 2 #'class-address)))
                  (if index
                      (incf (aref allocated-classes (1+ index)))
                      (let ((insertion length)

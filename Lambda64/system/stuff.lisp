@@ -186,8 +186,13 @@
 (defun remprop (symbol indicator)
   (remf (symbol-plist symbol) indicator))
 
-(defun bsearch (item vector &key (start 0) end (stride 1) (key 'identity))
-  "Locate ITEM using a binary search through VECTOR."
+(defun %bsearch (item vector start end stride key)
+  "Positional entry point for BSEARCH.
+
+The keyword form materialises its argument vector in the general area.  ROOM
+calls this from inside CALL-WITH-WORLD-STOPPED, where allocating panics with
+\"Going PA with world stopped!\", so that path must not go through keywords.
+See docs/development/allocation-forbidden-contexts.md."
   ;; IMIN/IMAX are inclusive indicies.
   (do ((imin start)
        (imax (1- (truncate (or end (length vector)) stride))))
@@ -198,6 +203,10 @@
       (cond ((< elt item) (setf imin (1+ imid)))
             ((> elt item) (setf imax (1- imid)))
             (t (return (* imid stride)))))))
+
+(defun bsearch (item vector &key (start 0) end (stride 1) (key 'identity))
+  "Locate ITEM using a binary search through VECTOR."
+  (%bsearch item vector start end stride key))
 
 ;;;
 ;;; PRNG WELL512 based on the public domain algorithm by Chris Lomont

@@ -40,7 +40,6 @@ for name in required_forms:
 
 required_fragments = [
     "(page-dirty-p pte)",
-    ":sparse t",
     "(world-stopped-p)",
     "(%allocate-physical-pages +snapshot-large-backing-page-count+",
     "(rw-lock-write-acquire *vm-lock*)",
@@ -48,6 +47,16 @@ required_fragments = [
     "(sys.int::cas",
     "(sys.int::%atomic-fixnum-add-symbol '*snapshot-inhibit* delta)",
 ]
+# The card-table range must still be walked sparsely.  MAP-SNAPSHOT-WIRED-PAGES
+# calls the positional MAP-PTES-1 rather than the keyword wrapper: the keyword
+# form materialises its argument vector in the general area, and this runs with
+# the world stopped and *VM-LOCK* held, where a fault cannot be serviced.  Match
+# the sparse argument in either spelling so the contract survives that change.
+if not (re.search(r":sparse\s+t", source)
+        or re.search(r"\(map-ptes-1\s+sys\.int::\+card-table-base\+.*?\n\s+t\)",
+                     source, re.S)):
+    raise SystemExit("the card table range is no longer walked sparsely")
+
 for fragment in required_fragments:
     if fragment.lower() not in source.lower():
         raise SystemExit(f"missing snapshot contract fragment: {fragment}")

@@ -265,15 +265,58 @@ of the wired freelist into a bounded per-allocation cost."
                (%freelist-allocate-internal freelist prev size log2-len tag data words bins)))))
        (incf log2-len))))
 
+(defmacro with-allocator-lock (&body body)
+  "Run BODY under *ALLOCATOR-LOCK* and pseudo-atomic -- except on the world
+stopper, which runs it directly.
+
+That thread must take neither.  Every other thread is stopped, so a lock one of
+them owns can never be released: the scheduler livelock watchdog reports it as
+\"World stopper ... wait #<Mutex Allocator :Owner #<Thread ...>>\".  Entering
+a pseudo-atomic region with the world stopped panics outright with \"Going PA
+with world stopped!\".  Neither mechanism is needed there, because the world
+stop already provides the mutual exclusion both exist for.
+
+The rule used to be written out only in %ALLOCATE-FROM-WIRED-AREA-1.  The other
+six acquisition sites did not have it, so SNAPSHOT -- which allocates while
+holding the world -- deadlocked against whichever thread happened to own the
+lock.  Route every acquisition through here so the next allocation path cannot
+omit it.
+
+BODY is expanded twice rather than wrapped in a local function: several callers
+GO or RETURN-FROM out of it into enclosing tagbodies."
+  `(if (%world-stopper-p)
+       (progn ,@body)
+       (mezzano.supervisor:without-footholds
+         (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
+           (mezzano.supervisor:with-mutex (*allocator-lock*)
+             (mezzano.supervisor:with-pseudo-atomic
+               ,@body))))))
+
+(defun %world-stopper-p ()
+  "True when the calling thread is holding the world stopped.
+
+Such a thread must take neither *ALLOCATOR-LOCK* nor a pseudo-atomic region.
+Every other thread is stopped, so a lock it happens to own can never be
+released -- the scheduler livelock watchdog reports exactly that as
+\"World stopper ... wait #<Mutex Allocator :Owner #<Thread ...>>\" -- and
+entering PA with the world stopped panics outright.  Neither is needed: the
+world stop already provides the mutual exclusion both mechanisms exist for.
+%ALLOCATE-FROM-WIRED-AREA-1 has always encoded this rule; the pinned path had
+not, and SNAPSHOT allocates from it while holding the world."
+  (and (boundp 'mezzano.supervisor::*world-stopper*)
+       (eql mezzano.supervisor::*world-stopper*
+            (mezzano.supervisor:current-thread))))
+
+(defun %allocate-from-pinned-area-2 (tag data words)
+  (let ((address (%allocate-from-freelist-area tag data words sys.int::*pinned-area-free-bins*)))
+    (when address
+      (incf sys.int::*pinned-area-usage* words)
+      (sys.int::%%assemble-value address sys.int::+tag-object+))))
+
 (defun %allocate-from-pinned-area-1 (tag data words)
-  (mezzano.supervisor:without-footholds
-    (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-      (mezzano.supervisor:with-mutex (*allocator-lock*)
-        (mezzano.supervisor:with-pseudo-atomic
-          (let ((address (%allocate-from-freelist-area tag data words sys.int::*pinned-area-free-bins*)))
-            (when address
-              (incf sys.int::*pinned-area-usage* words)
-              (sys.int::%%assemble-value address sys.int::+tag-object+))))))))
+  ;; WITH-ALLOCATOR-LOCK already routes the world stopper past the lock.
+  (with-allocator-lock
+    (%allocate-from-pinned-area-2 tag data words)))
 
 (defun finish-expand-freelist-area (grow-by limit-sym bins)
   (let ((len (truncate grow-by 8))
@@ -341,11 +384,8 @@ of the wired freelist into a bounded per-allocation cost."
            (when sys.int::*gc-enable-logging*
              (mezzano.supervisor:debug-print-line
               "Expanding PINNED area by " grow-by))
-           (mezzano.supervisor:without-footholds
-             (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-               (mezzano.supervisor:with-mutex (*allocator-lock*)
-                 (mezzano.supervisor:with-pseudo-atomic
-                   (when (mezzano.supervisor:allocate-memory-range
+           (with-allocator-lock
+             (when (mezzano.supervisor:allocate-memory-range
                           sys.int::*pinned-area-bump*
                           grow-by
                           (logior sys.int::+block-map-present+
@@ -356,7 +396,7 @@ of the wired freelist into a bounded per-allocation cost."
                        (mezzano.supervisor:debug-print-line "Expanded pinned area by " grow-by))
                      ;; Success.
                      (finish-expand-freelist-area grow-by 'sys.int::*pinned-area-bump* sys.int::*pinned-area-free-bins*)
-                     (setf inhibit-gc t))))))))
+                     (setf inhibit-gc t)))))
        (when (> i *maximum-allocation-attempts*)
          (cerror "Retry allocation" 'storage-condition))
        (cond (inhibit-gc
@@ -379,15 +419,12 @@ of the wired freelist into a bounded per-allocation cost."
   (when (or (not (boundp '*allocator-lock*))
             (not (boundp 'mezzano.supervisor::*paging-disk*))
             (null mezzano.supervisor::*paging-disk*)
-            (eql mezzano.supervisor::*world-stopper*
-                 (mezzano.supervisor:current-thread)))
+            ;; Same rule as the pinned path; see %WORLD-STOPPER-P.
+            (%world-stopper-p))
     (return-from %allocate-from-wired-area-1
       (%allocate-from-wired-area-unlocked tag data words)))
-  (mezzano.supervisor:without-footholds
-    (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-      (mezzano.supervisor:with-mutex (*allocator-lock*)
-        (mezzano.supervisor:with-pseudo-atomic
-          (%allocate-from-wired-area-unlocked tag data words))))))
+  (with-allocator-lock
+    (%allocate-from-wired-area-unlocked tag data words)))
 
 (defun %allocate-from-wired-area (tag data words)
   (loop
@@ -601,11 +638,8 @@ of the wired freelist into a bounded per-allocation cost."
      OUTER-LOOP
        (setf allocation-succeeded-p nil
              run-gc-p nil)
-       (mezzano.supervisor:without-footholds
-         (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-           (mezzano.supervisor:with-mutex (*allocator-lock*)
-             (mezzano.supervisor:with-pseudo-atomic
-               (tagbody
+       (with-allocator-lock
+         (tagbody
                 INNER-LOOP
                   (multiple-value-bind (allocation-result ignore1 ignore2 failurep)
                       (%do-slow-allocate-from-general-area tag data words)
@@ -636,7 +670,7 @@ of the wired freelist into a bounded per-allocation cost."
                        (mezzano.supervisor:debug-print-line "General area expansion failed, performing GC."))
                      (setf run-gc-p t)
                      (go INNER-DONE)))
-                INNER-DONE)))))
+                INNER-DONE))
        (when allocation-succeeded-p
          (return-from %slow-allocate-from-general-area result))
        (when (not run-gc-p)
@@ -727,11 +761,8 @@ of the wired freelist into a bounded per-allocation cost."
         (start-time (mezzano.supervisor:get-high-precision-timer)))
     (tagbody
      OUTER-LOOP
-       (mezzano.supervisor:without-footholds
-         (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-           (mezzano.supervisor:with-mutex (*allocator-lock*)
-             (mezzano.supervisor:with-pseudo-atomic
-               (tagbody
+       (with-allocator-lock
+         (tagbody
                 INNER-LOOP
                   ;; Call the real allocator.
                   (multiple-value-bind (result blah failurep)
@@ -756,7 +787,7 @@ of the wired freelist into a bounded per-allocation cost."
                          ;; This cannot be done when pseudo-atomic.
                          (when sys.int::*gc-enable-logging*
                            (mezzano.supervisor:debug-print-line "Cons area expansion failed, performing GC."))
-                         (go DO-GC))))))))
+                         (go DO-GC)))))
      DO-GC
        ;; Must occur outside the locks.
        (when (> gc-count *maximum-allocation-attempts*)
@@ -855,11 +886,8 @@ of the wired freelist into a bounded per-allocation cost."
   (%allocate-object sys.int::+object-tag-bignum+ words words nil))
 
 (defun %allocate-function-1 (tag data words wiredp)
-  (mezzano.supervisor:without-footholds
-    (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-      (mezzano.supervisor:with-mutex (*allocator-lock*)
-        (mezzano.supervisor:with-pseudo-atomic
-          (let ((address (%allocate-from-freelist-area
+  (with-allocator-lock
+    (let ((address (%allocate-from-freelist-area
                           tag data words
                           (if wiredp
                               sys.int::*wired-function-area-free-bins*
@@ -868,7 +896,7 @@ of the wired freelist into a bounded per-allocation cost."
               (if wiredp
                   (incf sys.int::*wired-function-area-usage* words)
                   (incf sys.int::*function-area-usage* words))
-              (sys.int::%%assemble-value address sys.int::+tag-object+))))))))
+              (sys.int::%%assemble-value address sys.int::+tag-object+)))))
 
 (defun finish-expand-wired-function-area (new-limit grow-by)
   "Publish a newly mapped range below the current wired-function limit."
@@ -893,11 +921,8 @@ of the wired freelist into a bounded per-allocation cost."
       (mezzano.supervisor:debug-print-line
        "Expanding " (if wiredp "WIRED-FUNCTION" "FUNCTION")
        " area by " grow-by))
-    (mezzano.supervisor:without-footholds
-      (mezzano.supervisor:inhibit-thread-pool-blocking-hijack
-        (mezzano.supervisor:with-mutex (*allocator-lock*)
-          (mezzano.supervisor:with-pseudo-atomic
-            (let ((range-base (if wiredp
+    (with-allocator-lock
+      (let ((range-base (if wiredp
                                   (- sys.int::*wired-function-area-limit* grow-by)
                                   sys.int::*function-area-limit*)))
               (when (mezzano.supervisor:allocate-memory-range
@@ -917,7 +942,7 @@ of the wired freelist into a bounded per-allocation cost."
                     (finish-expand-freelist-area
                      grow-by 'sys.int::*function-area-limit*
                      sys.int::*function-area-free-bins*))
-                t))))))))
+                t)))))
 
 ;; Also used for allocating function-references
 (defun %allocate-function (tag data words wiredp)

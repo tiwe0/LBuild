@@ -66,15 +66,23 @@
     (snapshot-add-to-writeback-list frame)))
 
 (defun map-snapshot-wired-pages (function)
-  "Call FUNCTION for each mapped page that is persisted in a snapshot."
-  (map-ptes sys.int::*wired-area-base* sys.int::*wired-area-bump* function)
-  (map-ptes sys.int::+card-table-base+
-            (+ sys.int::+card-table-base+ sys.int::+card-table-size+)
-            function
-            :sparse t)
-  (map-ptes sys.int::*wired-function-area-limit*
-            sys.int::*function-area-base*
-            function))
+  "Call FUNCTION for each mapped page that is persisted in a snapshot.
+
+MAP-PTES-1, not MAP-PTES: the keyword wrapper materialises its argument vector
+in the general area, and this runs with the world stopped and *VM-LOCK* held
+for write.  The allocation needs a page, the fault cannot be serviced because
+the pager wants that same lock, and the assertion in WAIT-FOR-PAGE-VIA-INTERRUPT
+turns it into \"Page fault ... while holding *VM-LOCK* for write\" rather than
+a silent hang.  See docs/development/allocation-forbidden-contexts.md."
+  (map-ptes-1 sys.int::*wired-area-base* sys.int::*wired-area-bump* function nil)
+  (map-ptes-1 sys.int::+card-table-base+
+              (+ sys.int::+card-table-base+ sys.int::+card-table-size+)
+              function
+              t)
+  (map-ptes-1 sys.int::*wired-function-area-limit*
+              sys.int::*function-area-base*
+              function
+              nil))
 
 (defun snapshot-wired-dirty-tracking-p ()
   ;; ARM64 maps wired pages writable and does not yet emulate subsequent dirty

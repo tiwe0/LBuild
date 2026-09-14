@@ -609,9 +609,7 @@ Interrupts must be off and the global thread lock must be held."
             (thread-state-r13 thread) 0
             (thread-state-r14-value thread) nil
             (thread-state-r15 thread) 0)
-      (debug-uart-boot-hex-line "TRACE thread-trampoline-entry"
-                                 (sys.int::%object-ref-unsigned-byte-64
-                                  trampoline sys.int::+function-entry-point+)))
+      nil)
     (setf (thread-full-save-p thread) t
           (thread-state thread) :runnable)
     (safe-without-interrupts (thread)

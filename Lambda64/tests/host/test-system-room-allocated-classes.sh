@@ -20,10 +20,17 @@ if sys.argv[2]:
 
 required = [
     "(lisp-object-address class)",
-    "(bsearch",
-    ":stride 2",
     "(replace allocated-classes allocated-classes",
 ]
+# The class vector is searched with a stride of two (address, count pairs).
+# AREA-INFO runs inside CALL-WITH-WORLD-STOPPED, so it must call the positional
+# %BSEARCH: the keyword form materialises its argument vector in the general
+# area and allocating there panics with "Going PA with world stopped!".  Accept
+# either spelling so the stride contract survives that change.
+if not (re.search(r"\(bsearch\b[^)]*:stride\s+2", form, re.S)
+        or re.search(r"\(%bsearch\b[^)]*\s2\s", form, re.S)):
+    raise SystemExit(
+        "room allocated-classes contract missing: stride-2 binary search")
 missing = [token for token in required if token not in form]
 if "TODO: Should keep this sorted by address" in form:
     missing.append("TODO marker removal")

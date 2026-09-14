@@ -78,6 +78,9 @@ def form(marker):
  raise RuntimeError(marker)
 
 runtime=[form(x) for x in (
+ # The lock-discipline macro and its predicate must precede every user.
+ '(defmacro with-allocator-lock',
+ '(defun %world-stopper-p',
  '(defun update-freelist-card-offsets',
  '(defvar *maximum-young-generation-size*',
  '(defun allocation-area-growth-permitted-p',
