@@ -31,6 +31,10 @@ source-of-truth: code
 | D017 | Image | cold-generator map/symbol table 参数疑似重复使用 `map-file` | medium | 定向生成器测试 | image |
 | D018 | Security | Guest Swank 全接口监听、无协议认证；不同 QEMU/物理网络暴露边界不一致 | high | [M003](initiatives/M003-debug-service-boundary/README.md) | security/runtime |
 | D019 | Branding | 品牌改名仅完成目录/镜像/引导菜单；包名 `mezzano.*`（27 个）、特性 `:mezzano`、kboot 二进制内 20 处 `mezzano:` 前缀仍为上游命名 | low | 仅做第一层（面向用户字符串）；第二/三层见下方分层与约束 | architecture |
+| D020 | Runtime | 受限上下文里调用关键字 lambda list 函数会在通用区物化参数向量。本次排查撞上 **4 次**（`%release-vm-page`、`make-virtio-driver`、`room` 的 `bsearch`、`snapshot` 的 `map-ptes`），每次位置参数入口都已存在或唾手可得 | high | 约束目前只靠文档与注释维持。考虑可检查的机制：标注"禁止在受限上下文调用"的函数集合，并由宿主测试扫描调用点 | runtime |
+| D021 | Compiler | `file/ext4.lisp` 的 `SUPERBLOCK` 有 112 个类型化槽位，单个 `defstruct` 编译耗时 **1209 秒**（同批其余文件为 10–70 秒），疑似某个 pass 在槽位数上超线性 | medium | 先量化：对 16/32/64/112 槽位的 `defstruct` 计时，确认复杂度曲线后再定位 pass | compiler |
+| D022 | Test | 多个契约测试锚定**源码字面文本**而非语义，源码正确演进即误报。本次修复 6 处：`%%gc` 签名、包前缀、CAS 缩进、文件位置、`:sparse t`、`:stride 2` | medium | 新增契约一律锚定语义（正则容忍等价写法），并在测试内写明"要守的约束是什么"，避免后人改代码迁就测试 | test |
+| D023 | Compiler | TF-WI-0029 第 3 步未实现：`compute-actual-successors` 存在但 `ssa-convert-locals` / `compute-dominance` 仍用 `build-cfg`。NLX 边已按上游形态恢复，移除它们的前置条件见规格文档 | medium | 实现 NLX 感知的后继关系并接入支配、活跃性与 φ 放置，再考虑移除边 | compiler |
 
 规则：技术债表不是直接开工单。高风险或跨子系统条目先转为 initiative/ADR，明确非范围、冲突批次和验收矩阵。
 
