@@ -38,7 +38,7 @@ Lambda64 是一个从零构建的操作系统,它的每一层 —— supervisor�
 | **图形** | 合成器、窗口管理、字体渲染、AArch64 SIMD 位块传输 |
 | **网络** | Ethernet、ARP、IP、TCP、UDP、DHCP、DNS、HTTP |
 | **文件系统** | ext4、FAT32、本地、远程、HTTP |
-| **驱动** | virtio 块/网络/GPU/输入,USB EHCI 与 HID,Intel GMA 与 HDA |
+| **驱动** | virtio 块/网络/GPU/输入,USB EHCI 与 HID 键鼠,RTL8168 网卡,Intel GMA 显示,Intel HDA 音频 |
 | **在线开发** | SWANK —— 用 SLIME 连上运行中的系统就地修改 |
 
 ### 应用
@@ -172,8 +172,7 @@ make asdf          # 用树内源码构建 ASDF
 make cold-image    # 交叉编译出 lambda64.image
 ```
 
-产物 `lambda64.image` 是一个声明 5 GiB 的稀疏文件,实际占盘约 590 MB。预编译映像
-发布在 [Releases](https://github.com/tiwe0/LBuild/releases)。
+产物 `lambda64.image` 是一个声明 5 GiB 的稀疏文件,实际占盘约 590 MB。
 
 ### 启动
 
@@ -291,7 +290,7 @@ python3 scripts/check-docs.py  # 文档校验
 
 Lambda64 的存在归功于两个项目:
 
-- **[Mezzano](https://github.com/froggey/Mezzano)** —— 由 Henry Harrington 及
+- **[Mezzano](https://github.com/froggey/Mezzano)** —— 由 Sylvia Harrington 及
   众多贡献者开发,本项目在其之上继续。系统架构、编译器、对象模型与图形栈都出自
   他们之手。
 - **[MBuild](https://github.com/froggey/MBuild)** —— 本仓库 fork 自该构建系统。

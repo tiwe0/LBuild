@@ -42,7 +42,7 @@ makes it our platform for an **AI-native operating system**. See
 | **Graphics** | Compositor, window management, font rendering, AArch64 SIMD blitter |
 | **Network** | Ethernet, ARP, IP, TCP, UDP, DHCP, DNS, HTTP |
 | **Filesystems** | ext4, FAT32, local, remote, HTTP |
-| **Drivers** | virtio block / net / GPU / input, USB EHCI with HID, Intel GMA and HDA |
+| **Drivers** | virtio block / net / GPU / input, USB EHCI with HID keyboard and mouse, RTL8168 Ethernet, Intel GMA graphics, Intel HDA audio |
 | **Live development** | SWANK — connect SLIME to the running system and edit it in place |
 
 ### Applications
@@ -201,8 +201,7 @@ make cold-image    # cross-compile lambda64.image
 ```
 
 The result is `lambda64.image`: a 5 GiB sparse store that occupies about 590 MB
-on disk. Prebuilt images are published under
-[Releases](https://github.com/tiwe0/LBuild/releases).
+on disk.
 
 ### Run
 
@@ -337,7 +336,7 @@ starts at [`docs/README.md`](docs/README.md).
 
 Lambda64 exists because of two projects:
 
-- **[Mezzano](https://github.com/froggey/Mezzano)** by Henry Harrington and
+- **[Mezzano](https://github.com/froggey/Mezzano)** by Sylvia Harrington and
   contributors — the operating system this work continues. The architecture,
   the compiler, the object model, and the graphics stack are theirs.
 - **[MBuild](https://github.com/froggey/MBuild)** — the build system this
