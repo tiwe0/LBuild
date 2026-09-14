@@ -1,0 +1,102 @@
+name: Release image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish the build under.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    name: Build cold image and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends curl sbcl zstd
+          sbcl --version
+
+      - name: Install Quicklisp and Lisp dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            https://beta.quicklisp.org/quicklisp.lisp -o /tmp/quicklisp.lisp
+          sbcl --non-interactive \
+            --load /tmp/quicklisp.lisp \
+            --eval '(quicklisp-quickstart:install :path (merge-pathnames "quicklisp/" (user-homedir-pathname)))' \
+            --eval '(ql-util:without-prompting (ql:add-to-init-file))'
+          sbcl --non-interactive \
+            --eval "(ql:quickload '(alexandria iterate nibbles cl-ppcre cl-fad closer-mop trivial-gray-streams) :silent t)"
+
+      - name: Build cold image
+        shell: bash
+        run: make asdf cold-image
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image is a 5 GiB sparse file that is mostly holes.  GNU tar's
+          # -S reads the holes as holes instead of 5 GiB of zeros, and restores
+          # them as holes on extraction, so the download stays small and the
+          # unpacked file does not consume its full nominal size.
+          tar -cSf - lambda64.image \
+            | zstd -T0 -19 -o lambda64.image.tar.zst
+          sha256sum \
+            lambda64.image \
+            lambda64.image.tar.zst \
+            lambda64.map \
+            lambda64.symbol-table \
+            > SHA256SUMS
+          ls -lh lambda64.image.tar.zst
+          cat SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'EOF'
+          Prebuilt Lambda64 ARM64 **cold image**.
+
+          ```sh
+          zstd -d -c lambda64.image.tar.zst | tar -xSf -
+          sha256sum -c SHA256SUMS --ignore-missing
+          make run-file-server    # in a second terminal
+          make hvf-arm64          # or qemu-arm64 / kvm-arm64
+          ```
+
+          This is a cold image, so the first boot still compiles the GUI and
+          library systems from source over the file server and takes roughly
+          twenty minutes before the desktop appears. Generated `.llf` files are
+          written back to `home/`, so later boots reach the desktop in a few
+          minutes.
+
+          `lambda64.map` and `lambda64.symbol-table` are included for reading
+          guest panics; see `docs/development/reading-arm64-panics.md`.
+          EOF
+          gh release create "$TAG" \
+            --title "Lambda64 $TAG" \
+            --notes-file notes.md \
+            lambda64.image.tar.zst \
+            lambda64.map \
+            lambda64.symbol-table \
+            SHA256SUMS

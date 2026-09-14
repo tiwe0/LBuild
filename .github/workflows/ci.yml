@@ -59,6 +59,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      # Most of the host suite is shell and grep, but a significant minority
+      # cross-compile probe forms, so the runner needs SBCL.  ubuntu-latest does
+      # not ship it.
+      - name: Install SBCL
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sbcl
+          # Record it: the distro SBCL lags the version used for development,
+          # so a failure here needs the version visible to be diagnosable.
+          sbcl --version
+
       - name: Run host test suite
         run: Lambda64/tests/host/run.sh
 
