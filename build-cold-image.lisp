@@ -31,8 +31,6 @@
 ;; Initialize the compiler.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
-;; Choose your architecture here.
-;;
 ;; LBuild targets Lambda64 on ARM64 by default.
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
