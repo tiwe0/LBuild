@@ -193,12 +193,27 @@ Make sure there is a virtio-net NIC attached.~%")
 #+arm64
 (sys.int::cal "sys:source;gui;blit-arm64-simd.lisp")
 (sys.int::cal "sys:source;gui;keymaps.lisp")
+;; Claim the virtio GPU and input transports before the GUI modules load.
+;;
+;; Both are dispatched by the supervisor's built-in table rather than through
+;; *VIRTIO-DRIVERS*, and VIRTIO-LATE-PROBE runs too early for them: it fires
+;; from the post-boot worker, which races COLD-ARRAY-INITIALIZATION, and
+;; VIRTIO-GPU-REGISTER needs *ARRAY-T-INFO*.  Claiming here instead installs the
+;; framebuffer -- without it the console reports "Display output is not active."
+;;
+;; This must precede INPUT-DRIVERS-VIRTIO: that file calls
+;; DETECT-VIRTIO-INPUT-DEVICES at load time, walking *VIRTIO-INPUT-DEVICES*,
+;; which the claim populates.  Loading it first leaves the list empty, so no
+;; forwarder threads start and the mouse and keyboard are dead.
+(mezzano.supervisor.virtio:virtio-claim-pending-builtin-devices)
+
 (sys.int::cal "sys:source;gui;theme.lisp")
 (sys.int::cal "sys:source;gui;compositor.lisp")
 #+x86-64
 (sys.int::cal "sys:source;gui;input-drivers.lisp")
 #+arm64
 (sys.int::cal "sys:source;gui;input-drivers-virtio.lisp")
+
 #+x86-64
 (sys.int::cal "sys:source;gui;virtualbox-guest-helper.lisp")
 (sys.int::cal "sys:source;system;unifont.lisp")

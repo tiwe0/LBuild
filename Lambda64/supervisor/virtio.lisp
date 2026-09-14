@@ -75,6 +75,7 @@
            #:virtio-isr-status
            #:virtio-device-irq
            #:virtio-attach-irq
+           #:virtio-claim-pending-builtin-devices
            #:virtio-ack-irq
            #:virtio-queue-select
            #:virtio-queue-size
@@ -425,6 +426,41 @@
          (sup:with-symbol-spinlock (*virtio-registry-lock*)
            ,@body))))
 
+(defun virtio-claim-builtin-device (dev)
+  "Claim DEV with a driver built into the supervisor.  Returns true if claimed.
+
+GPU and input devices are dispatched from here rather than through
+*VIRTIO-DRIVERS*, which only DEFINE-VIRTIO-DRIVER populates.  VIRTIO-LATE-PROBE
+has to consult this as well as the registry: both device classes are deferred
+during bootstrap because the pager is not live yet, and a late probe that only
+walked the registry never claimed them.  The framebuffer was then never
+installed, the compositor had no backend, and the console showed
+\"Display output is not active.\" while the rest of the system ran normally."
+  (case (virtio-device-did dev)
+    (#.+virtio-dev-id-gpu+
+     (virtio-gpu-register dev)
+     (setf (virtio-device-claimed dev) :gpu)
+     t)
+    (#.+virtio-dev-id-input+
+     (virtio-input-register dev)
+     (setf (virtio-device-claimed dev) :input)
+     t)
+    (t nil)))
+
+(defun virtio-claim-pending-builtin-devices ()
+  "Claim deferred GPU and input devices.
+
+Call once the warm modules are loaded.  These device classes are dispatched by
+VIRTIO-CLAIM-BUILTIN-DEVICE rather than through *VIRTIO-DRIVERS*, so nothing in
+the registry walk ever picks them up; without this the framebuffer is never
+installed and the console reports \"Display output is not active.\" while the
+rest of the system runs normally."
+  (let ((pending (with-virtio-registry-lock *virtio-late-probe-devices*)))
+    (dolist (dev pending)
+      (when (not (virtio-device-claimed dev))
+        (sys.int::log-and-ignore-errors
+         (virtio-claim-builtin-device dev))))))
+
 (defun virtio-device-register (dev)
   (declare (mezzano.compiler::closure-allocation :wired))
   (with-virtio-registry-lock
@@ -437,25 +473,15 @@
       (#.+virtio-dev-id-block+
        (virtio-block-register dev)
        (setf (virtio-device-claimed dev) :block))
-      (#.+virtio-dev-id-gpu+
+      ((#.+virtio-dev-id-gpu+ #.+virtio-dev-id-input+)
        ;; GPU setup attaches an IRQ and allocates command state that is not
-       ;; needed to discover the paging disk.  Defer it until the pager is
-       ;; live; otherwise the early FDT scan can dereference an incomplete IRQ
-       ;; structure and trap in STRUCT-SLOT.
+       ;; needed to discover the paging disk; input FIFO construction allocates
+       ;; a temporary general-area vector.  Defer both until the pager is live,
+       ;; otherwise the early FDT scan can dereference an incomplete IRQ
+       ;; structure and trap in STRUCT-SLOT.  VIRTIO-LATE-PROBE picks them up.
        (if (and (boundp '*virtio-bootstrap-p*) *virtio-bootstrap-p*)
            (sup::push-wired dev *virtio-late-probe-devices*)
-           (progn
-             (virtio-gpu-register dev)
-             (setf (virtio-device-claimed dev) :gpu))))
-      (#.+virtio-dev-id-input+
-       ;; Input FIFO construction uses keyword helpers and allocates a
-       ;; temporary general-area vector. Defer it until the pager is live on
-       ;; the first boot; the transport remains registered for late probing.
-       (if (and (boundp '*virtio-bootstrap-p*) *virtio-bootstrap-p*)
-           (sup::push-wired dev *virtio-late-probe-devices*)
-           (progn
-             (virtio-input-register dev)
-             (setf (virtio-device-claimed dev) :input))))
+           (virtio-claim-builtin-device dev)))
       (t
        (sup::push-wired dev *virtio-late-probe-devices*)))))
 
@@ -471,6 +497,13 @@
   ;; to serialize arbitrary driver callbacks.
   (let ((pending (with-virtio-registry-lock *virtio-late-probe-devices*)))
     (dolist (dev pending)
+      ;; Built-in devices (GPU, input) are NOT claimed here.  This runs from the
+      ;; post-boot worker, which races COLD-ARRAY-INITIALIZATION in the main
+      ;; thread, and VIRTIO-GPU-REGISTER needs *ARRAY-T-INFO*; claiming here
+      ;; panicked with "Unbound symbol *ARRAY-T-INFO*".  They stay pending until
+      ;; VIRTIO-CLAIM-PENDING-BUILTIN-DEVICES runs from IPL, the same point at
+      ;; which the net driver's warm module registers itself.
+      ;;
       ;; No matching driver is not the same as giving up on the device.  This
       ;; runs from the post-boot worker, long before the warm modules that
       ;; register the net, GPU and input drivers are loaded.  Setting
