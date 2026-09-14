@@ -58,7 +58,17 @@ worktree_dirty() {
         fi
     fi
 
-    [[ -n $(git -C "$root" "${status_args[@]}") ]]
+    local status_output
+    status_output=$(git -C "$root" "${status_args[@]}")
+    if [[ -n $status_output ]]; then
+        # Name the offending paths.  Consumers reject a dirty manifest, and a
+        # bare "dirty" leaves whoever hits it guessing which build step wrote
+        # into the tree -- across CI cycles, that is expensive.
+        echo "Worktree is dirty; the manifest will record repository_dirty=true:" >&2
+        printf '%s\n' "$status_output" | sed 's/^/  /' >&2
+        return 0
+    fi
+    return 1
 }
 
 worktree_dirty "$repository_root" "$manifest" && repository_dirty=true

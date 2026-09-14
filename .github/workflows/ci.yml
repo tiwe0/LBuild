@@ -53,21 +53,26 @@ concurrency:
 jobs:
   static-host:
     name: Static host tests
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
       # Most of the host suite is shell and grep, but a significant minority
-      # cross-compile probe forms, so the runner needs SBCL.  ubuntu-latest does
-      # not ship it.
-      - name: Install SBCL
+      # cross-compile probe forms, so the runner needs SBCL.
+      #
+      # The suite also calls GNU tools that macOS either lacks (timeout) or
+      # ships in a different dialect (sha256sum, sed -i).  Homebrew's coreutils
+      # provides them under their GNU names in libexec/gnubin, which is exactly
+      # how the development machine is set up, so no script needs a platform
+      # branch.
+      - name: Install SBCL and GNU tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends sbcl
-          # Record it: the distro SBCL lags the version used for development,
-          # so a failure here needs the version visible to be diagnosable.
+          set -euo pipefail
+          brew install --quiet sbcl coreutils gnu-sed
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
           sbcl --version
 
       - name: Run host test suite
@@ -76,7 +81,17 @@ jobs:
   arm64-integration:
     name: ARM64 build and QEMU integration (${{ inputs.smoke_mode || 'positive' }})
     needs: static-host
-    runs-on: ubuntu-latest
+    # Manual and scheduled runs only.  This job builds an image and boots it
+    # under QEMU, which costs upwards of two hours; running it on every push
+    # makes ordinary CI useless as a signal.  Push and pull_request get the
+    # static host suite, which is fast.
+    #
+    # The condition is written as "not push, not pull_request" rather than
+    # testing for workflow_dispatch or workflow_call, because a reusable
+    # workflow sees the *caller's* event name -- the weekly stress matrix
+    # invokes this workflow and arrives here as "schedule".
+    if: github.event_name != 'push' && github.event_name != 'pull_request'
+    runs-on: macos-latest
     timeout-minutes: 150
 
     steps:
@@ -90,20 +105,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           test -z "$(git status --porcelain --untracked-files=no)"
 
-      - name: Install apt packages
+      - name: Install build and QEMU dependencies
         run: |
-          if ! command -v sudo >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y --no-install-recommends sudo
-          fi
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            bzip2 \
-            curl \
-            qemu-system \
-            git \
-            lsof \
-            sbcl
+          set -euo pipefail
+          brew install --quiet sbcl qemu coreutils gnu-sed
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
+          sbcl --version
+          qemu-system-aarch64 --version | head -n 1
 
       - name: Install Quicklisp and dependencies
         shell: bash
