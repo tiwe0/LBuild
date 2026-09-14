@@ -1196,8 +1196,16 @@ a pointer to the new object. Leaves a forwarding pointer in place."
           ;; optimization.
           (when (funcallable-instance-p object)
             ;; Keep the funcallable instance entry point correct.
-            (setf (%object-ref-t new-instance +function-entry-point+)
-                  (%object-ref-t object +function-entry-point+))
+            ;; +FUNCTION-ENTRY-POINT+ holds a raw code address, not a Lisp
+            ;; value.  Copying it with %OBJECT-REF-T makes the collector treat
+            ;; that address as a reference while a cycle is in progress: it
+            ;; gets scavenged like any other root and the forwarded result is
+            ;; written back, leaving the instance pointing at a tagged object
+            ;; instead of code.  Calling it then takes a PC alignment fault.
+            ;; The adjacent +FUNCALLABLE-INSTANCE-FUNCTION+ slot *is* boxed and
+            ;; correctly uses the tagged accessor.
+            (setf (%object-ref-unsigned-byte-64 new-instance +function-entry-point+)
+                  (%object-ref-unsigned-byte-64 object +function-entry-point+))
             (setf (%object-ref-t new-instance +funcallable-instance-function+)
                   (%object-ref-t object +funcallable-instance-function+)))
           (return-from transport-object

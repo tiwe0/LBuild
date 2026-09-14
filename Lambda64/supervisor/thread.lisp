@@ -644,9 +644,7 @@ Interrupts must be off and the global thread lock must be held."
                 (progn
                   (when (eql (sys.int::%atomic-fixnum-add-object (current-thread) +thread-inhibit-footholds+ -1) 1)
                     (run-pending-footholds))
-                  (debug-uart-boot-hex-line "TRACE thread-entry-function-entry"
-                                             (sys.int::%object-ref-unsigned-byte-64
-                                              function sys.int::+function-entry-point+))
+
                   ;; Avoid MULTIPLE-VALUE-LIST here during the cold boot.  Its
                   ;; expansion dynamically calls LIST, which lives in the
                   ;; demand-paged pinned area and can fault before the pager
@@ -666,7 +664,15 @@ Interrupts must be off and the global thread lock must be held."
       (thread-final-cleanup return-values))))
 
 (defun call-function-noargs-traced (function)
-  (prog1 (sys.int::%call-function-noargs function)
+  ;; MAKE-THREAD accepts (OR FUNCTION SYMBOL) and most GUI callers pass a
+  ;; symbol -- 'COMPOSITOR-THREAD, 'KEYBOARD-FORWARDER-THREAD, 'SPY and so on.
+  ;; %CALL-FUNCTION-NOARGS is a bare LDR of +FUNCTION-ENTRY-POINT+ followed by
+  ;; BLR, so handing it a symbol loads the symbol's first slot -- a tagged
+  ;; value -- and branches to it.  The thread dies with a PC alignment fault
+  ;; (ESR EC #x22) far from the call site.  FUNCALL used to do this coercion;
+  ;; the direct primitive does not, so do it here.  Coerce at call time rather
+  ;; than in MAKE-THREAD so the late binding a symbol implies is preserved.
+  (prog1 (sys.int::%call-function-noargs (sys.int::%coerce-to-callable function))
     nil))
 
 ;; This is seperate from thread-entry-trampoline so steppers can detect it.

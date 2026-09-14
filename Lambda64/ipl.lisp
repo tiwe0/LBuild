@@ -9,11 +9,28 @@
 ;; can be caught and made to produce a sensible error instead of
 ;; "serial read char not implemented"
 ;; This is undone at the end of the file.
+(defvar *ipl-interactive-debug* nil
+  "True once SWANK is accepting connections.
+
+Before that point an error has nowhere to be reported to, so PANIC and its
+register/backtrace dump on the serial line is the only diagnostic available.
+Afterwards the machine is far more useful alive: park the failing thread and
+leave every other thread -- including SWANK's listener -- running, so the
+failure can be inspected in place instead of reconstructed from a dump.")
+
 (defun ipl-debugger (condition)
   (format t "----- ERROR -----~%")
   (format t "Error during warm initialization:~%")
   (format t "~A~%" condition)
-  (mezzano.supervisor:panic (format nil "~A" condition)))
+  (finish-output)
+  (cond (*ipl-interactive-debug*
+         (format t "~&SWANK is listening on port 4005 -- parking this thread.~%")
+         (format t "Connect from the host with:  M-x slime-connect RET 127.0.0.1 RET 4005~%")
+         (format t "The rest of the system keeps running; inspect and continue there.~%")
+         (finish-output)
+         (loop (sleep 10)))
+        (t
+         (mezzano.supervisor:panic (format nil "~A" condition)))))
 (setf mezzano.debug:*global-debugger* 'ipl-debugger)
 
 ;; Fast eval mode.
@@ -159,6 +176,10 @@ Make sure there is a virtio-net NIC attached.~%")
                        (user-homedir-pathname)))
 (eval (read-from-string "(swank-loader::init)"))
 (eval (read-from-string "(swank:create-server :style :spawn :dont-close t :interface \"0.0.0.0\")"))
+;; From here on an error parks instead of halting the machine; see IPL-DEBUGGER.
+(setf *ipl-interactive-debug* t)
+(format t "~&SWANK listening on 4005. Host-side: M-x slime-connect RET 127.0.0.1 RET 4005~%")
+(finish-output)
 
 ;; And the GUI.
 (sys.int::cal "sys:source;gui;package.lisp")

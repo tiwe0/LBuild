@@ -264,6 +264,7 @@ Path(sys.argv[2]).write_text(r'''
 (defun debug-print-line (&rest things) (declare (ignore things)))
 (defun debug-uart-boot-line (&rest things) (declare (ignore things)))
 (defun debug-uart-boot-hex-line (&rest things) (declare (ignore things)))
+(defun panic (&rest things) (error "PANIC: ~{~A~^ ~}" things))
 (defun get-high-precision-timer () 0)
 (defun current-thread () *thread*)
 (defun local-cpu () :cpu)
@@ -485,14 +486,14 @@ Path(sys.argv[2]).write_text(r'''
       (closure (let ((x 1)) (lambda () x)))
       (layout (sys.int::make-layout :heap-size 3 :heap-layout #*010 :area :wired)))
   (setf (gethash compiled sys.int::*tags*) sys.int::+object-tag-function+
-        (gethash compiled sys.int::*entry-points*) 111
+        (gethash compiled sys.int::*entry-points*) 112
         (gethash closure sys.int::*tags*) 59
-        (gethash sys.int::*funcallable-instance-trampoline* sys.int::*entry-points*) 222)
-  (equal-check (funcallable-instance-entry-point compiled) 111 "direct entry")
-  (equal-check (funcallable-instance-entry-point closure) 222 "trampoline entry")
+        (gethash sys.int::*funcallable-instance-trampoline* sys.int::*entry-points*) 224)
+  (equal-check (funcallable-instance-entry-point compiled) 112 "direct entry")
+  (equal-check (funcallable-instance-entry-point closure) 224 "trampoline entry")
   (let ((object (sys.int::%allocate-funcallable-instance compiled layout)))
     (check object "funcallable allocation")
-    (equal-check (gethash object sys.int::*entry-points*) 111
+    (equal-check (gethash object sys.int::*entry-points*) 112
                  "allocated direct entry")
     (equal-check (sys.int::%object-ref-t object
                                         sys.int::+funcallable-instance-function+)

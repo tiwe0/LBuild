@@ -581,7 +581,15 @@
 (sys.int::defglobal *virtio-drivers* '())
 
 (defstruct (virtio-driver
-             (:area :wired))
+             (:area :wired)
+             ;; Positional constructor.  The keyword form materialises its
+             ;; argument vector in the general area, and %REGISTER-VIRTIO-DRIVER
+             ;; builds a driver inside SAFE-WITHOUT-INTERRUPTS: a fault there is
+             ;; page-fault-no-irqs, which %PAGE-FAULT-HANDLER refuses to service.
+             ;; The hazard is latent -- it only bites when the allocation lands
+             ;; on a page that is not yet committed, so it moves with image
+             ;; layout.  See docs/development/allocation-forbidden-contexts.md.
+             (:constructor %make-virtio-driver (name probe dev-id)))
   name
   probe
   dev-id)
@@ -609,11 +617,10 @@ Returns the new driver, or NIL when one was already registered."
         ;; redefinition rejected rather than clearing claims and probing live
         ;; transports; explicit teardown must precede any future reprobe.
         (return-from %register-virtio-driver nil)))
-    (let ((driver (make-virtio-driver
-                   :name name
-                   :probe probe-function
-                   :dev-id dev-id)))
-      (sup:debug-print-line "Registered new virtio driver " name " for device-id " dev-id)
+    (let ((driver (%make-virtio-driver name probe-function dev-id)))
+      ;; Raw UART, not DEBUG-PRINT-LINE: the latter formats through the
+      ;; allocator, which is exactly what must not happen here.
+      (sup::debug-uart-boot-line "Registered new virtio driver")
       (sup::push-wired driver *virtio-drivers*)
       driver)))
 

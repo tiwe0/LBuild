@@ -141,7 +141,17 @@
    ;; Function names may be symbols or compound SETF/CAS names.  EQUAL weak
    ;; keys support both shapes while allowing transient compound names to be
    ;; reclaimed by hosts that implement weak hash tables.
-   (%name-frefs :initform (make-weak-key-table :test 'equal)
+   ;; NOT weak-key.  Function names are either symbols or (SETF symbol) lists,
+   ;; and a list name is freshly consed at every call site.  In a weak-key
+   ;; table nothing else references that cons, so the host GC drops the entry
+   ;; the first time it runs -- which, over a multi-minute cold generation, is
+   ;; always.  A later reference then creates a second, unbound fref, and the
+   ;; image ships every (SETF ...) function silently undefined: all 37 builtin
+   ;; setf wrappers, (SETF %OBJECT-REF-T), and so on.  Symbol names survived
+   ;; only because symbols are globally reachable.  The failure surfaced as
+   ;; CALL-UNDEFINED-FUNCTION (SETF %%OBJECT-REF-UNSIGNED-BYTE-16-UNSCALED)
+   ;; from chipz while decoding a PNG.
+   (%name-frefs :initform (make-hash-table :test 'equal)
                 :reader environment-name-fref-table)
    ;; Object allocation areas for non-instances.
    (%object-area :initform (make-hash-table :weakness :key) :reader environment-object-area-table)

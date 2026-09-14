@@ -73,6 +73,37 @@ source-of-truth: code
 会自动切换到不缓冲直写路径。**不要**把该谓词扩展到"持有 VM 锁"——它会被
 `debug-write-char` 在中断上下文调用，多出来的函数调用会在未驻留的函数页上缺页。
 
+### 3b. 关中断区间读取可换页对象
+
+分配不是唯一的危险：**读取**一个未驻留的页同样致命。`%page-fault-handler` 检查
+SPSR 的中断掩码位（`#x3C0`），只要有一位置位就拒绝服务并报 `page-fault-no-irqs`。
+这与 x86-64 检查 IF 标志是同一条契约。
+
+因此关中断区间内触碰的**每一个**地址都必须已驻留，包括：
+
+- 被操作对象的页（已知）；
+- **作为参数传入的对象的页**（容易漏）；
+- 被调用函数自身的代码页。
+
+树内实例：`(setf function-reference-function)` 原本只对 fref 做 CoW 预解析，但
+`%publish-function-reference-function` 还要读 `value` 的对象头与入口点，而 `value`
+住在可换页的函数区。系统运行足够久、这些页被换出后，`ENSURE-GENERIC-FUNCTION`
+在 `LOAD-LLF` 中发布函数引用时就会踩中，表现为 wired 栈上的 `page-fault-no-irqs`。
+
+**修法**：进入区间之前强制读取。注意**纯读取可能被编译器消除**——fref 那处用自赋值
+（写操作）天然免疫，但对函数对象不能写。可用一个恒假的比较把读取变成不可消除的副作用，
+顺带充当健全性检查：
+
+```lisp
+(when (and value
+           (%object-of-type-p value +object-tag-function+)
+           (eql (%object-ref-unsigned-byte-64 value +function-entry-point+) 0))
+  (error "Function ~S has a null entry point." value))
+```
+
+**这类故障只在换页压力下出现**，所以它不会在短程冒烟测试里暴露，而会在第四阶段编译
+大型依赖树几百个 form 之后才第一次出现。排查时不要被"之前跑了很久都没事"误导。
+
 ### 4. 浮点与 bignum 装箱
 
 `(/ a (float b))`、`(incf *gc-time* seconds)` 都会分配。受限窗口内只用定点算术，

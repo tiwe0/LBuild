@@ -54,6 +54,10 @@ source-of-truth: code
 
 supervisor 与运行时中禁止分配内存的上下文、隐式分配的四条来源及树内已有的机器检查，见 [不可分配上下文](allocation-forbidden-contexts.md)。
 
+客户机 panic 只给出一行寄存器时，如何解码 ESR/SPSR/FAR、用地址区间判断对象种类、
+读懂 wired 栈边界，以及本仓库反复奏效的几条排查手法（否定结论、宿主侧复现、
+交叉编译对照汇编、宿主抓包），见 [从 ARM64 panic 反推根因](reading-arm64-panics.md)。
+
 ## 调试证据
 
 - 保存完整宿主构建日志，不只截取最后一行。

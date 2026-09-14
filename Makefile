@@ -5,7 +5,7 @@ FILE_SERVER_IP ?= 10.0.2.2
 LAMBDA64_DIR ?= Lambda64
 IMAGE ?= lambda64.image
 QEMU_SYSTEM_AARCH64 ?= qemu-system-aarch64
-MEMORY ?= 2G
+MEMORY ?= 4G
 CPUS ?= 4
 RESOLUTION ?= 1280x800
 QUICKLISP_SETUP ?= $(or $(firstword $(wildcard $(HOME)/quicklisp/setup.lisp $(HOME)/.quicklisp/setup.lisp)),$(HOME)/quicklisp/setup.lisp)
@@ -164,7 +164,11 @@ kvm-arm64:
 
 hvf: hvf-arm64
 hvf-arm64:
-	$(QEMU_SYSTEM_AARCH64) -machine virt,highmem=off -accel hvf -cpu host $(QEMU_COMMON_ARGS)
+	@# highmem stays enabled: highmem=off caps guest RAM below the 4GB line
+	@# ("Addressing limited to 32 bits"), and stage-four dependency loading
+	@# needs more than that to avoid paging out function pages -- a no-IRQ
+	@# region that touches one dies with page-fault-no-irqs.
+	$(QEMU_SYSTEM_AARCH64) -machine virt -accel hvf -cpu host $(QEMU_COMMON_ARGS)
 
 clean:
 	rm -rf home/.cache/common-lisp/ home/.slime/ home/asdf/build/

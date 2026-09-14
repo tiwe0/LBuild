@@ -116,8 +116,16 @@
                          :source current-value
                          :destination result))))
 
+;; :HAS-WRAPPER NIL -- VALID-FUNCTION-NAME-P admits only (SETF x) and (CAS x),
+;; so a (DCAS x) wrapper is not a callable function name.  Generating one put an
+;; fref named (DCAS %MEMREF-T) into the image, which COLD-START's ECASE over
+;; compound function names rejects outright.  x86-64 exposes its double-width
+;; CAS through symbol-named builtins (%DCAS-CONS, %DCAS-OBJECT) and so never
+;; had the problem.  Callers reach this through the CAS macro's expansion,
+;; which is always inlined; there is no full-call path to fall back to.
 (define-builtin (sys.int::dcas sys.int::%memref-t)
-    ((old-1 old-2 new-1 new-2 address index) (:z result-1 result-2))
+    ((old-1 old-2 new-1 new-2 address index) (:z result-1 result-2)
+     :has-wrapper nil)
   (let ((address-unboxed (make-instance 'ir:virtual-register :kind :integer))
         (generated-address (make-instance 'ir:virtual-register :kind :integer))
         (current-1 (make-instance 'ir:virtual-register :kind :integer))

@@ -86,7 +86,7 @@ Arguments to FUNCTION:
     (flet ((consume (&optional (errorp t))
              (when (>= position length)
                (when errorp
-                 (mezzano.supervisor:panic "Corrupt GC info in function " function-to-inspect))
+                 (mezzano.supervisor::panic "Corrupt GC info in function " function-to-inspect))
                (return-from map-function-gc-metadata))
              (prog1 (memref-unsigned-byte-8 address position)
                (incf position))))
@@ -299,15 +299,30 @@ Arguments to FUNCTION:
   ;; Keep the raw entry point in sync with the boxed target. Compiled
   ;; functions can be entered directly; closures and nested funcallable
   ;; instances require the trampoline to load their environment/target.
-  (setf (%object-ref-unsigned-byte-64
-         funcallable-instance +function-entry-point+)
-        ;; Package-qualified: this file is MEZZANO.INTERNALS while the helper
-        ;; is defined in MEZZANO.RUNTIME (runtime/allocate.lisp).  Unqualified,
-        ;; it resolves to a distinct MEZZANO.INTERNALS symbol that is never
-        ;; defined, and the only warning is lost in the existing baseline.
-        (mezzano.runtime::funcallable-instance-entry-point value)
-        (%object-ref-t funcallable-instance +funcallable-instance-function+)
-        value))
+  ;; Same contract as %ALLOCATE-FUNCALLABLE-INSTANCE: reject a tagged value
+  ;; before it is stored, so the origin is visible instead of a later PC
+  ;; alignment fault in an unrelated thread.
+  ;; Package-qualified: this file is MEZZANO.INTERNALS while the helper is
+  ;; defined in MEZZANO.RUNTIME (runtime/allocate.lisp).  Unqualified, it
+  ;; resolves to a distinct MEZZANO.INTERNALS symbol that is never defined, and
+  ;; the only warning is lost in the existing baseline.
+  (let ((entry (mezzano.runtime::funcallable-instance-entry-point value)))
+    ;; Same contract as %ALLOCATE-FUNCALLABLE-INSTANCE: an entry point is a code
+    ;; address and must be 4-byte aligned.  Reject a tagged value here, where
+    ;; VALUE is still in hand, rather than as a PC alignment fault in whatever
+    ;; thread eventually calls the result.
+    (when (not (zerop (logand entry 3)))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "BAD-SETF-FI-SOURCE" (sys.int::lisp-object-address value))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "BAD-SETF-FI-SOURCE-TAG" (%object-tag value))
+      (mezzano.supervisor::debug-uart-boot-hex-line "BAD-SETF-FI-ENTRY" entry)
+      (mezzano.supervisor::panic "Misaligned funcallable-instance entry point"))
+    (setf (%object-ref-unsigned-byte-64
+           funcallable-instance +function-entry-point+)
+          entry
+          (%object-ref-t funcallable-instance +funcallable-instance-function+)
+          value)))
 
 (defun compiled-function-p (object)
   (when (functionp object)

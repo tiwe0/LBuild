@@ -294,7 +294,7 @@ of the wired freelist into a bounded per-allocation cost."
                   with curr = (svref bins existing-bin)
                   do
                     (when (not curr)
-                      (mezzano.supervisor:panic "Can't find freelist entry " final-entry " in bin " existing-bin))
+                      (mezzano.supervisor::panic "Can't find freelist entry " final-entry " in bin " existing-bin))
                     (when (eql curr final-entry)
                       (cond (prev
                              (setf (sys.int::memref-t prev 1) (sys.int::memref-t final-entry 1)))
@@ -650,7 +650,7 @@ of the wired freelist into a bounded per-allocation cost."
 
 (defun %allocate-object (tag data size area)
   (when sys.int::*gc-in-progress*
-    (mezzano.supervisor:panic "Allocating during GC!"))
+    (mezzano.supervisor::panic "Allocating during GC!"))
   (log-allocation-profile-entry size)
   (let ((words (1+ size)))
     (when (oddp words)
@@ -672,7 +672,7 @@ of the wired freelist into a bounded per-allocation cost."
 
 (defun sys.int::cons-in-area (car cdr &optional area)
   (when sys.int::*gc-in-progress*
-    (mezzano.supervisor:panic "Allocating during GC!"))
+    (mezzano.supervisor::panic "Allocating during GC!"))
   (ecase area
     ((nil)
      (cons car cdr))
@@ -711,7 +711,7 @@ of the wired freelist into a bounded per-allocation cost."
 
 (defun slow-cons (car cdr)
   (when sys.int::*gc-in-progress*
-    (mezzano.supervisor:panic "Allocating during GC!"))
+    (mezzano.supervisor::panic "Allocating during GC!"))
   ;; During first-boot cold initialization the dynamic cons area is still
   ;; demand-mapped and invoking the normal expansion/GC path can trap through
   ;; the syscall entry before the runtime is ready.  Keep bootstrap conses in
@@ -786,13 +786,22 @@ of the wired freelist into a bounded per-allocation cost."
     ;; bootstrap diagnostic: an odd entry here means a callable object (often
     ;; a still-unresolved FREF) was copied as if it were a compiled function,
     ;; which later presents as an address-size fault at PC=object+tag.
-    (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
-               mezzano.supervisor::*cold-boot-in-progress*
-               (not (zerop (logand entry-point 3))))
+    ;; Unconditional: an entry point is a code address and must be 4-byte
+    ;; aligned.  A tagged value here means the source function's own entry
+    ;; point slot was already corrupt, and the only later symptom is a PC
+    ;; alignment fault (ESR EC #x22) in whichever thread eventually calls the
+    ;; result -- by then the origin is long gone.  Report it where it is
+    ;; introduced.  This check was previously gated on *COLD-BOOT-IN-PROGRESS*
+    ;; and so never ran during stage-four dependency loading, which is exactly
+    ;; when it was needed.
+    (when (not (zerop (logand entry-point 3)))
       (mezzano.supervisor::debug-uart-boot-hex-line
-       "TRACE bad-closure-source" (sys.int::lisp-object-address function))
+       "BAD-CLOSURE-SOURCE" (sys.int::lisp-object-address function))
       (mezzano.supervisor::debug-uart-boot-hex-line
-       "TRACE bad-closure-entry" entry-point))
+       "BAD-CLOSURE-SOURCE-TAG" (sys.int::%object-tag function))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "BAD-CLOSURE-ENTRY" entry-point)
+      (mezzano.supervisor::panic "Misaligned closure entry point"))
     (setf
      ;; Entry point
      (sys.int::%object-ref-unsigned-byte-64 closure sys.int::+function-entry-point+) entry-point
@@ -1068,13 +1077,16 @@ of the wired freelist into a bounded per-allocation cost."
                                   (sys.int::layout-heap-size layout)
                                   (sys.int::layout-area layout)))
         (entry-point (funcallable-instance-entry-point function)))
-    (when (and (boundp 'mezzano.supervisor::*cold-boot-in-progress*)
-               mezzano.supervisor::*cold-boot-in-progress*
-               (not (zerop (logand entry-point 3))))
+    ;; See the closure path above: check unconditionally so the corruption is
+    ;; reported at its source rather than as a PC alignment fault later.
+    (when (not (zerop (logand entry-point 3)))
       (mezzano.supervisor::debug-uart-boot-hex-line
-       "TRACE bad-funcallable-source" (sys.int::lisp-object-address function))
+       "BAD-FUNCALLABLE-SOURCE" (sys.int::lisp-object-address function))
       (mezzano.supervisor::debug-uart-boot-hex-line
-       "TRACE bad-funcallable-entry" entry-point))
+       "BAD-FUNCALLABLE-SOURCE-TAG" (sys.int::%object-tag function))
+      (mezzano.supervisor::debug-uart-boot-hex-line
+       "BAD-FUNCALLABLE-ENTRY" entry-point)
+      (mezzano.supervisor::panic "Misaligned funcallable-instance entry point"))
     (setf
      ;; Compiled functions can be entered directly. Closures and nested
      ;; funcallable instances still require the trampoline to load their
