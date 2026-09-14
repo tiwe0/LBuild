@@ -2,7 +2,7 @@
 
 # Lambda64
 
-**An operating system written entirely in Common Lisp — kernel, drivers, compiler, and GUI.**
+**An operating system implemented entirely in Common Lisp: kernel, drivers, compiler, and graphical environment.**
 
 [![CI](https://github.com/tiwe0/LBuild/actions/workflows/ci.yml/badge.svg)](https://github.com/tiwe0/LBuild/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
@@ -15,20 +15,18 @@
 
 ---
 
-Lambda64 is a from-scratch operating system in which every layer — the
-supervisor, the device drivers, the memory manager, the compiler, and the
-window system — is Common Lisp. There is no C runtime underneath: 334 Lisp
-source files and no `.c` file at all. The only non-Lisp component is the KBoot
-shim that hands control to the image.
+Lambda64 is an operating system implemented entirely in Common Lisp. The
+supervisor, device drivers, memory manager, compiler, and window system are all
+written in the language. The source tree contains 334 Lisp files and no C; the
+only non-Lisp component is the KBoot shim, which transfers control to the image.
 
-It is a continuation of [Mezzano](https://github.com/froggey/Mezzano), rebuilt
-around **AArch64 as the primary target** and carried to a working graphical
-desktop there.
+The project continues [Mezzano](https://github.com/froggey/Mezzano), with
+AArch64 established as the primary target and brought to a functioning
+graphical desktop on that architecture.
 
-Because the compiler runs inside the running system, Lambda64 can rewrite,
-recompile, and reload any part of itself without rebooting — the property that
-makes it our platform for an **AI-native operating system**. See
-[Why Lisp](#why-lisp).
+The compiler is part of the running image. Any component may therefore be
+redefined, recompiled, and reloaded without restarting the system, which is the
+basis for the project's stated direction. See [Why Lisp](#why-lisp).
 
 ## Features
 
@@ -36,27 +34,28 @@ makes it our platform for an **AI-native operating system**. See
 | --- | --- |
 | **Kernel** | Pure Common Lisp supervisor: paging, scheduling, SMP, interrupts |
 | **Memory** | Generational copying collector with young/old semispaces |
-| **Compiler** | Self-hosting, SSA-based, with AArch64 and x86-64 backends |
-| **Language** | Full Common Lisp: CLOS and the MOP, conditions and restarts, macros, reader, `format` |
-| **Persistence** | Image snapshots — the entire live system is written to disk and resumes where it stopped |
+| **Compiler** | Self-hosting and SSA-based, with AArch64 and x86-64 backends |
+| **Language** | Complete Common Lisp: CLOS and the MOP, conditions and restarts, macros, reader, `format` |
+| **Persistence** | Image snapshots: the complete running system is written to disk and resumed from that state |
 | **Graphics** | Compositor, window management, font rendering, AArch64 SIMD blitter |
 | **Network** | Ethernet, ARP, IP, TCP, UDP, DHCP, DNS, HTTP |
 | **Filesystems** | ext4, FAT32, local, remote, HTTP |
 | **Drivers** | virtio block / net / GPU / input, USB EHCI with HID keyboard and mouse, RTL8168 Ethernet, Intel GMA graphics, Intel HDA audio |
-| **Live development** | SWANK — connect SLIME to the running system and edit it in place |
+| **Live development** | SWANK, permitting SLIME to connect to and modify the running system |
 
 ### Applications
 
-A REPL (basic and fancy), the **med** editor, a file manager, an image viewer,
-an IRC client, a telnet client, a Mandelbrot explorer, a memory monitor, a
-system inspector (`peek`), an event spy, and a settings panel — all running on
-the compositor. [McCLIM](https://github.com/froggey/McCLIM) is included for
-building more.
+The distribution includes two REPLs, the `med` editor, a file manager, an image
+viewer, an IRC client, a telnet client, a Mandelbrot viewer, a memory monitor, a
+system inspector (`peek`), an event tracer, and a settings panel, all hosted by
+the compositor. [McCLIM](https://github.com/froggey/McCLIM) is provided for
+developing additional applications.
 
 ## What Lambda64 adds over Mezzano
 
-The headline is that **AArch64 went from not booting to a usable desktop**.
-Beyond that, in eight areas:
+The principal result is that AArch64 progressed from a non-booting state to a
+functioning desktop environment. The complete set of changes falls into eight
+areas.
 
 <details open>
 <summary><b>Boot and bring-up (AArch64)</b></summary>
@@ -176,7 +175,7 @@ Beyond that, in eight areas:
 
 </details>
 
-## Getting started
+## Installation and use
 
 ### Prerequisites
 
@@ -200,18 +199,19 @@ make asdf          # build ASDF from the in-tree source
 make cold-image    # cross-compile lambda64.image
 ```
 
-The result is `lambda64.image`: a 5 GiB sparse store that occupies about 590 MB
-on disk.
+The build produces `lambda64.image`, a sparse store with a nominal capacity of
+5 GiB that occupies approximately 590 MB on disk.
 
 ### Run
 
-Start the host file server in one terminal — the guest compiles against it:
+The guest compiles its remaining systems against a host file server, which must
+be running before the guest is started:
 
 ```sh
 make run-file-server
 ```
 
-And boot in another:
+The system is then booted with one of the following targets:
 
 | Command | Accelerator | Platform |
 | --- | --- | --- |
@@ -225,15 +225,16 @@ Adjust with `MEMORY`, `CPUS`, `RESOLUTION`, and `FILE_SERVER_IP`:
 make hvf-arm64 MEMORY=8G CPUS=8 RESOLUTION=1920x1080
 ```
 
-**The first boot takes about twenty minutes** and the screen stays black until
-the graphics transport is claimed near the end. Compiled `.llf` files are
-written back to `home/`, so later boots reach the desktop in a few minutes.
+The first boot requires approximately twenty minutes, during which the display
+remains inactive until the graphics transport is claimed late in the
+initialization sequence. Compiled `.llf` files are written back to `home/`;
+subsequent boots reuse them and reach the desktop within a few minutes.
 
 ### Live development
 
-Once the system reaches SWANK it accepts a connection on the forwarded port, and
-any error after that point parks the failing thread rather than halting the
-machine, so it can be inspected in place:
+Once initialization reaches SWANK, the system accepts a connection on the
+forwarded port. Errors raised after that point suspend the failing thread rather
+than halting the machine, allowing the failure to be examined in place:
 
 ```
 M-x slime-connect RET 127.0.0.1 RET 4005
@@ -259,9 +260,9 @@ QEMU -kernel KBoot               loads the image from virtio-blk
     └─ snapshot                  the live system is written back to disk
 ```
 
-Stage four is what makes the first boot long and every later boot short. The
-snapshot at the end is why the system resumes where it stopped rather than
-starting cold again.
+Stage four accounts for the duration of the first boot and for the brevity of
+subsequent ones. The concluding snapshot enables the system to resume from its
+previous state rather than initializing from cold.
 
 ### Verified environment
 
@@ -272,82 +273,90 @@ starting cold again.
 | Accelerator | HVF (`-machine virt -cpu host`); TCG exercised by the test suite |
 | Guest | 4 GB RAM, 4 CPUs, 1280×800 |
 
-`highmem` must stay enabled and memory must be at least 4 GB: stage four needs
-address space above the 4 GB line, and below it the guest reports
+`highmem` must remain enabled and guest memory must be at least 4 GB. Stage four
+requires address space above the 4 GB boundary; below it, the guest reports
 `Addressing limited to 32 bits`.
 
-KVM on Linux and the inherited x86-64 target are not part of this verification.
+KVM on Linux and the inherited x86-64 target are outside the scope of this
+verification.
 
 ## Why Lisp
 
 A Lisp system is self-describing and self-modifying by construction. The
-compiler is part of the running image, code is data, and any function, class, or
-method can be redefined while the system runs. In Lambda64 this reaches all the
-way down: the scheduler and the device drivers are ordinary Lisp objects that
-can be recompiled from a REPL attached to the live machine.
+compiler forms part of the running image, program text is data, and functions,
+classes, and methods may be redefined while the system executes. In Lambda64
+this property extends to the lowest levels: the scheduler and the device drivers
+are ordinary Lisp objects and can be recompiled from a REPL attached to the
+running machine.
 
-That property is the point. An operating system that can safely rewrite its own
-components at runtime is the natural substrate for one that **evolves itself**,
-with a model in the loop proposing, compiling, and validating changes against a
-system that never has to stop. Building an **AI-native operating system** on
-that foundation is the project's next objective.
+This is the project's principal rationale. An operating system capable of
+safely rewriting its own components at runtime is a suitable substrate for a
+self-evolving system, in which a model participates in proposing, compiling, and
+validating modifications against an instance that need not be stopped.
+Constructing an AI-native operating system on that foundation is the project's
+next objective.
 
-To be clear about status: that work has not started. The features listed above
-are what exists today.
+This work has not yet begun. The capabilities described above are those
+presently implemented.
 
 ## Why ARM64
 
-**A simpler instruction set.** AArch64 is fixed-width and regular, with none of
-x86's variable-length encoding, prefix soup, or legacy modes. For a compiler
-backend that must be written, debugged, and reasoned about in Lisp, that is a
-direct reduction in the amount of machine complexity the system has to model.
+AArch64 uses a fixed-width, regular encoding and has none of the
+variable-length instruction forms, prefix sequences, or legacy operating modes
+of x86. For a compiler backend that must be implemented, debugged, and reasoned
+about in Lisp, this represents a direct reduction in the machine complexity the
+system is required to model.
 
-**Wider hardware reach.** ARM64 spans phones, tablets, single-board computers,
-laptops, and servers. An OS that targets it first can follow the hardware where
-it actually is, rather than being confined to the desktop.
+AArch64 additionally spans a wider range of hardware, from mobile devices and
+single-board computers to laptops and servers. Targeting it first allows the
+system to follow current hardware deployment rather than remaining confined to
+desktop platforms.
 
 ## Contributing
 
-Contributions are welcome. Before opening a pull request:
+The following must pass before a pull request is submitted:
 
 ```sh
 make test-fast                 # host contract tests + codegen regression
 python3 scripts/check-docs.py  # documentation validation
 ```
 
-Guidelines:
+Requirements for contributed changes:
 
-- **Test behaviour, not text.** Contract tests here assert semantics and are
-  checked by mutation — a test that passes against deliberately broken code is
-  a bug in the test.
-- **Respect allocation contexts.** Code running with the world stopped, with
-  interrupts masked, or holding the allocator lock may not allocate. See
+- **Contract tests must assert semantics rather than source text.** Tests in
+  this repository are verified by mutation: a test that continues to pass
+  against deliberately broken code is itself defective.
+- **Allocation constraints must be observed.** Code executing with the world
+  stopped, with interrupts masked, or while holding the allocator lock must not
+  allocate. Refer to
   [allocation-forbidden contexts](docs/development/allocation-forbidden-contexts.md).
-- **Follow the house style.** See [Common Lisp style](docs/development/common-lisp-style.md).
-- **Explain why in commit messages.** What changed is visible in the diff; why
-  it changed is not.
+- **Source must conform to the project style.** Refer to
+  [Common Lisp style](docs/development/common-lisp-style.md).
+- **Commit messages must state the rationale for a change.** The content of a
+  change is evident from the diff; its justification is not.
 
-Larger changes are tracked in the
+Substantial changes are tracked in the
 [modernization roadmap](docs/modernization/roadmap.md) and the
 [debt register](docs/modernization/debt-register.md). Engineering documentation
-starts at [`docs/README.md`](docs/README.md).
+begins at [`docs/README.md`](docs/README.md).
 
 ## Acknowledgements
 
-Lambda64 exists because of two projects:
+This project derives from two others:
 
-- **[Mezzano](https://github.com/froggey/Mezzano)** by Sylvia Harrington and
-  contributors — the operating system this work continues. The architecture,
-  the compiler, the object model, and the graphics stack are theirs.
-- **[MBuild](https://github.com/froggey/MBuild)** — the build system this
-  repository is forked from.
+- **[Mezzano](https://github.com/froggey/Mezzano)**, by Sylvia Harrington and
+  contributors, is the operating system that this work continues. Its
+  architecture, compiler, object model, and graphics stack are the foundation
+  of Lambda64.
+- **[MBuild](https://github.com/froggey/MBuild)** is the build system from which
+  this repository is forked.
 
-Thanks also to the maintainers of the Common Lisp libraries vendored under
-`home/`, listed with their origins in
+Acknowledgement is also due to the maintainers of the Common Lisp libraries
+distributed under `home/`, which are listed with their origins in
 [vendored-libraries.md](docs/reference/vendored-libraries.md).
 
-Inherited package and variable names may still read `mezzano`. Those are
-compatibility identifiers.
+Inherited package and variable names may still contain the string `mezzano`.
+These are compatibility identifiers and do not denote current naming.
 
 ## License
 
