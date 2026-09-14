@@ -10,3 +10,8 @@
 /test-results/
 /local.mk
 .DS_Store
+
+# home/ 下的生成物(make clean 会清理这些);库源码本身现已入库
+/home/.cache/
+/home/.slime/
+/home/asdf/build/

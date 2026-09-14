@@ -1,0 +1,8 @@
+# 归档的第三方源码按字节原样保存。
+#
+# core.autocrlf=input 会在入库时剥掉 CR,而这里有些文件的 CRLF 本身就是被测
+# 对象 —— flexi-streams 的 test/*_crlf.txt 夹具就是用来验证 CRLF 解码的,
+# 归一化会让它们静默失效;cl-pdf 的 AFM 字体度量文件同理。
+#
+# 冻结这些文件正是归档的目的,所以这里关闭全部文本转换。
+* -text

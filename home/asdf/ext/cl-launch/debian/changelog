@@ -1,0 +1,912 @@
+cl-launch (4.1.4-1) unstable; urgency=low
+
+  * Don't forget to install dispatch.lisp as source!
+  * Minor tweaks for dispatch.lisp.
+  * Minor documentation update.
+  * Update LispWorks support for LW 7.0.0
+  * Remove support for ASDF < 3.1.2
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 21 Jul 2015 23:31:13 -0400
+
+cl-launch (4.1.3-1) unstable; urgency=low
+
+  * New options --system-main and --dispatch-system
+  * updated manual and release script
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 22 Apr 2015 15:01:28 -0400
+
+cl-launch (4.1.2-2) unstable; urgency=low
+
+  * Multiple entry binaries with --dispatched-entry,
+    mostly compatible with Xach's buildapp.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 01 Apr 2015 01:09:11 -0400
+
+cl-launch (4.1.1-1) unstable; urgency=low
+
+  * Portability: better fallbacks for implementations without a recent ASDF,
+    better support for ecl_bytecodes, make cl-shim work on BSD.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 02 Mar 2015 17:58:34 -0500
+
+cl-launch (4.1-2) unstable; urgency=low
+
+  * Convert help to markdown, extract man page from it.
+  * Fix support for :require dependencies
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 19 Aug 2014 22:45:10 -0400
+
+cl-launch (4.0.8-1) unstable; urgency=low
+
+  * Improve --load dependencies so they depend on previously loaded systems.
+    This generalizes to all platforms the technique so far used only by ECL.
+  * Integrate prototypical examples in the head of the manual.
+  * Fix various bugs in some cases when dumping images.
+  * Various small tweaks.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 01 Aug 2014 22:06:37 -0400
+
+cl-launch (4.0.7-1) unstable; urgency=low
+
+  * Give Quicklisp a chance to download dependencies:
+    use ql:quickload instead of asdf:load-system.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 24 Jul 2014 15:42:02 -0400
+
+cl-launch (4.0.6-1) unstable; urgency=low
+
+  * Separate --load and --file; fix --file - feature.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 14 Jun 2014 03:25:27 -0400
+
+cl-launch (4.0.5-1) unstable; urgency=low
+
+  * Fix issues when dumping image on ECL: handle --eval correctly,
+    avoid a costly initialization of source-registry when unnecessary.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 13 Jun 2014 13:32:46 -0400
+
+cl-launch (4.0.4-1) unstable; urgency=low
+
+  * Try even harder to load ASDF.
+  * Update documentation, version numbers, etc. Improve release.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 26 Apr 2014 12:36:51 -0400
+
+cl-launch (4.0.3-1) unstable; urgency=low
+
+  * ~/common-lisp/ not ~/cl/ is where ASDF 3.1 standardizes
+    the location of per-user CL software.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 23 Mar 2014 18:13:21 -0400
+
+cl-launch (4.0.2.2-1) unstable; urgency=low
+
+  * Package control via --package and --system-package
+  * --entry is now a variant of --restart, not of --init.
+  * Fixes for ECL, LispWorks.
+  * Tests moved aside, which reduces script size by over 10%.
+  * ARGV0 support, in conjunction with ASDF 3.1.0.87.
+  * Documentation updated, as well as TODO file.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 03 Mar 2014 22:03:38 -0500
+
+cl-launch (4.0.1.1-3) unstable; urgency=low
+
+  * Speed up startup time by not upgrading ASDF unless needed.
+  * Fix 4.0.0 bugs: support old implementations with older ASDF;
+    unbreak working from cl-launch dumped image.
+  * Add alias -E for --entry.
+  * Eat our own dogfood with a CL release script.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 28 Feb 2014 18:28:26 -0500
+
+cl-launch (4.0.0-1) unstable; urgency=low
+
+  * Build with --eval --require --file --system in order of appearance.
+    No more limitation to one optional file, one optional system.
+    Note that --eval is before dump, --init is after dump.
+  * Unix interpreter style invocation: /usr/bin/cl script arguments...
+  * Require ASDF3 and its UIOP. No more headbanging with ASDF2.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 27 Feb 2014 16:49:30 -0500
+
+cl-launch (3.22.1-1) unstable; urgency=low
+
+  * Tweak to hush ASDF upgrade. Minor edit of documentation.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 16 May 2013 01:22:49 -0400
+
+cl-launch (3.22-1) unstable; urgency=low
+
+  * Release of cl-launch to match ASDF 3.0.0
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 16 May 2013 01:22:49 -0400
+
+cl-launch (3.019-1) unstable; urgency=low
+
+  * Use TMPDIR, not TMP.
+  * Ensure directories from getenv or not read as file pathnames.
+  * Preliminary support for MKCL
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 15 Oct 2012 19:49:12 -0400
+
+cl-launch (3.018-1) unstable; urgency=low
+
+  * Work with the newest SBCL's sb-ext:exit replacing sb-ext:quit.
+  * Document that GCL is dead, and how to produce a LispWorks image.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 14 May 2012 14:05:33 -0400
+
+cl-launch (3.017-1) unstable; urgency=low
+
+  * let cl-launch work with XCVB even when asdf.asd isn't installed.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 03 Mar 2012 21:19:14 -0500
+
+cl-launch (3.016-1) unstable; urgency=low
+
+  * More fixes for ABCL, CLISP, ECL, GCL.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 03 Mar 2012 21:18:55 -0500
+
+cl-launch (3.015-1) unstable; urgency=low
+
+  * CLISP: don't (setf *source-file-types* nil custom:*compiled-file-types nil)
+    anymore, because it prevents (require "linux") from working.
+  * ASDF: it's best to always (asdf:load-system :asdf) as soon as we have ASDF2
+    so refactor load-asdf accordingly.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 18 Oct 2011 19:29:03 -0400
+
+cl-launch (3.014-1) unstable; urgency=low
+
+  * XCL now has --noinform, use it!
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 29 Sep 2011 21:57:08 -0400
+
+cl-launch (3.013-2) unstable; urgency=low
+
+  * Bring it to the latest debian standards
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 29 Sep 2011 21:57:08 -0400
+
+cl-launch (3.013-1) unstable; urgency=low
+
+  * Gratuitous upgrade to achieve a patchless debian package.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 29 Sep 2011 20:29:59 -0400
+
+cl-launch (3.012-1) unstable; urgency=low
+
+  * Simple optimization assuming recentish CMUCL.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 26 Sep 2011 17:53:04 -0400
+
+cl-launch (3.011-1) unstable; urgency=low
+
+  * CCL now has standalone applications!
+  * Use (require "asdf") instead of (require :asdf) because of CLISP.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 07 Jun 2011 18:09:00 -0400
+
+cl-launch (3.010-1) unstable; urgency=low
+
+  * --final argument (in 3.009) allows to run a form
+   *before* the image is dumped. To do the right thing on ECL,
+   you probably want to use #. to do at read-time
+   things that must be done while building.
+
+  * Have cl-launch.asd depend on ASDF 2.015. Actually,
+    ASDF must be upgraded to 2.015 *before* anything that
+    system that depends on ASDF and relies on any ASDF extensions
+    is loaded.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 31 May 2011 15:02:23 -0400
+
+cl-launch (3.008-1) unstable; urgency=low
+
+  * Always upgrade ASDF before use.
+    Avoids horrible bugs due to ASDF being upgraded while being used.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 13 Apr 2011 01:08:53 -0400
+
+cl-launch (3.007-1) unstable; urgency=low
+
+  * Support XCL (requires ASDF 2.014.2)
+  * Fix $abcl -> $ABCL in ABCL support.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 31 Mar 2011 10:53:35 -0400
+
+cl-launch (3.006-1) unstable; urgency=low
+
+  * Remove some debugging output left by mistake.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 20 Mar 2011 13:54:26 -0400
+
+cl-launch (3.005-1) unstable; urgency=low
+
+  * Fix print_lisp_setup, broken by recent ASDF2-related changes.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 04 Nov 2010 14:52:10 -0400
+
+cl-launch (3.004-1) unstable; urgency=low
+
+  * Fix support for ABCL at 0.22.0
+  * Be ready for ASDF 2.010 as it requires absolute pathnames in source registry.
+  * Avoid some warnings in allegro
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 21 Oct 2010 13:49:59 -0700
+
+cl-launch (3.003-1) unstable; urgency=low
+
+  * Don't try to load ASDF when not needed. When needed, follow XDG.
+  * Also try to fix ECL.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 23 Sep 2010 14:10:39 -0400
+
+cl-launch (3.002-1) unstable; urgency=low
+
+  * Fix CLISP support broken by bad editing in 3.001.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 17 Sep 2010 17:43:24 -0400
+
+cl-launch (3.001-1) unstable; urgency=low
+
+  * Add limited ABCL and SCL support.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 17 Aug 2010 14:40:59 -0400
+
+cl-launch (3.000-1) unstable; urgency=low
+
+  * Release cl-launch 3 to work with ASDF 2.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 09 Jun 2010 16:30:15 -0400
+
+cl-launch (2.907-1) unstable; urgency=low
+
+  * eliminate a warning when compiling with ECL.
+  * simplify the hash bang form.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 05 May 2010 11:22:24 -0400
+
+cl-launch (2.906-2) unstable; urgency=low
+
+  * Update debian package information
+  * Switch to dpkg-source 3.0 (quilt) format
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 29 Apr 2010 12:30:34 -0400
+
+cl-launch (2.906-1) unstable; urgency=low
+
+  * improve support for LispWorks and Allegro.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 29 Apr 2010 10:03:26 -0400
+
+cl-launch (2.905-1) unstable; urgency=low
+
+  * don't import find-system, use asdf:find-system.
+  * shuffle code around to make ecl and gcl happy:
+    ecl won't load asdf.lisp, only a compiled version, so oblige.
+    gcl 2.6 happy w/o asdf.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 28 Apr 2010 20:24:46 -0400
+
+cl-launch (2.904-1) unstable; urgency=low
+
+  * correctly hush cl_fragment in all cases -- YEAH!
+  * require ASDF 1.702.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 15 Apr 2010 22:33:35 -0400
+
+cl-launch (2.903-1) unstable; urgency=low
+
+  * play better with recent XCVB by depending on ASDF 2.
+  * better verbose treatment when loading from stream.
+  * depend on ASDF 1.677.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 14 Apr 2010 02:13:27 -0400
+
+cl-launch (2.902-1) unstable; urgency=low
+
+  * ASDF 2 tweak: have cl-launch.asd depend on asdf.asd to avoid asdf upgrade nightmare.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 03 Apr 2010 00:24:55 -0400
+
+cl-launch (2.901-1) unstable; urgency=low
+
+  * ASDF 2 support: add --source-registry, deprecate --path and co.
+  * Fix ASDF loading again (dolist has an implicit block nil).
+  * Update tests.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 19 Mar 2010 00:59:49 -0400
+
+cl-launch (2.900-1) unstable; urgency=low
+
+  * New CL-Launch, to be used with ASDF 2, and dropping support for ASDF 1.
+    This preliminary version is called 2.900.
+    TODO: add proper support for source-registry, clean things up, etc.
+    When ASDF 2 is released, we should release cl-launch 3.000 with it.
+    Maybe also take heed of Xach's http://www.xach.com/lisp/buildapp/
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 18 Mar 2010 22:47:42 -0400
+
+cl-launch (2.36-1) unstable; urgency=low
+
+  * Note that c-l-c's support for ECL is fixed in 7.0.
+  * Recommend c-l-c 7.0 in the debian control.
+  * disable output redirection with asdf2 (has its own system, AOT).
+  * Reformat loops
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 04 Feb 2010 01:19:39 -0500
+
+cl-launch (2.35-1) unstable; urgency=low
+
+  * Avoid some potential warnings with *asdf-path*: don't refer to a special
+    in the non-toplevel form where I'm defining it.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 17 Nov 2009 13:54:39 -0500
+
+cl-launch (2.34-1) unstable; urgency=low
+
+  * in exclude-from-cache, ignore empty strings as well as NILs
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 09 Nov 2009 22:34:28 -0500
+
+cl-launch (2.33-1) unstable; urgency=low
+
+  * Fixed ECL support. Passes full 234 tests with the latest 9.11.1 from CVS:
+        cl-launch -l ecl -B tests
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 09 Nov 2009 09:46:41 -0500
+
+cl-launch (2.32-1) unstable; urgency=low
+
+  * better debugging for :load
+  * TODO: fix ecl which has regressed since 0.x
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 08 Nov 2009 14:53:13 -0500
+
+cl-launch (2.31-1) unstable; urgency=low
+
+  * modify resume so that it's easier to start from an image
+    that has cl-launch loaded but not configured.
+  * passed tests with
+         cl-launch -l clisp -B shell_tests
+         cl-launch -l 'sbcl ccl ecl' -B tests
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 06 Nov 2009 11:21:34 -0500
+
+cl-launch (2.30-1) unstable; urgency=low
+
+  * use XCVB .403 enhanced :build-depends-on support for Lisp modules.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 20 Oct 2009 20:24:16 -0400
+
+cl-launch (2.29-1) unstable; urgency=low
+
+  * don't try to exclude root if it is disabled.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 20 Oct 2009 20:24:10 -0400
+
+cl-launch (2.28-1) unstable; urgency=low
+
+  * unbreak arguments for clisp
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 02 Oct 2009 12:57:21 -0400
+
+cl-launch (2.27-1) unstable; urgency=low
+
+  * Fix issues regarding cl-launch.asd and its installer.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 02 Oct 2009 10:18:50 -0400
+
+cl-launch (2.26-1) unstable; urgency=low
+
+  * Rename cache root from ~/.cache/lisp-fasl/ to ~/.cache/common-lisp/
+    since (a) it holds more than FASLs, and (b) that makes it easier for other people
+    to understand where it comes from.
+
+  * Tweak implementation directory name to distinguish flavors of ACL (from SLIME).
+
+  * Exclude the cache itself from recursive redirection.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 28 Sep 2009 19:14:12 -0400
+
+cl-launch (2.25-1) unstable; urgency=low
+
+  * Improve command line argument support for allegro and clisp.
+
+  * the source code repository now includes a Makefile for end-users and
+    a INTERNALS documentation file for hackers.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 11 Sep 2009 18:47:12 -0400
+
+cl-launch (2.24-1) unstable; urgency=low
+
+  * Do not load cl-launch eagerly anymore in the cl-launch.asd.
+    Most users of ASDF do not want cl-launch's FASL redirection in their build.
+    Those who do want it can enable it explicitly. The only person I know who
+    did want it am now using XCVB for large systems.
+
+  * Allow users to have the *lisp-fasl-cache* persistently :disabled.
+    Document it.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 09 Sep 2009 10:51:02 -0400
+
+cl-launch (2.23-1) unstable; urgency=low
+
+  * Update Debian package to latest standards + change in sponsor.
+
+  * Fix bug whereby in include mode compute-arguments was called from the wrong
+    package, cl-user:: instead of cl-launch:: the second time over.
+
+  * Fix bitrotten support for CCL command-line arguments
+
+  * Fix ECL dumping. Avoid unsupported dumping from a dump.
+
+  * asdf::resolve-symlinks was removed in 1.362. Resurrect it here, we use it!
+
+  * Successfully ran:
+      cl-launch -l 'sbcl clisp ccl ecl gclcvs gcl' -B tests # 1838 tests
+      cl-launch -l clisp -B shell_tests
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 08 Sep 2009 15:29:50 -0400
+
+cl-launch (2.22-1) unstable; urgency=low
+
+  * Enhance support for Allegro 8 (thanks to John Fromlin)
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 30 Aug 2009 13:47:14 -0400
+
+cl-launch (2.21-1) unstable; urgency=low
+
+  * add command -B print_lisp_setup to simplify XCVB setup.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 20 Jul 2009 08:28:56 -0400
+
+cl-launch (2.20-1) unstable; urgency=low
+
+  * Silence cl-launch when reloading from an image that has it:
+    don't re-evaluate header forms (might cause surprises if the image had
+    a previous instance of cl-launch yet you depend on newer features. GIGO)
+
+  * ASDF seems to complain when a system's :pathname is NIL.
+    Use /dev/null instead.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 14 Jul 2009 11:46:04 -0400
+
+cl-launch (2.19-1) unstable; urgency=low
+
+  * Fix cl-launch when used with XCVB:
+    depend on ASDF, and proper EVAL-WHEN for exporting symbols.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 09 Jul 2009 11:40:11 -0400
+
+cl-launch (2.18-1) unstable; urgency=low
+
+  * Rename BUILD.lisp to build.xcvb
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 08 Jul 2009 13:04:40 -0400
+
+cl-launch (2.17-1) unstable; urgency=low
+
+  * Add functions -B print_lisp_implementation and -B print_lisp_binary_path
+    for the sake of the XCVB Makefile.
+  * tweak comments wrt CLISP version needed for standalone executables (2.48)
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 25 Jun 2009 10:18:01 -0400
+
+cl-launch (2.16-1) unstable; urgency=low
+
+  * enable standalone executables for clisp.
+  * small documentation updates.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 13 Jun 2009 02:46:51 -0400
+
+cl-launch (2.15-1) unstable; urgency=low
+
+  * Add support for option --image, including self-test.
+  * Successfully ran self-test on clisp and sbcl and a variety of shells.
+
+ -- Joyce Chen <yuhsin@alum.mit.edu>  Fri, 12 Jun 2009 16:23:27 -0400
+
+cl-launch (2.14-1) unstable; urgency=low
+
+  * Add preliminary XCVB support.
+  * Fix bitrotten support for #!.../cl-launch -X ... --
+  * DBG now goes to *trace-output* not *error-output* anymore
+  * make sure --path elements appear in asdf:*central-registry*
+    in their order of appearance
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 29 May 2009 01:05:19 -0400
+
+cl-launch (2.13-1) unstable; urgency=low
+
+  * Debug clbuild support.
+  * make sbcl the default default lisp, followed by clisp.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 23 Dec 2008 16:15:19 -0500
+
+cl-launch (2.12-1) unstable; urgency=low
+
+  * add basic clbuild support. Not included in test suite (yet).
+  * better support :package argument to dump-image.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 22 Dec 2008 21:23:42 -0500
+
+cl-launch (2.11-1) unstable; urgency=low
+
+  * Added support for standalone executables on CLISP 2.48.
+  * Debugged image dumping with ECL support some more.
+    The second strategy (creating temporary .asd's) works better.
+    However, ASDF seems confused if you don't rm -rf your object cache in
+    ~/.cache/lisp-fasl/ecl*.
+  * Better document the standalone executable support.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 09 Nov 2008 23:40:36 -0500
+
+cl-launch (2.10-1) unstable; urgency=low
+
+  * added a new magic environment variable CL_LAUNCH_DEBUG that enables
+    debugging.
+  * more attempts at debugging ECL support.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 01 Nov 2008 11:42:23 -0400
+
+cl-launch (2.09-1) unstable; urgency=low
+
+  * Fixes for GCL.
+  * More failed attempts at getting ECL to reliably dump images.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 30 Oct 2008 13:22:04 -0400
+
+cl-launch (2.08-1) unstable; urgency=low
+
+  * Support new SBCL feature (since 1.0.21.24, thanks to Xach and Nikodemus)
+   whereby we can now dump standalone executables.
+  * Rename DIRECT_EXECUTABLE to STANDALONE_EXECUTABLE.
+  * Refactor command-line argument detection for standalone executables.
+  * Actually implement support for LispWorks - for Professional edition only.
+  * Fix bug reported by Koga Kazuo, whereby on Mac OS X (and presumably
+   other systems), /bin/sh doesn't support option -n to echo.
+   Using the POSIX-mandated printf instead (via function ECHOn).
+  * Rename OpenMCL to CCL (ClozureCL), drop support for older (pre)releases.
+  * Remove builder patch for ecl 0.9i
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 29 Oct 2008 09:09:04 -0400
+
+cl-launch (2.07-1) unstable; urgency=low
+
+  * commented out (sb-pcl::precompile-random-code-segments) in save-image
+    as it may cause some systems to grind to a halt. Users can still do it
+    themselves if they want it, it is purely a performance issue.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 17 May 2007 18:22:23 -0400
+
+cl-launch (2.06-2) unstable; urgency=low
+
+  * Improve packaging: suggest rather than depend on c-l-c
+   (for the sake of non-Debian users).
+  * (non-Debian change) make an asdf-installable package for cl-launch.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 24 Apr 2007 18:54:48 -0400
+
+cl-launch (2.06-1) unstable; urgency=low
+
+  * extend the API function QUIT with a new optional argument
+   FINISH-OUTPUT (default T). When this argument is T, QUIT will
+   FINISH-OUTPUT on *STANDARD-OUTPUT* and *ERROR-OUTPUT*.
+   This replaces the (removed) internal function %QUIT.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 10 Apr 2007 17:39:33 -0400
+
+cl-launch (2.05-1) unstable; urgency=low
+
+  * Fix GCL 2.6 and 2.7, that were broken by the fix in cl-launch 2.04:
+   the former doesn't have ENSURE-DIRECTORY-EXISTS occurrences of which
+   were featured out, and the latter has issues with *LOAD-PATHNAME*
+   incorrectly containing type lisp when it should have no type, which
+   means that :pathname had to be specified in defsystem :cl-launch least
+   it fail when the file has no extension. Also that system::*tmp-dir*
+   ends with a /
+  * Some minor documentation updates
+  * SBCL: enable tail-call optimization; precompile CLOSy things before dump.
+  * made cl-launch to be fully functional if it is the first system
+   dependency in your asdf:defsystem (you still need a system-provided
+   asdf for this to work fully).
+  * OpenMCL: better distinguish FASL versions
+  * completely tested with
+       gcl gclcvs sbcl cmucl clisp ecl openmcl allegro
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 20 Mar 2007 17:25:11 -0400
+
+cl-launch (2.04-1) unstable; urgency=low
+
+  * make cl-launch more robust wrt missing directories
+   (can't truename or resolve-symlinks then)
+  * mark the ecl patch as not needed for latest CVS (but still for 0.9i)
+  * rename *fasl-cache* to *lisp-fasl-cache*
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 12 Jan 2007 00:25:08 -0500
+
+cl-launch (2.03-1) unstable; urgency=low
+
+  * fix two bugs found by mkennedy at gentoo:
+   use of truename on the cache path before it may exist
+   call to a deleted shell function in the help.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 21 Nov 2006 00:08:43 -0500
+
+cl-launch (2.02-1) unstable; urgency=low
+
+  * completely tested with
+         clisp ecl gcl gclcvs sbcl cmucl openmcl allegro
+   some with and some without clc
+  * wholly untested lispworks support
+  * clarification of the situation of clisp and sbcl wrt DIRECT_EXECUTABLE
+   (i.e. not yet).
+  * self-test framework: account for shell variety, better criterion for cleanup
+  * fix issues wrt pathnames, in resolve-symlinks & lisp-cache env var & gcl2.6
+  * superficial fixes
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 16 Oct 2006 05:54:47 -0400
+
+cl-launch (2.0-1) unstable; urgency=low
+
+  * This release 2.0 passes full regression tests on all of
+       clisp ecl gcl gclcvs
+    and should work but hasn't been extensively tested with
+       sbcl cmucl openmcl allegro
+  * New "direct executable" feature supported on clisp and ecl: do away with
+   the intermediate of a wrapper script and directly produce an executable.
+  * We now fully support ECL. Success with dumping image from a system at last!
+   Moreover, we dump a standalone :program, not a :fasl anymore; plus we take
+   precautions to extract correct init-function-name from a library path.
+   Search cl-launch code for "ECL PATCH" for modifications to ecl 0.9i sources.
+  * After testing with not just bash and zsh, but also dash and posh,
+   restore compatibility with posh that doesn't know -a and -o in [ ... ]
+  * update documentation wrt GCL and ECL support, side-effects, etc.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 14 Oct 2006 13:55:42 -0400
+
+cl-launch (1.93-1) unstable; urgency=low
+
+  * This "full GCL support" release passes full regression tests on all of
+       clisp sbcl cmucl ecl gclcvs gcl allegro openmcl
+  * GCL: fix issue with compiling scripts without pathname type,
+   and add support for image dump -- many thanks to Camm Maguire.
+  * ECL: fix pathname type issue with build-fasl; desperate (and unsuccessful)
+   attempt to modify builder so as to create a .fas from a system.
+  * General issue with dumping: recompute the dynamic environment at each
+   execution, not just when initially dumping. (I detected this because GCL
+   had a similar bug with its *tmp-dir*, which we now work around.)
+  * Disable the common-lisp-controller cache for GCL, since clc 6 is broken.
+  * Fix bitrot in support for running without clc.
+  * Fixed hairy bugs I could hardly fathom due to the interaction between
+   the many many modes and evaluation times of cl-launch.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri, 13 Oct 2006 23:24:26 -0400
+
+cl-launch (1.92-1) unstable; urgency=low
+
+  * This "quick fix" release passes full regression tests on all of
+       clisp sbcl cmucl ecl gclcvs gcl allegro openmcl
+  * brown bag error for using find-system without nil-errors, that would
+   break all non-clc installed implementations that have no cl-launch system.
+  * until openmcl is fixed wrt -I handling, fall back to using exec_lisp_noarg
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 11 Oct 2006 23:38:52 +0200
+
+cl-launch (1.91-1) unstable; urgency=low
+
+  * This "corner rounding" release passes full regression tests on all of
+       clisp sbcl cmucl ecl gclcvs gcl allegro openmcl
+  * make gcl load scripts it can't compile because their pathname lacks a type
+  * make clisp properly compile scripts without a pathname type.
+  * work around is a bug in clisp 2.40 option parsing (fixed in 2.41), by
+   introducing a pseudo-filename after -- and skipping it in ext:*args*
+  * use defsystem inside cl-launch, so that there will be no attempt to later
+   miscompile an installed header into something empty due to #-cl-launch,
+   which would confuse other software that depends on cl-launch but is being
+   loaded without cl-launch (e.g. from SLIME).
+  * fix --include /... for all shells by reshuffling BASIC_ENV_CODE
+  * fix and/or work around some race condition in cacheing causing transient
+   errors in the regression test suite, due to compilation happening within
+   the same split second as automatic generation of next source code, which
+   confuses clisp. I'm unable to fathom whether the race is due to a bug in
+   cl-launch, clisp or the linux kernel, and so I won't blame others.
+  * make sure ABORT is defined in the wrapper
+  * regression test report
+     on blefuscu (Pentium-M @1200MHz):
+      cl-launch -l clisp -B tests 0 143     31.20s user 10.86s system 84% cpu 49.755 total
+      cl-launch -l cmucl -B tests 0 143     39.76s user 15.40s system 85% cpu 1:04.81 total
+      cl-launch -l sbcl -B tests 0 143      167.11s user 26.64s system 82% cpu 3:56.11 total
+      cl-launch -l ecl -B tests 0 103       372.40s user 11.56s system 90% cpu 7:04.33 total
+      cl-launch -l gcl -B tests 0 35        5.88s user 1.93s system 51% cpu 15.156 total
+      cl-launch -l gclcvs -B tests 0 71     27.90s user 9.06s system 79% cpu 46.587 total
+      cl-launch -l allegro -B tests 0 143   44.48s user 7.91s system 84% cpu 1:02.10 total
+     on rastapopoulos (PPC 603ev @240MHz):
+      cl-launch -l openmcl -B tests 0 143   888.90s user 234.23s system 82% cpu 22:48.42 total
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 10 Oct 2006 02:06:24 -0400
+
+cl-launch (1.90-1) unstable; urgency=low
+
+  * This "bit unrot" release passes the full regression test on
+       clisp sbcl cmucl ecl gclcvs gcl allegro
+  * Refactor the way dumping and updates interact, fix some bugs.
+  * avoid #+foo #+foo bar baz idiom to make acl5 happy again.
+  * Fix buglets in the self-test exclusion patterns for gcl and ecl
+  * make gcl-pre2.7 happier by avoiding keyword arguments in COMPILE-FILE
+  * do not default INCLUDE_PATH to IMAGE_DIR when dumping.
+  * update/fix documentation wrt what implementations are supported and how.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun,  8 Oct 2006 10:46:57 -0400
+
+cl-launch (1.89-1) unstable; urgency=low
+
+  * Enhance OpenMCL support: can now dump files and use direct command-line
+   arguments.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Fri,  6 Oct 2006 18:04:09 -0400
+
+cl-launch (1.88-1) unstable; urgency=low
+
+  * separate the debian thing in a .diff.gz.
+  * The correct command to detect packaging bugs is
+      lintian cl-launch_*.dsc
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu,  7 Sep 2006 20:00:34 +0200
+
+cl-launch (1.87-1) unstable; urgency=low
+
+  * due to popular request, add a resource file feature, a --rc/--no-rc
+   option pair to enable/disable this feature, and the ability to configure
+   cl-launch into having it enabled or disabled by default. Closes: #384697.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 30 Aug 2006 02:51:16 +0200
+
+cl-launch (1.86-1) unstable; urgency=low
+
+  * include image dumping in automated test suite, catching several bugs.
+  * fix a nasty bug stupidly introduced in 1.83 whereby command-line arguments
+   were not recomputed anymore when restarting from a dumped image (doh).
+  * got --dump to work well with --update
+  * try to get ECL to compile systems further, but hit some c::builder issues.
+    See my messages of this month (august 2006) on the ECL mailing list.
+  * tried to debug support for gcl 2.6.7-17:
+   got --file working again (w/o fasl cache), but --system is hopeless.
+  * gclcvs 2.7.0-54 doesn't even install properly anymore; on a system where
+   it is installed of old its EVAL-WHEN seems badly broken.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sun, 13 Aug 2006 08:28:03 -0400
+
+cl-launch (1.85-1) unstable; urgency=low
+
+  * unbreak some recent simplifications that don't work in all failure cases
+  * consequently restore the partial support for GCL
+  * work around current brokenness of ECL in debian
+  * install cl-launch in /usr/share/common-lisp/source/cl-launch
+    with an asd visible by c-l-c so as to allow (require 'cl-launch).
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 10 Aug 2006 19:06:40 -0400
+
+cl-launch (1.84-1) unstable; urgency=low
+
+  * fix compile-file-pathname* (and thus option -f) in presence of c-l-c
+  * add apply-output-pathname-translations to the API
+  * refactor the image-dumping infrastructure to allow support for ECL;
+    kluges to get around ECL 0.9i bug in c::builder pathname type handling.
+    Many thanks to people on the ecls-list for help.
+  NB: as of debian package ecl-0.9i-2, you must
+        export ECL=/usr/lib/ecl/ecl-original
+  for cl-launch to work with ECL, due to bug in debian packaging of ECL.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed,  9 Aug 2006 21:02:42 -0400
+
+cl-launch (1.83-1) unstable; urgency=low
+
+  * Considering that I am not a proper Debian Developer, add my sponsor as
+    Uploaders: Peter Van Eynde <pvaneynd@debian.org>, Rene van Bevern <rvb@debian.org>
+    Many thanks to Luca Capello <luca@pca.it>.
+  * Properly declare previous bug fixed. Closes: #379531.
+  * Debian documentation tweaks.
+  * ECL file-compilation support debugged by Juan Jose Garcia-Ripoll.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue,  2 Aug 2006 15:53:23 -0400
+
+cl-launch (1.82-1) unstable; urgency=low
+
+  * explicitly call sh ./cl-launch.sh in the build rules so as to
+    (fix bug #379531 reported by Andreas Jochens (though I suspect
+    he did something wrong and this "fix" wasn't needed).
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 24 Jul 2006 05:00:00 -0400
+
+cl-launch (1.81-1) unstable; urgency=low
+
+  * fix typo that prevented saving an override of SBCL_OPTIONS.
+    Thanks to Matthew Danish <mdanish@andrew.cmu.edu> for the bug report.
+  * document the fact that GCL support is currently broken.
+  * preliminary support for ECL.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 20 Jul 2006 20:00:00 -0400
+
+cl-launch (1.80-1) unstable; urgency=low
+
+  * work on the latest openmcl, that doesn't have #+ccl anymore, and may have
+    an empty :asdf package. Runtime failure trying to dump image on x86_64.
+  * have *print-readably* nil makes allegro 5 happier with asdf.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 20 Jun 2006 16:46:00 -0500
+
+cl-launch (1.79-1) unstable; urgency=low
+
+  * work well with common-lisp-controller when compiling without asdf.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Sat, 17 Jun 2006 22:01:00 -0400
+
+cl-launch (1.78-1) unstable; urgency=low
+
+  * fix allegro support
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 7 Jun 2006 20:47:00 -0400
+
+cl-launch (1.77-2) unstable; urgency=low
+
+  * fix some lintian warnings
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Thu, 18 May 2006 17:09:00 -0400
+
+cl-launch (1.77-1) unstable; urgency=low
+
+  * play well with debian and common-lisp-controller for inclusion in debian unstable
+  * make lisp options more static when dumping an image.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Wed, 17 May 2006 12:37:45 -0400
+
+cl-launch (1.76) unstable; urgency=low
+
+  * fix some issues with dumping, quitting, restarting
+  * improve the documentation some more.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Mon, 1 May 2006 02:23:14 -0400
+
+cl-launch (1.75) unstable; urgency=low
+
+  * use truename to compile and load files specified with relative path
+    (this opens a can of worm of its own).
+    Issue raised by Vladimir Sekissov <svg@surnet.ru>.
+  * fix some more bugs in the documentation
+  * some code refactoring, slight bug fixes
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 25 Apr 2006 21:15:24 -0400
+
+cl-launch (1.74) unstable; urgency=low
+
+  * fix some bugs in the documentation
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 25 Apr 2006 04:15:24 +0200
+
+cl-launch (1.73) unstable; urgency=low
+
+  * add a symlink alias 'cl' to cl-launch
+  * options --print and --write to evaluate and print expression
+  * default behaviour being --execute
+  * implicit --print if only one argument
+  * options --dump and --restart that dump lisp images for fast startup
+   (more output file optimization could be done here, plus support for
+   :executable t in sbcl and/or clisp; :restart not fully supported)
+  * cmucl now uses the noarg invocation method for safer behaviour.
+  * some slight bug fixes in code and documentation.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 25 Apr 2006 03:54:20 +0200
+
+cl-launch (1.72) unstable; urgency=low
+
+  * "Initial" package. Earlier packages never having been accepted by Debian,
+   I didn't actually maintain a changelog about them.
+
+ -- Francois-Rene Rideau <fare@tunes.org>  Tue, 28 Mar 2006 11:18:49 -0500
+

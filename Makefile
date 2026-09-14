@@ -22,7 +22,6 @@ IMAGE_MAP := $(IMAGE_STEM).map
 IMAGE_SYMBOL_TABLE := $(IMAGE_STEM).symbol-table
 TEST_MANIFEST := $(IMAGE_STEM).test-manifest
 KERNEL ?= $(LAMBDA64_ROOT)/tools/kboot/kboot-generic-arm64.bin
-HOME_SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '$$2 ~ /^home\// { print $$2 }')
 
 QEMU_COMMON_ARGS = \
 	-name Lambda64-arm64 \
@@ -148,8 +147,12 @@ test-all: test-integration test-stress
 run-file-server: run-file-server.lisp
 	cd "$(LAMBDA64_ROOT)/file-server" && "$(SBCL)" --load "$(CURDIR)/run-file-server.lisp"
 
+# The home/ libraries used to be git submodules and are now tracked directly, so
+# there is nothing to fetch.  The target stays because it is in every set of
+# build instructions and in muscle memory; making it vanish would only produce
+# confusing "No rule to make target" errors.
 deps:
-	git submodule update --init --recursive --jobs 4 $(HOME_SUBMODULES)
+	@echo "home/ libraries are tracked in-tree; nothing to fetch."
 
 asdf: deps
 	$(MAKE) -C home/asdf build/asdf.lisp

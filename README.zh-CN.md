@@ -52,7 +52,7 @@ supervisor 与驱动、网络与文件系统各层。每一条都按**症状 / �
 ## 快速开始
 
 ```sh
-git clone --recurse-submodules https://github.com/tiwe0/LBuild.git
+git clone https://github.com/tiwe0/LBuild.git
 cd LBuild
 ```
 
@@ -65,7 +65,7 @@ cd LBuild
 然后构建并启动:
 
 ```sh
-make deps asdf      # 子模块 + ASDF
+make asdf           # 构建 ASDF(各库已在树内,无需拉取)
 make cold-image     # 交叉编译出 lambda64.image
 make run-file-server   # 另开一个终端 —— Guest 要连它取源码编译
 make hvf-arm64      # Apple Silicon(通用 TCG 用 qemu-arm64,Linux 用 kvm-arm64)
@@ -340,8 +340,13 @@ checkout。
 
 ## 可复现构建
 
-仓库自带构建所需的全部一方源码,只有第三方库是子模块。Lambda64 与构建系统共享同
-一条提交图,因此跨层改动及其测试可以原子地评审和发布。
+一次普通的 `git clone` 就是完整的构建输入。**本仓库没有子模块**:`home/` 下的库
+直接纳入版本库,因此上游的强推或指针悄悄前进,都不会改变本树构建出的东西。每个库
+的上游来源与冻结提交记录在
+[归档的第三方库](docs/reference/vendored-libraries.md),其中也写明了唯一一处不是
+纯镜像的本地补丁。
+
+Lambda64 与构建系统共享同一条提交图,因此跨层改动及其测试可以原子地评审和发布。
 
 ## 与上游的关系
 

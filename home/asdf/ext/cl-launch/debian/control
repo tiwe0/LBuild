@@ -1,0 +1,43 @@
+Source: cl-launch
+Section: lisp
+Priority: optional
+Homepage: http://www.cliki.net/cl-launch
+Maintainer: Francois-Rene Rideau <fare@tunes.org>
+Uploaders: Christoph Egger <christoph@debian.org>, Kan-Ru Chen <koster@debian.org>, Milan Zamazal <pdm@debian.org>, Peter Van Eynde <pvaneynd@debian.org>, Julien Danjou <acid@debian.org>
+Build-Depends: debhelper (>= 9)
+Build-Depends-Indep: dh-lisp
+Standards-Version: 3.9.6.1
+Vcs-Git: https://gitlab.common-lisp.net/xcvb/cl-launch.git
+Vcs-Browser: https://gitlab.common-lisp.net/xcvb/cl-launch
+
+Package: cl-launch
+Architecture: all
+Depends: ${misc:Depends}
+Suggests: cl-asdf (>= 2:3.1.4)
+Recommends: sbcl (>= 1:1.2.3), cl-asdf (>= 2:3.1.2)
+Breaks: cl-asdf (<= 2:3.1.1), common-lisp-controller (<= 7.3)
+Description: uniform frontend to running Common Lisp code from the shell
+ CL-Launch will allow you to invoke Common Lisp source code from the shell
+ command line, from a shell script or as a Common Lisp script. It will also
+ allow you to turn your Common Lisp source programs into standalone
+ executables or executable shell scripts (optionally using a dumped image),
+ depending on the features available in your underlying implementation.
+ .
+ CL-Launch will automatically detect a supported Common Lisp implementation
+ and use adequate invocation options. It can also be configured to fit exactly
+ the programmer's desires. Fully supported implementations are:
+        Allegro, CLISP, ClozureCL, CMUCL, ECL, MKCL, SBCL, SCL.
+ Partially supported implementations are:
+        LispWorks Professional, ABCL, GCL, XCL.
+ Creating standalone executables is supported on:
+        CLISP, ClozureCL, CMUCL, LispWorks, SBCL, SCL
+ .
+ CL-Launch also offers Common Lisp programs a simple uniform interface to
+ invocation parameters (command-line arguments and environment variables).
+ It relies on ASDF 3 for system construction. See the ASDF 3 manual for
+ more information on how to configure source and object code location.
+ CL-Launch may dump memory images for fast startup (at the expense of disk
+ space). It can also be used as a quick way to evaluate and print simple Lisp
+ forms or scripts from the command-line without invoking a full-fledged REPL,
+ and to easily compare results between implementations.
+ .

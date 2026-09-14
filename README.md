@@ -58,7 +58,7 @@ instantly.
 ## Quick start
 
 ```sh
-git clone --recurse-submodules https://github.com/tiwe0/LBuild.git
+git clone https://github.com/tiwe0/LBuild.git
 cd LBuild
 ```
 
@@ -71,7 +71,7 @@ Install the Common Lisp systems the build needs:
 Then build and boot:
 
 ```sh
-make deps asdf      # submodules + ASDF
+make asdf           # build ASDF (libraries are already in-tree)
 make cold-image     # cross-compile lambda64.image
 make run-file-server   # in a second terminal — the guest compiles against this
 make hvf-arm64      # Apple Silicon (use qemu-arm64 for portable TCG, kvm-arm64 on Linux)
@@ -373,10 +373,15 @@ current contracts.
 
 ## Reproducible builds
 
-The repository carries every first-party source the build needs; only
-third-party libraries are submodules. Lambda64 and the build system share one
-commit graph, so cross-layer changes and their tests are reviewed and released
-atomically.
+A plain `git clone` is a complete build input. There are no submodules: the
+`home/` libraries are tracked directly, so an upstream force-push or a silently
+advanced pointer cannot change what this tree builds. Where each library came
+from and the commit it was frozen at are recorded in
+[vendored-libraries.md](docs/reference/vendored-libraries.md), along with the one
+local patch that is not a pure mirror.
+
+Lambda64 and the build system share one commit graph, so cross-layer changes and
+their tests are reviewed and released atomically.
 
 ## Upstream and naming
 

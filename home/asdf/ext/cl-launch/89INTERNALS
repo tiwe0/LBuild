@@ -1,0 +1,35 @@
+NOTE TO HACKERS WHO'D LIKE TO HACK cl-launch INTERNALS
+
+I conceive cl-launch as the ultimate exercise in "useful quining".
+It's a shell script, it's a Lisp program header and library,
+it outputs shell scripts and Lisp programs that may include parts of cl-launch.
+It also includes its own test system (no more: mostly moved to another file)
+and documentation (still).
+
+cl-launch is very hard to hack. A change you'd think is innocuous will actually
+break some complex combination of options on some Lisp implementation and shell
+variant. Even for the simplest of changes, I recommend running a full test
+before you release, which may involve:
+
+	LISPS="clisp sbcl ccl ecl gclcvs cmucl gcl" # include whatever you have
+	mkdir -p ${TMP:-/tmp}/cl-launch-test &&
+        cd ${TMP:-/tmp}/cl-launch-test &&
+        ${CL-LAUNCH} -l "${LISPS}" -B tests &&
+        ${CL-LAUNCH} -l clisp -B shell_tests
+
+If you add a new option, you probably should be adding a test for it somewhere
+in the shell function do_tests, which will double the testing time, currently
+over an hour for me.
+
+Happy hacking!
+
+
+Bibliography:
+
+* For how #! works, see the NetBSD man page on "script" in section 7: man 7 script
+	http://netbsd.gw.com/cgi-bin/man-cgi?script+7+NetBSD-current
+ Note that Linux recursively accepts a shell script as a script interpreter,
+ and therefore does not need the cl-shim binary, whereas
+ MacOS splits the argument of a #! script by spaces, and so it is not portable
+ to use any space or shell-special character in the first line,
+ for that will only work on Linux.
