@@ -10,6 +10,26 @@ Lambda64 is a normal first-party directory, not a submodule. Its original Git
 history was merged without squashing. LBuild defaults to the ARM64 target,
 emits `lambda64.image`, and provides graphical QEMU launch targets.
 
+## Status
+
+ARM64 boots end to end: cold load, warm modules, stage-four dependency
+compilation over the host file server, GUI, desktop, and the closing snapshot.
+The framebuffer, keyboard, and mouse are live.
+
+Getting there took 21 root-cause fixes spanning the cold generator, the
+compiler, the runtime and GC, the supervisor and drivers, and the network and
+file-system layers. Each is recorded with its symptom, cause, and why it was
+hard to find in
+[`docs/architecture/arm64-boot-bring-up.md`](docs/architecture/arm64-boot-bring-up.md).
+That document's last section — the three patterns that produced most of the
+defects — is the part worth reading before changing this tree.
+
+Known limitations are tracked in
+[`docs/modernization/debt-register.md`](docs/modernization/debt-register.md).
+The visible one is D024: virtio-gpu transfers and flushes the whole clip region
+synchronously once per frame, so a window appearing at 1280x800 repaints
+visibly rather than instantly.
+
 ## Prerequisites
 
 - A recent 64-bit SBCL build with Unicode support
@@ -116,6 +136,14 @@ Start the file server in a second terminal:
 make run-file-server
 ```
 
+Once IPL reaches SWANK the guest accepts a live connection on the forwarded
+port, and an error after that point parks the failing thread instead of halting
+the machine, so the failure can be inspected in place:
+
+```sh
+# M-x slime-connect RET 127.0.0.1 RET 4005
+```
+
 > **Security:** the current legacy file server binds all interfaces and parses
 > unauthenticated input with the Common Lisp reader. Run it only on a trusted,
 > isolated host until the documented Gate 0 hardening is complete. See
@@ -129,9 +157,18 @@ make kvm-arm64        # Linux with KVM
 make hvf-arm64        # Apple Silicon with HVF
 ```
 
-The first boot performs warm initialization inside Lambda64 and compiles GUI
-and library systems. The display may remain black during this stage. Generated
-`.llf` files and the image snapshot make later boots substantially faster.
+The first boot performs warm initialization inside Lambda64 and compiles the
+GUI and library systems from source over the file server. That stage is long --
+`ext4.lisp` alone takes about twenty minutes, see D021 -- and the display stays
+black until the GPU transport is claimed late in IPL. Generated `.llf` files are
+written back to `home/`, so later boots reuse them and reach the desktop in a
+few minutes.
+
+To watch progress, follow the serial log rather than the window. A boot that
+looks stuck usually is not: check that QEMU is consuming CPU and that the log is
+still growing before concluding otherwise. Both signals, and how to read a guest
+panic when it really does stop, are covered in
+[`docs/development/reading-arm64-panics.md`](docs/development/reading-arm64-panics.md).
 
 ## Reproducible builds and releases
 

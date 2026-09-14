@@ -17,6 +17,7 @@ LBuild 是构建与验证入口，Lambda64 是以 Common Lisp 实现的系统主
 - [系统上下文](system-context.md)：宿主、镜像、Guest 与外部依赖的边界。
 - [构建与启动生命周期](build-and-boot-lifecycle.md)：从 SBCL 到 QEMU Guest 的执行链。
 - [四阶段构建与依赖加载](four-stage-build-and-dependencies.md)：冷/暖切分，以及第四阶段经 TCP 2599 从 `home/` 加载依赖的机制与标准化注意事项。
+- [ARM64 引导修复记录](arm64-boot-bring-up.md)：把 ARM64 从「启动即死」修到完整进入桌面所定位的 21 个根因，按层次给出症状、根因与为何难找；末节归纳的三个反复出现的模式，改动本树前值得先读。
 - [子系统索引](subsystems/README.md)：编译器、运行时、I/O、GUI 的职责与风险。
 
 ## 当前架构特征

@@ -35,6 +35,7 @@ source-of-truth: code
 | D021 | Compiler | `file/ext4.lisp` 的 `SUPERBLOCK` 有 112 个类型化槽位，单个 `defstruct` 编译耗时 **1209 秒**（同批其余文件为 10–70 秒），疑似某个 pass 在槽位数上超线性 | medium | 先量化：对 16/32/64/112 槽位的 `defstruct` 计时，确认复杂度曲线后再定位 pass | compiler |
 | D022 | Test | 多个契约测试锚定**源码字面文本**而非语义，源码正确演进即误报。本次修复 6 处：`%%gc` 签名、包前缀、CAS 缩进、文件位置、`:sparse t`、`:stride 2` | medium | 新增契约一律锚定语义（正则容忍等价写法），并在测试内写明"要守的约束是什么"，避免后人改代码迁就测试 | test |
 | D023 | Compiler | TF-WI-0029 第 3 步未实现：`compute-actual-successors` 存在但 `ssa-convert-locals` / `compute-dominance` 仍用 `build-cfg`。NLX 边已按上游形态恢复，移除它们的前置条件见规格文档 | medium | 实现 NLX 感知的后继关系并接入支配、活跃性与 φ 放置，再考虑移除边 | compiler |
+| D024 | GUI | virtio-gpu 每帧对整个裁剪区做一次**同步**传输+刷新（`virtio-gpu-issue-command` 自旋等待设备完成），窗口首次出现时裁剪区常为整屏，1280×800×4 ≈ 4MB，肉眼可见逐块刷新 | medium | 三选一或组合：传输与刷新合并为一次往返（需第二个请求缓冲区，当前单缓冲区强制串行）；刷新改非阻塞、靠 IRQ 回收描述符；compositor 细化脏区。均涉及命令生命周期，需独立设计与验证 | gui/runtime |
 
 规则：技术债表不是直接开工单。高风险或跨子系统条目先转为 initiative/ADR，明确非范围、冲突批次和验收矩阵。
 
