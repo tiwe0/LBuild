@@ -31,13 +31,12 @@
 ;; Initialize the compiler.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
-;; Choose your architecture here.
+;; Lambda64 builds for ARM64.
 ;;
-;; :x86-64 is well supported and the standard target.
-;; :arm64 is a secondary target, may not be functional and has many missing features.
+;; The ARM64 target is optimized by this project.
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(cold-generator:set-up-cross-compiler :architecture :x86-64)
+(cold-generator:set-up-cross-compiler :architecture :arm64)
 
 (format t "Building cold image...~%")
 (cold-generator::make-image "../../mezzano" :image-size (* 5 1024 1024 1024) :header-path "tools/disk-header.bin")
