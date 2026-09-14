@@ -1,13 +1,13 @@
 <div align="center">
 
-# LBuild
+# Lambda64
 
-**A Lisp operating system that cold-boots to a live desktop on ARM64.**
+**An operating system written entirely in Common Lisp — kernel, drivers, compiler, and GUI.**
 
 [![CI](https://github.com/tiwe0/LBuild/actions/workflows/ci.yml/badge.svg)](https://github.com/tiwe0/LBuild/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](Lambda64/COPYING)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Language: Common Lisp](https://img.shields.io/badge/language-Common%20Lisp-lightgrey.svg)](https://common-lisp.net/)
-[![Target: AArch64](https://img.shields.io/badge/target-AArch64-success.svg)](docs/architecture/arm64-boot-bring-up.md)
+[![Target: AArch64](https://img.shields.io/badge/target-AArch64-success.svg)](#why-arm64)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -15,242 +15,81 @@
 
 ---
 
-LBuild builds **Lambda64**, an operating system written in Common Lisp — kernel,
-drivers, compiler, GUI, and all. The host toolchain cross-compiles a cold image
-from SBCL; the guest then finishes compiling itself from source and comes up as
-a graphical desktop.
+Lambda64 is a from-scratch operating system in which every layer — the
+supervisor, the device drivers, the memory manager, the compiler, and the
+window system — is Common Lisp. There is no C runtime underneath: 334 Lisp
+source files and no `.c` file at all. The only non-Lisp component is the KBoot
+shim that hands control to the image.
 
-The OS source lives under `Lambda64/` as a normal first-party directory, not a
-submodule, with its original Git history merged unsquashed. LBuild is forked
-from [froggey/MBuild](https://github.com/froggey/MBuild), which remains the
-upstream build-system project.
+It is a continuation of [Mezzano](https://github.com/froggey/Mezzano), rebuilt
+around **AArch64 as the primary target** and carried to a working graphical
+desktop there.
 
-## At a glance
+Because the compiler runs inside the running system, Lambda64 can rewrite,
+recompile, and reload any part of itself without rebooting — the property that
+makes it our platform for an **AI-native operating system**. See
+[Why Lisp](#why-lisp).
+
+## Features
 
 | | |
 | --- | --- |
-| **Target** | ARM64 / AArch64, on QEMU `virt` |
-| **Host toolchain** | SBCL with Unicode + Quicklisp |
-| **Output** | `lambda64.image` — a 5 GiB sparse store, ≈590 MiB on disk |
-| **Boot chain** | cold load → warm modules → stage-4 compile over TCP 2599 → desktop |
-| **Live devices** | virtio GPU framebuffer (1280×800), keyboard, mouse |
+| **Kernel** | Pure Common Lisp supervisor: paging, scheduling, SMP, interrupts |
+| **Memory** | Generational copying collector with young/old semispaces |
+| **Compiler** | Self-hosting, SSA-based, with AArch64 and x86-64 backends |
+| **Language** | Full Common Lisp: CLOS and the MOP, conditions and restarts, macros, reader, `format` |
+| **Persistence** | Image snapshots — the entire live system is written to disk and resumes where it stopped |
+| **Graphics** | Compositor, window management, font rendering, AArch64 SIMD blitter |
+| **Network** | Ethernet, ARP, IP, TCP, UDP, DHCP, DNS, HTTP |
+| **Filesystems** | ext4, FAT32, local, remote, HTTP |
+| **Drivers** | virtio block / net / GPU / input, USB EHCI with HID, Intel GMA and HDA |
+| **Live development** | SWANK — connect SLIME to the running system and edit it in place |
 
-## Status
+### Applications
 
-**ARM64 boots end to end.** Cold load, warm modules, stage-four dependency
-compilation over the host file server, GUI, desktop, and the closing snapshot
-all complete. The framebuffer, keyboard, and mouse are live.
+A REPL (basic and fancy), the **med** editor, a file manager, an image viewer,
+an IRC client, a telnet client, a Mandelbrot explorer, a memory monitor, a
+system inspector (`peek`), an event spy, and a settings panel — all running on
+the compositor. [McCLIM](https://github.com/froggey/McCLIM) is included for
+building more.
 
-Getting there took **21 root-cause fixes** spanning the cold generator, the
-compiler, the runtime and GC, the supervisor and drivers, and the network and
-file-system layers. Each is recorded with its symptom, its cause, and *why it
-was hard to find* in
-**[`docs/architecture/arm64-boot-bring-up.md`](docs/architecture/arm64-boot-bring-up.md)**.
-That document's closing section — the three patterns that produced most of the
-defects — is the part worth reading before changing this tree.
+## What Lambda64 adds over Mezzano
 
-Known limitations live in the
-[debt register](docs/modernization/debt-register.md). The visible one is
-**D024**: virtio-gpu transfers and flushes the whole clip region synchronously
-once per frame, so a window appearing at 1280×800 repaints visibly rather than
-instantly.
-
-## Quick start
-
-```sh
-git clone https://github.com/tiwe0/LBuild.git
-cd LBuild
-```
-
-Install the Common Lisp systems the build needs:
-
-```common-lisp
-(ql:quickload '(alexandria iterate nibbles cl-fad cl-ppcre closer-mop trivial-gray-streams))
-```
-
-Then build and boot:
-
-```sh
-make asdf           # build ASDF (libraries are already in-tree)
-make cold-image     # cross-compile lambda64.image
-make run-file-server   # in a second terminal — the guest compiles against this
-make hvf-arm64      # Apple Silicon (use qemu-arm64 for portable TCG, kvm-arm64 on Linux)
-```
-
-> [!IMPORTANT]
-> **The first boot is long and the screen stays black for most of it.** The guest
-> compiles the GUI and library systems from source over the file server;
-> `ext4.lisp` alone takes about twenty minutes (see D021), and the display only
-> lights up once the GPU transport is claimed late in IPL. Generated `.llf`
-> files are written back to `home/`, so later boots reuse them and reach the
-> desktop in a few minutes.
->
-> Follow the serial log, not the window. A boot that *looks* stuck usually is
-> not — check that QEMU is consuming CPU and that the log is still growing
-> before concluding otherwise. Both signals, and how to read a guest panic when
-> it really has stopped, are in
-> [reading-arm64-panics.md](docs/development/reading-arm64-panics.md).
-
-> [!WARNING]
-> **Security.** The legacy host file server binds all interfaces and parses
-> unauthenticated input with the Common Lisp reader. Run it only on a trusted,
-> isolated host until the documented Gate 0 hardening lands. See
-> [`docs/security/host-file-server.md`](docs/security/host-file-server.md).
-
-## Running
-
-| Target | Accelerator | Use on |
-| --- | --- | --- |
-| `make qemu-arm64` | TCG | anywhere (slow) |
-| `make kvm-arm64` | KVM | Linux |
-| `make hvf-arm64` | HVF | Apple Silicon |
-
-All three attach virtio GPU, keyboard, and mouse. Override the guest's view of
-the host file server when user networking's `10.0.2.2` is wrong:
-
-```sh
-make FILE_SERVER_IP=192.168.1.10 cold-image
-```
-
-### Live debugging
-
-Once IPL reaches SWANK the guest accepts a connection on the forwarded port, and
-an error after that point **parks the failing thread instead of halting the
-machine** — so the failure can be inspected in place rather than reproduced:
-
-```
-M-x slime-connect RET 127.0.0.1 RET 4005
-```
-
-## Tested configuration
-
-Everything below was developed and verified on **one host**. The other
-accelerator targets are plausible, not proven — say so before relying on them.
-
-| | Verified value |
-| --- | --- |
-| Host OS | macOS 27.0 (Darwin), Apple Silicon |
-| SBCL | 2.6.8 |
-| QEMU | 10.2.1 |
-| Accelerator | `hvf` — `-machine virt -accel hvf -cpu host` |
-| Memory | `MEMORY=4G` |
-| CPUs | `CPUS=4` |
-| Resolution | `RESOLUTION=1280x800` |
-
-The exact device line behind the verified boots:
-
-```text
--machine virt -accel hvf -cpu host
--m 4G -smp 4 -kernel Lambda64/tools/kboot/kboot-generic-arm64.bin
--serial stdio -monitor none -no-reboot
--device virtio-gpu-device,xres=1280,yres=800
--device virtio-keyboard-device
--device virtio-mouse-device
--drive if=none,file=lambda64.image,id=blk,format=raw
--device virtio-blk-device,drive=blk
--netdev user,id=vmnic,hostname=lambda64,hostfwd=tcp:127.0.0.1:4005-:4005
--device virtio-net-device,netdev=vmnic
--semihosting-config enable=on,target=native
-```
-
-Two of those are load-bearing and easy to "optimize" into a broken boot:
-
-- **`highmem` stays on.** `highmem=off` caps guest RAM below the 4 GB line
-  (`Addressing limited to 32 bits`). Stage-four dependency loading needs more
-  than that, or function pages get evicted — and a no-IRQ region that touches an
-  evicted page dies with `page-fault-no-irqs`.
-- **`MEMORY=4G` is a floor, not a preference.** The same stage-four load is what
-  forced it up from the previous default.
-
-Also exercised on this host: the **TCG** path, which every `test-integration`
-and `test-stress` run boots with `-snapshot`.
-
-**Not exercised anywhere:** `make kvm-arm64`, which needs a Linux host, and the
-x86-64 sources inherited from upstream, which this tree does not build.
-
-## Testing
-
-The test system is local-first; GitHub Actions reuses the same image manifest,
-guest protocol, smoke runner, and serial oracle.
-
-| Target | What it covers |
-| --- | --- |
-| `make test-unit` | build-script and host contract tests |
-| `make test-codegen` | real ARM64 `SCAVENGE-OBJECT` compiler regression |
-| `make test-fast` | both fast layers |
-| `make test-integration` | builds a test image, then positive + injected boots |
-| `make test-stress` | repeated SMP, 1 CPU, low memory, injected failure |
-| `make test-all` | the complete local suite |
-
-Integration and stress targets start and stop their own file server, always boot
-QEMU TCG with `-snapshot`, and save reports under `test-results/`. They refuse
-to take over an existing listener on TCP 2599. Long-running parameters are
-overridable:
-
-```sh
-make test-stress STRESS_REPETITIONS=5 LOCAL_TEST_TIMEOUT_SECONDS=6000
-make test-all TEST_RESULTS_ROOT=/path/to/test-results
-```
-
-<details>
-<summary><b>Build provenance and the test image</b></summary>
-
-```sh
-make test-image     # CI profile + provenance manifest
-make test-scripts   # build-script regressions only, no image
-```
-
-`test-image` forces `CI=true`, requires the image, map, and symbol table to be
-present and non-empty, and writes `lambda64.test-manifest`. The manifest records
-the image SHA-256, exact repository revision, Lambda64 subtree hash, dirty
-worktree flag, build command, and SBCL/QEMU versions. Consumers must reject
-malformed manifests, and production CI must reject a dirty tree.
-
-During development, manifests truthfully record a dirty monorepo. The local
-matrix explicitly opts into testing those images and records that decision in
-its evidence; clean automation does not use that opt-in.
-
-</details>
-
-## Improvements over the original baseline
-
-502 commits since the fork. This is the delta from the original baseline, so it
-includes upstream work merged along the way as well as LBuild's own — the
-headline is that **ARM64 went from not booting to reaching a usable desktop**.
+The headline is that **AArch64 went from not booting to a usable desktop**.
+Beyond that, in eight areas:
 
 <details open>
-<summary><b>Boot and bring-up (ARM64)</b></summary>
+<summary><b>Boot and bring-up (AArch64)</b></summary>
 
-- 21 root causes fixed, from the cold generator down to the drivers — each with
-  symptom, cause, and why it was hard to find, in the
-  [bring-up record](docs/architecture/arm64-boot-bring-up.md)
-- Cold paging bootstrap hardened: wait queues initialized before IRQs, the pager
-  serviced *during* paging setup, scheduling enabled before paging discovery,
-  store freelist bootstrap ordered against the pager
-- Correct EL1h exception return; threads kept on `SP_EL0` / EL1t stack mode
-- ARM64 generic timer deferred until time init, driven by direct register
-  writes, with early timer interrupts guarded
-- Interrupt enable moved behind scheduler readiness
-- Main thread stack raised to 16 MB, and published functions pre-faulted
+- 21 root causes fixed across the cold generator, compiler, runtime, GC,
+  supervisor, drivers, and network layers
+- Hardened cold paging bootstrap: wait queues before interrupts, pager serviced
+  during paging setup, scheduling enabled before paging discovery, store
+  freelist ordered against the pager
+- Correct EL1h exception return; threads held on `SP_EL0` / EL1t stack mode
+- Generic timer deferred to time-subsystem init, driven by direct register
+  writes, with early interrupts guarded
+- Interrupt enable sequenced behind scheduler readiness
+- 16 MB main thread stack with published functions pre-faulted
 
 </details>
 
 <details>
 <summary><b>Compiler and backend</b></summary>
 
-- **SSA correctness:** NLX contour CFG modeling restored, critical-edge
+- SSA correctness: non-local-exit contours modelled in the CFG, critical-edge
   splitting enforced before SSA, dominator block numbering centralized
-- NLX jump tables emitted as trailers on both ARM64 and x86
-- **ARM64:** 128-bit memref DCAS lowering, pointer CAS, literal-pool load width
-  decoding, encodable immediate offsets, wrapping logical masks, large
-  argument-count checks, GC-safe register swaps, reserved GC scratch registers,
-  SIMD spill alignment, `tbz`/`tbnz` disassembly
-- **x86:** compacted stack layout, `push imm8` short form, reverse scalar SSE
-  moves, byte predicate temporaries, float equality
-- **Representation analysis:** overly eager `ub64` promotion fixed, disjoint
-  integer type intersections preserved, exact scalar complex short-floats
-  promoted, boxed single floats built directly in their destination
-- Debug values preserved across call canonicalization; proven-unreachable calls
+- NLX jump tables emitted as trailers on both AArch64 and x86
+- AArch64: 128-bit DCAS lowering, pointer CAS, literal-pool load width decoding,
+  encodable immediate offsets, wrapping logical masks, large argument-count
+  checks, GC-safe register swaps, reserved GC scratch registers, SIMD spill
+  alignment, `tbz`/`tbnz` disassembly
+- x86: compacted stack layout, `push imm8` short form, reverse scalar SSE moves,
+  byte predicate temporaries, float equality
+- Representation analysis: `ub64` over-promotion fixed, disjoint integer type
+  intersections preserved, exact scalar complex short-floats promoted, boxed
+  single floats built in place
+- Debug values preserved across call canonicalization; unreachable calls
   terminated rather than emitted
 
 </details>
@@ -258,29 +97,26 @@ headline is that **ARM64 went from not booting to reaching a usable desktop**.
 <details>
 <summary><b>Cold generator and image serialization</b></summary>
 
-- Stopped discarding **every** `(SETF ...)` definition — a weak-key table keyed
-  on function names, which are freshly consed lists for `(SETF foo)` and so were
-  collected immediately
-- Deterministic root traversal ordering; object initialization through a work
-  queue
+- Fixed the loss of every `(SETF ...)` definition caused by a weak-key table
+  holding freshly consed list names
+- Deterministic root traversal; object initialization through a work queue
 - Structure slot initfunctions, class metadata, and source locations preserved
 - Wide characters in cold strings, array rank validation, unboxed slot bit
   packing, immediate byte bounds checking
-- Interrupt handlers direct-called via FREFs
+- Interrupt handlers direct-called through function references
 
 </details>
 
 <details>
 <summary><b>Runtime, GC, and allocator</b></summary>
 
-- TLABs moved from per-CPU to per-thread; allocation counters moved from global
-  atomics to per-CPU fields
+- Thread-local allocation buffers moved from per-CPU to per-thread; allocation
+  counters from global atomics to per-CPU fields
 - Function-reference publication fenced and synchronized; funcallable-instance
   entry points synchronized
-- Allocation in restricted contexts collapsed into a single `with-allocator-lock`
-  macro covering all seven acquisition sites, with a world-stopper check — the
-  rule had previously been written out correctly in exactly one of them
-- GC finalizer errors isolated; weak-pointer-pair fast class hash with dead-key
+- Allocation in restricted contexts unified behind one `with-allocator-lock`
+  macro across all seven acquisition sites, with a world-stopper check
+- GC finalizer errors isolated; weak-pointer-pair class hash with dead-key
   pruning
 - Freelist card table updates linearized
 - Superseded instance layouts published atomically
@@ -290,12 +126,12 @@ headline is that **ARM64 went from not booting to reaching a usable desktop**.
 <details>
 <summary><b>CLOS and the language core</b></summary>
 
-- `restart-case` expansion repaired — it had been expanding to literal `NIL` for
-  every use
+- Repaired `restart-case`, which had been expanding to literal `NIL`
 - `make-instance` initargs validated through the protocol; method combination
   lookup dispatched on the standard generic-function prototype
-- EMF cache paths fixed, `DEFGENERIC` declarations accumulated, struct parent
-  subclass links maintained, structure layout class hashes initialized
+- Effective-method cache paths fixed, `defgeneric` declarations accumulated,
+  struct parent subclass links maintained, structure layout class hashes
+  initialized
 - `loop` macro environment initialization, readtable dispatch accessor locking,
   explicit `format` package shadowing
 
@@ -304,92 +140,215 @@ headline is that **ARM64 went from not booting to reaching a usable desktop**.
 <details>
 <summary><b>Supervisor and drivers</b></summary>
 
-- virtio MMIO devices claimed by their drivers through a registry instead of a
-  built-in `case`; GIC interrupts routed by type; typed IRQ FIFOs
-- ARM64 cache and DMA maintenance ranges aligned; architecture-aware DMA flush
+- virtio MMIO devices claimed through a driver registry instead of a built-in
+  dispatch table; GIC interrupts routed by type; typed IRQ FIFOs
+- AArch64 cache and DMA maintenance ranges aligned; architecture-aware DMA flush
 - USB/EHCI: qTD dequeue and reclamation, periodic table init, buffer allocation,
-  port debounce, and rewritten HID keyboard and mouse drivers
+  port debounce, rewritten HID keyboard and mouse drivers
 - Pager writable capability enforced; writes to unmapped blocks guarded
 - Disks and snapshots synchronized before reboot; Intel GMA modeset timing
-  hardened; Intel HDA controller reset polling bounded
+  hardened; Intel HDA reset polling bounded
 
 </details>
 
 <details>
 <summary><b>Testing</b></summary>
 
-- **252 host contract tests**, run without an image
-- A real ARM64 `SCAVENGE-OBJECT` codegen regression
-- Integration and stress matrices with injected failures and SMP / 1-CPU /
-  low-memory variants, each managing its own file server and booting TCG with
-  `-snapshot`
-- A provenance manifest recording image SHA-256, exact revision, Lambda64
-  subtree hash, dirty-worktree flag, build command, and tool versions
+- 252 host contract tests that run without building an image
+- A real AArch64 `SCAVENGE-OBJECT` code-generation regression
+- Integration and stress matrices with injected failures and SMP / single-CPU /
+  low-memory variants, each managing its own file server
+- Build provenance manifests recording image SHA-256, revision, subtree hash,
+  dirty-tree flag, build command, and tool versions
 
 </details>
 
 <details>
-<summary><b>Build system and documentation</b></summary>
+<summary><b>Build and project structure</b></summary>
 
-- Lambda64 merged in as a first-party directory with unsquashed history, so
-  cross-layer changes and their tests share one commit graph
-- ARM64 as the default target, graphical QEMU launch targets, `local.mk`
-  overrides, and no second checkout
-- **471 documentation files** under a validator (`scripts/check-docs.py`),
-  including the bring-up record, the panic-reading guide, the
-  allocation-forbidden-contexts rules, the debt register, and the modernization
-  roadmap
+- The OS and its build system share one commit graph, so cross-layer changes
+  and their tests are reviewed and released together
+- The `home/` libraries are tracked in-tree rather than as submodules, so
+  upstream changes cannot alter what this tree builds
+  ([details](docs/reference/vendored-libraries.md))
+- AArch64 as the default target with graphical QEMU launch targets
+- 472 documentation files under an automated validator
 
 </details>
 
-## Repository layout
+## Getting started
 
-```text
-LBuild/
-├── Lambda64/    the operating system — supervisor, runtime, compiler, GUI
-├── docs/        maintained engineering documentation
-├── home/        guest-visible sources; compiled .llf files land back here
-├── scripts/     build and test tooling
-└── Makefile
+### Prerequisites
+
+| | |
+| --- | --- |
+| SBCL | 64-bit, with Unicode (2.6.8 verified) |
+| QEMU | with `qemu-system-aarch64` (10.2.1 verified) |
+| Make | GNU Make |
+| Quicklisp | for the host-side build libraries |
+
+```common-lisp
+(ql:quickload '(alexandria iterate nibbles cl-fad cl-ppcre closer-mop trivial-gray-streams))
 ```
 
-`local.mk` is available for machine-specific QEMU, network, or toolchain
-overrides, but normal development does not need a second checkout.
+### Build
 
-## Documentation
+```sh
+git clone https://github.com/tiwe0/LBuild.git
+cd LBuild
+make asdf          # build ASDF from the in-tree source
+make cold-image    # cross-compile lambda64.image
+```
 
-Start at **[`docs/README.md`](docs/README.md)** — architecture, subsystem
-boundaries, testing, operations, security, and the staged modernization roadmap.
+The result is `lambda64.image`: a 5 GiB sparse store that occupies about 590 MB
+on disk. Prebuilt images are published under
+[Releases](https://github.com/tiwe0/LBuild/releases).
 
-| Read this | When |
+### Run
+
+Start the host file server in one terminal — the guest compiles against it:
+
+```sh
+make run-file-server
+```
+
+And boot in another:
+
+| Command | Accelerator | Platform |
+| --- | --- | --- |
+| `make hvf-arm64` | HVF | Apple Silicon |
+| `make kvm-arm64` | KVM | Linux |
+| `make qemu-arm64` | TCG | anywhere |
+
+Adjust with `MEMORY`, `CPUS`, `RESOLUTION`, and `FILE_SERVER_IP`:
+
+```sh
+make hvf-arm64 MEMORY=8G CPUS=8 RESOLUTION=1920x1080
+```
+
+**The first boot takes about twenty minutes** and the screen stays black until
+the graphics transport is claimed near the end. Compiled `.llf` files are
+written back to `home/`, so later boots reach the desktop in a few minutes.
+
+### Live development
+
+Once the system reaches SWANK it accepts a connection on the forwarded port, and
+any error after that point parks the failing thread rather than halting the
+machine, so it can be inspected in place:
+
+```
+M-x slime-connect RET 127.0.0.1 RET 4005
+```
+
+### The boot pipeline
+
+```
+SBCL (host)                      cross-compiles Lambda64 sources
+    │
+    ├─ cold generator ─────────▶ lambda64.image
+    │
+QEMU -kernel KBoot               loads the image from virtio-blk
+    │
+    ├─ supervisor bootstrap      paging, pager, GIC, timer, scheduler, SMP
+    ├─ cold start                runtime, packages, CLOS
+    ├─ warm modules              precompiled .llf loaded from the image
+    ├─ stage four                remaining systems compiled from source over
+    │                            TCP 2599 from the host file server;
+    │                            results written back to home/ as .llf
+    ├─ IPL                       graphics and input claimed, GUI loaded,
+    │                            compositor and desktop started
+    └─ snapshot                  the live system is written back to disk
+```
+
+Stage four is what makes the first boot long and every later boot short. The
+snapshot at the end is why the system resumes where it stopped rather than
+starting cold again.
+
+### Verified environment
+
+| | |
 | --- | --- |
-| [ARM64 bring-up record](docs/architecture/arm64-boot-bring-up.md) | before changing boot, allocation, or codegen |
-| [Reading ARM64 panics](docs/development/reading-arm64-panics.md) | a guest panic or a boot that stopped |
-| [Allocation-forbidden contexts](docs/development/allocation-forbidden-contexts.md) | touching the supervisor or the allocator |
-| [Debt register](docs/modernization/debt-register.md) | picking up known-open work |
+| Host | macOS 27.0, Apple Silicon |
+| SBCL / QEMU | 2.6.8 / 10.2.1 |
+| Accelerator | HVF (`-machine virt -cpu host`); TCG exercised by the test suite |
+| Guest | 4 GB RAM, 4 CPUs, 1280×800 |
 
-Historical notes under `Lambda64/doc/` remain useful background but are not
-current contracts.
+`highmem` must stay enabled and memory must be at least 4 GB: stage four needs
+address space above the 4 GB line, and below it the guest reports
+`Addressing limited to 32 bits`.
 
-## Reproducible builds
+KVM on Linux and the inherited x86-64 target are not part of this verification.
 
-A plain `git clone` is a complete build input. There are no submodules: the
-`home/` libraries are tracked directly, so an upstream force-push or a silently
-advanced pointer cannot change what this tree builds. Where each library came
-from and the commit it was frozen at are recorded in
-[vendored-libraries.md](docs/reference/vendored-libraries.md), along with the one
-local patch that is not a pure mirror.
+## Why Lisp
 
-Lambda64 and the build system share one commit graph, so cross-layer changes and
-their tests are reviewed and released atomically.
+A Lisp system is self-describing and self-modifying by construction. The
+compiler is part of the running image, code is data, and any function, class, or
+method can be redefined while the system runs. In Lambda64 this reaches all the
+way down: the scheduler and the device drivers are ordinary Lisp objects that
+can be recompiled from a REPL attached to the live machine.
 
-## Upstream and naming
+That property is the point. An operating system that can safely rewrite its own
+components at runtime is the natural substrate for one that **evolves itself**,
+with a model in the loop proposing, compiling, and validating changes against a
+system that never has to stop. Building an **AI-native operating system** on
+that foundation is the project's next objective.
 
-LBuild is the Lambda64 build tool. MBuild is its upstream, referenced for
-history and attribution rather than as the project-facing build command.
+To be clear about status: that work has not started. The features listed above
+are what exists today.
 
-Inherited Common Lisp packages and configuration variables may still contain the
-name `mezzano`. Those are compatibility identifiers, not current branding.
+## Why ARM64
+
+**A simpler instruction set.** AArch64 is fixed-width and regular, with none of
+x86's variable-length encoding, prefix soup, or legacy modes. For a compiler
+backend that must be written, debugged, and reasoned about in Lisp, that is a
+direct reduction in the amount of machine complexity the system has to model.
+
+**Wider hardware reach.** ARM64 spans phones, tablets, single-board computers,
+laptops, and servers. An OS that targets it first can follow the hardware where
+it actually is, rather than being confined to the desktop.
+
+## Contributing
+
+Contributions are welcome. Before opening a pull request:
+
+```sh
+make test-fast                 # host contract tests + codegen regression
+python3 scripts/check-docs.py  # documentation validation
+```
+
+Guidelines:
+
+- **Test behaviour, not text.** Contract tests here assert semantics and are
+  checked by mutation — a test that passes against deliberately broken code is
+  a bug in the test.
+- **Respect allocation contexts.** Code running with the world stopped, with
+  interrupts masked, or holding the allocator lock may not allocate. See
+  [allocation-forbidden contexts](docs/development/allocation-forbidden-contexts.md).
+- **Follow the house style.** See [Common Lisp style](docs/development/common-lisp-style.md).
+- **Explain why in commit messages.** What changed is visible in the diff; why
+  it changed is not.
+
+Larger changes are tracked in the
+[modernization roadmap](docs/modernization/roadmap.md) and the
+[debt register](docs/modernization/debt-register.md). Engineering documentation
+starts at [`docs/README.md`](docs/README.md).
+
+## Acknowledgements
+
+Lambda64 exists because of two projects:
+
+- **[Mezzano](https://github.com/froggey/Mezzano)** by Henry Harrington and
+  contributors — the operating system this work continues. The architecture,
+  the compiler, the object model, and the graphics stack are theirs.
+- **[MBuild](https://github.com/froggey/MBuild)** — the build system this
+  repository is forked from.
+
+Thanks also to the maintainers of the Common Lisp libraries vendored under
+`home/`, listed with their origins in
+[vendored-libraries.md](docs/reference/vendored-libraries.md).
+
+Inherited package and variable names may still read `mezzano`. Those are
+compatibility identifiers.
 
 ## License
 
