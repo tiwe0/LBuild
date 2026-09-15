@@ -305,7 +305,14 @@
           ;; VM-LOCK directly while the pager can service another fault.
           (setf *cold-paging-direct-stack-ops* nil)
           nil)
-        (initialize-paging-system))
+        (progn
+          (initialize-paging-system)
+          ;; Same reason as the first-run branch above.  This flag is set
+          ;; unconditionally at entry, and clearing it only on the first-run
+          ;; path left a resumed image running with direct stack mutation
+          ;; enabled for the rest of its life, with the pager live.
+          (setf *cold-paging-direct-stack-ops* nil)
+          nil))
     ;; The paging disk is now published, so general-area allocation can use
     ;; the pager.  Publish queue/request and synchronization objects only
     ;; after this point; allocating them earlier recursively entered PAGER-RPC
@@ -398,22 +405,22 @@
            (setf *post-boot-worker-thread*
                  (make-thread #'post-boot-worker :name "Post-boot worker thread"))
            nil)
-          ((not first-run-p)
-           (setf *post-boot-worker-thread* (make-thread #'post-boot-worker :name "Post-boot worker thread")
-                 *boot-hook-lock* (make-mutex "Boot Hook Lock")
-                 *early-boot-hooks* '()
-                 *boot-hooks* '()
-                 *late-boot-hooks* '())
-           ;; See the first-run branch: this thread must be scavengable.
-           ;; A larger stack than *DEFAULT-STACK-SIZE*: this thread compiles the
-           ;; whole stage-four dependency tree, and the compiler walks quoted
-           ;; constants recursively.  babel's jpn-table.lisp alone is one list
-           ;; of ~8000 elements, which overflows a 1MB stack partway through.
-           ;; Stacks are zero-fill-on-demand, so the reservation costs address
-           ;; space and block-map entries rather than physical memory.
-           (make-thread #'sys.int::initialize-lisp :name "Main thread"
-                        :stack-size (* 16 1024 1024))
+          (t
+           ;; Snapshot resume.  Every thread, including the main thread and the
+           ;; post-boot worker, comes back from the image; nothing here may be
+           ;; created a second time.
+           ;;
+           ;; Starting another main thread on INITIALIZE-LISP is specifically
+           ;; fatal.  That function ends by MAKUNBOUNDing the obarrays the cold
+           ;; generator supplied -- *INITIAL-CREF-OBARRAY* among them -- so a
+           ;; resumed image has none of them, and the second run dies in
+           ;; RAISE-UNBOUND-ERROR before reaching any of its own code.
+           ;;
+           ;; *COLD-BOOT-IN-PROGRESS* is set unconditionally at entry and is
+           ;; otherwise cleared at the end of INITIALIZE-LISP, which does not
+           ;; run on this path.  Clear it here or the allocator and the CLOS
+           ;; bootstrap checks stay in cold-boot mode for the life of the
+           ;; resumed system.
            (setf *cold-boot-in-progress* nil)
-           nil)
-          (t (wake-thread *post-boot-worker-thread*)))
+           (wake-thread *post-boot-worker-thread*)))
     (finish-initial-thread)))
