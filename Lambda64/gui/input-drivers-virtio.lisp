@@ -125,7 +125,45 @@
                   (setf mouse-state-changed t)
                   (setf mouse-rel-y signed-value)))))))))))
 
+(defun reclaim-virtio-input-devices ()
+  "Re-claim the built-in virtio transports for this boot.
+
+The FDT scan produces fresh device objects on every boot, and a snapshot resume
+does not run IPL, so the one-shot claim there covers only the first boot.  The
+device list is accumulated with PUSH-WIRED and was never reset, so it has to be
+emptied here or a resumed system keeps entries pointing at transports that no
+longer exist -- and DETECT-VIRTIO-INPUT-DEVICES, which skips devices it already
+has a forwarder for, then starts a second forwarder per device on every resume.
+
+This lives here rather than beside the claim in the supervisor because
+supervisor/virtio.lisp is compiled before supervisor/virtio-input.lisp and
+cannot name that package yet."
+  (setf mezzano.supervisor.virtio-input:*virtio-input-devices* '())
+  (mezzano.supervisor.virtio:virtio-claim-pending-builtin-devices))
+
+(defun retire-stale-input-forwarders ()
+  "Stop forwarders whose device did not come back this boot.
+
+Their transport is gone, so they are blocked on a queue that will never fire
+again; nothing wakes them and nothing collects them.  TERMINATE-THREAD unwinds
+them through a foothold, which reaches a thread blocked in IRQ-FIFO-POP."
+  (let ((live mezzano.supervisor.virtio-input:*virtio-input-devices*)
+        (stale '()))
+    ;; Collect first: REMHASH during MAPHASH is undefined.
+    (maphash (lambda (dev thread)
+               (when (not (member dev live))
+                 (push (cons dev thread) stale)))
+             *virtio-input-forwarders*)
+    (dolist (entry stale)
+      (format t "Retiring input forwarder for departed device ~A~%"
+              (with-output-to-string (s)
+                (print-unreadable-object ((car entry) s :type t :identity t))))
+      (mezzano.internals::log-and-ignore-errors
+        (mezzano.supervisor:terminate-thread (cdr entry)))
+      (remhash (car entry) *virtio-input-forwarders*))))
+
 (defun detect-virtio-input-devices ()
+  (retire-stale-input-forwarders)
   (dolist (dev mezzano.supervisor.virtio-input:*virtio-input-devices*)
     (when (not (gethash dev *virtio-input-forwarders*))
       (format t "Created input forwarder for ~A~%"
@@ -138,5 +176,8 @@
                                                           (with-output-to-string (s)
                                                             (print-unreadable-object (dev s :type t :identity t)))))))))
 
+;; :EARLY so the claim precedes DETECT-VIRTIO-INPUT-DEVICES below, which walks
+;; the device list the claim populates.
+(mezzano.supervisor:add-boot-hook 'reclaim-virtio-input-devices :early)
 (mezzano.supervisor:add-boot-hook 'detect-virtio-input-devices)
 (detect-virtio-input-devices)

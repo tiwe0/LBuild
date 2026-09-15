@@ -207,18 +207,9 @@ Make sure there is a virtio-net NIC attached.~%")
 ;; forwarder threads start and the mouse and keyboard are dead.
 (mezzano.supervisor.virtio:virtio-claim-pending-builtin-devices)
 
-;; Claim them again on every later boot.  A snapshot resume does not run IPL,
-;; so the call above happens exactly once in the life of an image, while the
-;; FDT scan produces fresh, unclaimed device objects on each boot.  Without
-;; this hook a resumed system came up with its threads and compositor intact
-;; but no framebuffer -- the console showed "Display output is not active."
-;;
-;; :EARLY so it precedes DETECT-VIRTIO-INPUT-DEVICES, the ordinary boot hook
-;; installed by input-drivers-virtio.lisp, which walks the device list this
-;; claim populates.  Same ordering requirement as the direct call above.
-(mezzano.supervisor:add-boot-hook
- 'mezzano.supervisor.virtio:virtio-claim-pending-builtin-devices
- :early)
+;; input-drivers-virtio.lisp registers the per-boot :EARLY hook that repeats
+;; this claim; a snapshot resume does not run IPL, so this call covers only the
+;; first boot.  It stays because the GUI modules below need the framebuffer now.
 
 (sys.int::cal "sys:source;gui;theme.lisp")
 (sys.int::cal "sys:source;gui;compositor.lisp")

@@ -36,6 +36,7 @@ source-of-truth: code
 | D022 | Test | 多个契约测试锚定**源码字面文本**而非语义，源码正确演进即误报。本次修复 6 处：`%%gc` 签名、包前缀、CAS 缩进、文件位置、`:sparse t`、`:stride 2` | medium | 新增契约一律锚定语义（正则容忍等价写法），并在测试内写明"要守的约束是什么"，避免后人改代码迁就测试 | test |
 | D023 | Compiler | TF-WI-0029 第 3 步未实现：`compute-actual-successors` 存在但 `ssa-convert-locals` / `compute-dominance` 仍用 `build-cfg`。NLX 边已按上游形态恢复，移除它们的前置条件见规格文档 | medium | 实现 NLX 感知的后继关系并接入支配、活跃性与 φ 放置，再考虑移除边 | compiler |
 | D024 | GUI | virtio-gpu 每帧对整个裁剪区做一次**同步**传输+刷新（`virtio-gpu-issue-command` 自旋等待设备完成），窗口首次出现时裁剪区常为整屏，1280×800×4 ≈ 4MB，肉眼可见逐块刷新 | medium | 三选一或组合：传输与刷新合并为一次往返（需第二个请求缓冲区，当前单缓冲区强制串行）；刷新改非阻塞、靠 IRQ 回收描述符；compositor 细化脏区。均涉及命令生命周期，需独立设计与验证 | gui/runtime |
+| D025 | Supervisor | ARM64 快照慢,由两个独立因素相乘。**其一非增量**:`snapshot-wired-dirty-tracking-p` 在 ARM64 上恒返回 `nil`（注释:ARM64 将 wired 页映射为可写且不模拟后续脏位转换，故每次保守全量复制），实测空闲系统手动触发仍写 **165,137 页 ≈ 645 MB**。**其二每页一次同步往返**:`snapshot-write-disk` 提交单个 4 KB 页后立即 `disk-await-request`，不批量不流水，实测约 **387 次/秒 ≈ 95 MB/分钟**，645 MB 需约 7 分钟，期间 CPU 仅 8% | medium | 两者可分别下手，难度差很大。**同步往返**相对容易:合并连续块为单次大写入，或流水提交多个请求后统一等待——不触及脏位追踪即可显著提速。**非增量**需让 ARM64 将 wired 页映射为只读并在写故障时补脏位；零件已有（`arm64/interrupts.lisp` 的普通页脏位模拟、`pager.lisp` 的 `update-wired-dirty-bits`），难点是 wired 区为 supervisor 自身所在地，该区故障处理不当即致命且故障路径禁止分配，需独立设计与充分测试 | supervisor |
 
 规则：技术债表不是直接开工单。高风险或跨子系统条目先转为 initiative/ADR，明确非范围、冲突批次和验收矩阵。
 
