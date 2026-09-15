@@ -8,7 +8,7 @@
 /lambda64.symbol-table
 /lambda64.test-manifest
 /test-results/
-/.vscode/
+.vscode/
 /local.mk
 .DS_Store
 
