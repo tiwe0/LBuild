@@ -157,6 +157,13 @@ deps:
 asdf: deps
 	$(MAKE) -C home/asdf build/asdf.lisp
 
+# Boot an existing image directly.  A snapshotted image resumes -- threads,
+# desktop and network come back from the image -- so this needs no file server
+# and compiles nothing.  The qemu/kvm/hvf targets below exist to bring a cold
+# image up for the first time, which does need one.
+boot:
+	@./scripts/boot-image.sh $(BOOT_ARGS)
+
 qemu: qemu-arm64
 qemu-arm64:
 	$(QEMU_SYSTEM_AARCH64) -machine virt -cpu max $(QEMU_COMMON_ARGS)

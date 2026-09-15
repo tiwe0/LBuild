@@ -397,6 +397,10 @@ structures to exist, and for memory to be allocated, but not much beyond that."
   (makunbound '*cold-toplevel-forms*)
   (makunbound '*initial-fref-obarray*)
   (makunbound '*initial-cref-obarray*)
+  ;; The bootstrap obarrays are gone as of this line.  Record that, so the next
+  ;; boot takes the snapshot-resume branch instead of running INITIALIZE-LISP a
+  ;; second time and dying on the obarrays that no longer exist.
+  (setf mezzano.supervisor::*cold-bootstrap-completed* t)
   ;; The bootstrap allocator is no longer needed once all cold forms have run;
   ;; let the first full GC and subsequent warm loading use the normal areas.
   (setf mezzano.supervisor::*cold-boot-in-progress* nil)

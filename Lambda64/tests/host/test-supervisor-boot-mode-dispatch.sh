@@ -94,6 +94,40 @@ assert "(setf *cold-boot-in-progress* nil)" in resume, \
 paging = source[source.index("(if first-run-p"):source.index("(cond (first-run-p")]
 assert paging.count("(setf *cold-paging-direct-stack-ops* nil)") == 2, \
     "both paging paths must clear *COLD-PAGING-DIRECT-STACK-OPS*"
+
+# First-run detection must not be derived from *BOOT-ID*.  The first boot sets
+# *BOOT-ID* to the pre-allocated cold sentinel to avoid allocating before the
+# pager is live, that value is snapshotted, and every later boot then saw the
+# sentinel and called itself a first boot -- so the resume branch, even once
+# reachable, was never selected.  *BOOT-ID* separately means "boot generation"
+# to the DMA buffer code, which requires it to differ between boots.
+detect = source[source.index("(let ((first-run-p nil))"):source.index("(cond (first-run-p")]
+trigger = detect[detect.index("(setf first-run-p t)") - 400:detect.index("(setf first-run-p t)")]
+assert "*cold-bootstrap-completed*" in trigger, \
+    "first-run detection must test *COLD-BOOTSTRAP-COMPLETED*"
+assert "eq *boot-id* *initial-boot-event*" not in trigger, \
+    "first-run detection must not be derived from the *BOOT-ID* cold sentinel"
+PY
+
+# The flag has to be set where the bootstrap obarrays are consumed: that is the
+# exact point after which re-running INITIALIZE-LISP is fatal rather than merely
+# wasteful.  Setting it anywhere earlier would let a half-initialised image take
+# the resume path.
+python3 - "$repo_root/system/cold-start.lisp" "${BOOT_MODE_MUTATION_RUN:-}" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+if sys.argv[2]:
+    source = source.replace("(setf mezzano.supervisor::*cold-bootstrap-completed* t)", "", 1)
+
+assert "(setf mezzano.supervisor::*cold-bootstrap-completed* t)" in source, \
+    "INITIALIZE-LISP must record that the bootstrap obarrays are consumed"
+teardown = source.index("(makunbound '*initial-cref-obarray*)")
+flag = source.index("(setf mezzano.supervisor::*cold-bootstrap-completed* t)")
+assert flag > teardown, "the flag must be set after the obarrays are released"
+assert flag - teardown < 400, \
+    "the flag must sit with the obarray teardown it describes, not drift from it"
 PY
 
 if [[ -z "${BOOT_MODE_MUTATION_RUN:-}" ]]; then

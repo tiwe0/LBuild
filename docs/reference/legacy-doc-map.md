@@ -29,7 +29,6 @@ source-of-truth: documentation
 | `Lambda64/doc/quickstart.md` | 旧快速开始 | historical | 构建命令待更新 | [快速开始](../getting-started/README.md) |
 | `Lambda64/gui/virgl/virgl-notes.md` | VirGL 实验笔记 | supporting | TODO/FIXME 未逐项验证 | [GUI 与应用](../architecture/subsystems/gui-and-applications.md) |
 | `Lambda64/tests/README.md` | Guest 测试与运行说明 | current-supporting | 与根脚本共同验证 | [测试体系](../testing/README.md) |
-| 根 `README.md` | 项目构建和使用入口 | current-entry | 与 Makefile 共同验证 | [快速开始](../getting-started/README.md) |
 
 ## 迁移规则
 

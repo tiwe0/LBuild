@@ -16,3 +16,6 @@
 /home/.cache/
 /home/.slime/
 /home/asdf/build/
+
+# 本地镜像备份(APFS 克隆,勿入库)
+/backups/

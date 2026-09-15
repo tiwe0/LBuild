@@ -119,6 +119,23 @@
 ;; event dynamically would require the pager before it has been initialized.
 (sys.int::defglobal *initial-boot-event*)
 
+;; True once INITIALIZE-LISP has finished and consumed the bootstrap obarrays
+;; the cold generator supplied.  Set at that exact point in cold-start.lisp,
+;; because that is precisely when re-running the cold path stops being merely
+;; wasteful and becomes fatal: the obarrays are gone and INITIALIZE-LISP dies
+;; in RAISE-UNBOUND-ERROR on *INITIAL-CREF-OBARRAY*.
+;;
+;; The cold generator never assigns this, so a cold image has it unbound, which
+;; is the first-boot signal.  It exists because *BOOT-ID* cannot carry that
+;; meaning: the first boot must set *BOOT-ID* to the pre-allocated
+;; *INITIAL-BOOT-EVENT* to avoid allocating before the pager is live, and that
+;; value is then snapshotted -- so every later boot saw the cold sentinel and
+;; classified itself as a first boot, and the resume branch was unreachable.
+;; *BOOT-ID* separately means "boot generation" to the DMA buffer code, which
+;; needs it to differ between boots; overloading it with "is this the first
+;; boot" is what made both wrong at once.
+(sys.int::defglobal *cold-bootstrap-completed*)
+
 (defun current-boot-id ()
   *boot-id*)
 
@@ -178,14 +195,8 @@
     ;; A serialized cold image may leave BOOT-ID bound to a non-event object.
     ;; Treat that state as an uninitialized first boot; relying on BOUNDP alone
     ;; incorrectly selected the warm-boot path and reused stale thread queues.
-    (when (or (not (boundp '*boot-id*))
-              (not (event-p *boot-id*))
-              ;; The cold generator supplies INITIAL-BOOT-EVENT so the first
-              ;; boot can avoid dynamic allocation.  Treat that exact event
-              ;; as the cold sentinel; otherwise a serialized event value is
-              ;; mistaken for a warm reboot and allocator bootstrap is skipped.
-              (and (boundp '*initial-boot-event*)
-                   (eq *boot-id* *initial-boot-event*)))
+    (when (not (and (boundp '*cold-bootstrap-completed*)
+                    *cold-bootstrap-completed*))
       (setf first-run-p t)
       (debug-print-line "BOOT-MARK first-run")
       (mezzano.runtime::first-run-initialize-allocator)
@@ -382,6 +393,11 @@
       (boot-secondary-cpus)
       nil)
     (cond (first-run-p
+           ;; Keep this and its counterpart below.  Which branch a boot takes
+           ;; was invisible for the whole life of this bug: the DEBUG-PRINT-LINE
+           ;; markers nearby emit nothing this early, so their silence proved
+           ;; nothing, and a snapshotted image silently re-ran the cold path.
+           (debug-uart-boot-line "TRACE boot-first-run")
            (setf *boot-hook-lock* (make-mutex "Boot Hook Lock")
                  *early-boot-hooks* '()
                  *boot-hooks* '()
@@ -421,6 +437,7 @@
            ;; run on this path.  Clear it here or the allocator and the CLOS
            ;; bootstrap checks stay in cold-boot mode for the life of the
            ;; resumed system.
+           (debug-uart-boot-line "TRACE boot-resume")
            (setf *cold-boot-in-progress* nil)
            (wake-thread *post-boot-worker-thread*)))
     (finish-initial-thread)))
