@@ -118,7 +118,10 @@ prefixes = [
     "(defun snapshot-largest-wired-free-region",
     "(defun ensure-snapshot-wired-reserve",
     "(defun call-with-snapshot-vm-stable",
-    "(defun snapshot-write-disk",
+    # Anchored: "(defun snapshot-write-disk" is now also a prefix of
+    # SNAPSHOT-WRITE-DISK-RANGE, and FIND would stop at whichever comes first.
+    "(defun snapshot-write-disk (block data)",
+    "(defun snapshot-write-disk-range",
     "(defun snapshot-release-old-block-map",
     "(defun snapshot-release-old-freelist",
     "(defun take-snapshot",

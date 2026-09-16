@@ -9,6 +9,20 @@
 
 (sys.int::defglobal *snapshot-disk-request*)
 (sys.int::defglobal *snapshot-bounce-buffer-page*)
+
+;; Staging area for batched writeback.  DISK-THREAD pops one request at a time
+;; and processes it synchronously, so concurrency buys nothing here; the only
+;; lever is fewer, larger requests.  Writing page by page cost one round trip
+;; per 4 KB -- measured at roughly 387/s, so a 645 MB snapshot spent about
+;; seven minutes at 8% CPU, almost all of it waiting on the device.
+;;
+;; The extra slot at the end holds a page that was popped while looking for the
+;; end of a run and turned out not to continue it.  It cannot simply be pushed
+;; back: for CoW and wired-backing pages POP-PENDING-SNAPSHOT-PAGE returns the
+;; shared bounce buffer, which the next pop overwrites, so the data has to be
+;; copied out immediately whether it extends the run or starts the next one.
+(defconstant +snapshot-writeback-batch-pages+ 16)
+(sys.int::defglobal *snapshot-batch-buffer-page*)
 (sys.int::defglobal *snapshot-pending-writeback-pages-count*)
 (sys.int::defglobal *snapshot-pending-writeback-pages*)
 
@@ -268,34 +282,102 @@ Returns 4 values:
                   (physical-page-frame-type frame)))))))
 
 (defun snapshot-write-back-pages ()
-  ;; Write dirty/copied pages back.
-  (let ((n 0))
+  ;; Write dirty/copied pages back, coalescing consecutive blocks into one
+  ;; request each.  See +SNAPSHOT-WRITEBACK-BATCH-PAGES+ for why.
+  ;;
+  ;; Runs descend.  SNAPSHOT-COPY-WIRED-AREA walks the wired area in address
+  ;; order and STORE-ALLOC hands out blocks from the low end of the free range,
+  ;; so blocks are assigned ascending; SNAPSHOT-ADD-TO-WRITEBACK-LIST then
+  ;; pushes each frame onto the head, which reverses them.  The wired area is
+  ;; most of a snapshot, so this is the case worth coalescing.  Anything else --
+  ;; ascending, or scattered CoW blocks -- writes one page at a time exactly as
+  ;; before.  An earlier version of this looked for ascending runs and silently
+  ;; degraded to one page per request, which is indistinguishable from working
+  ;; unless you count the batches.
+  (let ((report 0))
     (loop
-       (when (eql n 0)
-         (setf n 100)
+       (when (eql report 0)
+         (setf report 100)
          (debug-print-line *snapshot-pending-writeback-pages-count* " dirty pages to write back"))
-       (decf n)
+       (decf report)
        (when (not *snapshot-pending-writeback-pages*) (return))
        (multiple-value-bind (frame freep block-id address)
            (pop-pending-snapshot-page)
          (declare (ignorable address))
-         #+(or)(debug-print-line "Writing back page " frame "/" block-id "/" address)
-         (or (snapshot-write-disk block-id (convert-to-pmap-address (ash frame 12)))
-             (panic "Unable to write page to disk!"))
-         (when freep
-           (release-physical-pages frame 1))))))
+         ;; Stage from the end of the buffer downwards, so a descending run ends
+         ;; up in ascending block order and goes out as one request.
+         (let ((slot (1- +snapshot-writeback-batch-pages+))
+               (count 1)
+               (low-block block-id))
+           (snapshot-stage-page slot frame freep)
+           (loop
+              (when (or (>= count +snapshot-writeback-batch-pages+)
+                        (not *snapshot-pending-writeback-pages*)
+                        ;; Peek only; a CoW fault during writeback can push a
+                        ;; new head, so the popped block is re-checked below.
+                        (not (eql (physical-page-frame-block-id
+                                   *snapshot-pending-writeback-pages*)
+                                  (1- low-block))))
+                (return))
+              (multiple-value-bind (next-frame next-freep next-block next-address)
+                  (pop-pending-snapshot-page)
+                (declare (ignorable next-address))
+                (cond ((eql next-block (1- low-block))
+                       (decf slot)
+                       (snapshot-stage-page slot next-frame next-freep)
+                       (setf low-block next-block)
+                       (incf count))
+                      (t
+                       ;; Lost the race with a concurrent push.  It cannot be put
+                       ;; back -- for CoW and wired-backing pages the frame is the
+                       ;; shared bounce buffer, which the next pop overwrites -- so
+                       ;; flush the run and write this page on its own.
+                       (or (snapshot-write-disk-range
+                            low-block (snapshot-batch-buffer-address slot) count)
+                           (panic "Unable to write page to disk!"))
+                       (setf count 0)
+                       (snapshot-stage-page +snapshot-writeback-batch-pages+
+                                            next-frame next-freep)
+                       (or (snapshot-write-disk-range
+                            next-block
+                            (snapshot-batch-buffer-address +snapshot-writeback-batch-pages+)
+                            1)
+                           (panic "Unable to write page to disk!"))
+                       (return)))))
+           (when (plusp count)
+             (or (snapshot-write-disk-range
+                  low-block (snapshot-batch-buffer-address slot) count)
+                 (panic "Unable to write page to disk!"))))))))
 
 (defun snapshot-write-disk (block data)
-  (disk-submit-request *snapshot-disk-request*
-                       *paging-disk*
-                       :write
-                       (* block
-                          (ceiling +4k-page-size+ (disk-sector-size *paging-disk*)))
-                       (ceiling +4k-page-size+ (disk-sector-size *paging-disk*))
-                       data)
-  (unless (disk-await-request *snapshot-disk-request*)
-    (panic "Unable to write snapshot block " block))
+  (snapshot-write-disk-range block data 1))
+
+(defun snapshot-write-disk-range (block data n-pages)
+  "Write N-PAGES consecutive blocks starting at BLOCK from the buffer at DATA."
+  (let ((sectors-per-page (ceiling +4k-page-size+ (disk-sector-size *paging-disk*))))
+    (disk-submit-request *snapshot-disk-request*
+                         *paging-disk*
+                         :write
+                         (* block sectors-per-page)
+                         (* n-pages sectors-per-page)
+                         data)
+    (unless (disk-await-request *snapshot-disk-request*)
+      (panic "Unable to write snapshot block " block)))
   t)
+
+(defun snapshot-stage-page (slot frame freep)
+  "Copy one page into batch slot SLOT, releasing FRAME when it was a private copy.
+
+Releasing here rather than after the write is safe and is what removes the need
+to remember the run's frames: the data is already in the batch buffer, and a
+failed write panics."
+  (%fast-page-copy (convert-to-pmap-address (ash (+ *snapshot-batch-buffer-page* slot) 12))
+                   (convert-to-pmap-address (ash frame 12)))
+  (when freep
+    (release-physical-pages frame 1)))
+
+(defun snapshot-batch-buffer-address (slot)
+  (convert-to-pmap-address (ash (+ *snapshot-batch-buffer-page* slot) 12)))
 
 (defun snapshot-freelist ()
   (values (regenerate-store-freelist)
@@ -729,7 +811,12 @@ per-page frames rather than failing the snapshot."
    t)
   ;; ### same here.
   (setf *snapshot-bounce-buffer-page*
-        (%allocate-physical-pages 1 :other "snapshot bounce page" nil)))
+        (%allocate-physical-pages 1 :other "snapshot bounce page" nil))
+  ;; Contiguous: the buddy allocator satisfies a multi-page request with one
+  ;; run of frames, which is what lets the batch go out as a single request.
+  (setf *snapshot-batch-buffer-page*
+        (%allocate-physical-pages (1+ +snapshot-writeback-batch-pages+)
+                                  :other "snapshot batch buffer" nil)))
 
 (defun snapshot ()
   ;; Run a GC before snapshotting to reduce the amount of space required.
